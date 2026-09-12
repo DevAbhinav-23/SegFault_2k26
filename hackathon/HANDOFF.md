@@ -185,3 +185,73 @@ intent" stopped being novel; **(b)** §3.0's rebuilt step table, which is the qu
 for M5 and is a decomposition of an unimplemented lowering (B5, B19); **(c)** §9's experiments —
 whether E1's recipe actually distinguishes the two readings, since a passing `air-opt` run
 proves only that no *token* edge exists, not that no *channel-slot* stall occurs at run time.
+
+---
+
+## Design phase (2026-09-12)
+
+Phase-1 design is drafted under [`../design/`](../design/) — start at
+[`../design/00-README.md`](../design/00-README.md), which carries the reading order, the
+module→person ownership map, the status table, the interface-change process, and the fifteen
+design decisions the architect's brief did not fix. **No implementation code exists yet**;
+every document in `design/` is specification, and every AIR fact it rests on is cited from
+`VERIFIED-AIR-FACTS.md` or `path:line` at mlir-air commit `ff95a9b`.
+
+**State: the design set has been revised per `design/REVIEW-round1.md`.** The adversarial review
+raised 13 blockers, 29 drift rows, 26 gaps and 8 plan risks with a 74-item edit list; the
+architect ruled on it (rulings 1–9, recorded in `design/00-README.md` §7.1); all 74 items are
+applied and all 13 blockers are closed. `design/RESPONSE-review1.md` has the item-by-item
+disposition, the conflicts between an edit and a ruling, and the mechanical-check output.
+
+**Handoff state (2026-09-13).** The design loop is closed by architect decision, after
+`design/REVIEW-round1.md` and rulings 1–9; no further review round is planned and no design
+question is blocking D0. `design/06-interfaces.md` stands at `CONTRACT_VERSION = 3` and is
+waiting on the three co-signatures at D0 — that signature is the only gate between this document
+and implementation. A final consistency sweep of the whole set on 2026-09-13 ran seven mechanical
+checks — error-code catalogue both ways, test-id definitions, per-LLD FR subsets, fixture
+parameters, the stale-string list, fenced-block classification, and the README's own reading
+order and status — and came back clean after two stale spots (W2's schedule listing in M2 §6.3
+and the cascade `at=`-pinning claims) were fixed; the output is in `design/RESPONSE-review1.md`
+under *Final sweep checks (2026-09-13)*. The per-person D0 task list is
+`design/05-work-breakdown.md` §2.
+
+What changed that anyone reading the older documents must know:
+
+* **W2's contract**: `def jacobi(U: sp.f32[T + 1, H + 2, W])` — **one** rank-3 parameter, the
+  `0.2 ×` **five**-point stencil, write domain planes `1..T` × rows `1..H` × cols `1..W-2`.
+  Fixture `H = W = 16`, **`PI = 2`, `HS = 8`** (`PI·HS == H`), `T = 4` (and `T = 5`). Every plane
+  is drained. `PI = 4` is a `DMA-CHANNELS` **negative** — it is measured to fail `aie.connect`.
+* **W3's contract**: `def sw(q: sp.i32[MQ], r: sp.i32[NR], S: sp.i32[MQ + 1, NR + 1])` with
+  `sub = MATCH if q[i-1] == r[j-1] else MISMATCH`. The grammar gained a value-level `SELECT`,
+  module-level `int` constants and transitive scalar substitution. `q`/`r` are staged into L1;
+  every row of `S` is drained.
+* **The flip is 1-D**: `grid(PK=4)`, `place(px=ax.k0)`, `stationary("B")`, cascade **ascending**
+  (the opposite of the 2-D case, and measured both ways).
+* **`06-interfaces.md` is at `CONTRACT_VERSION = 3` and is signed as v3, not v1 or v2** — the
+  eleven round-1 contract edits and RULING 9's twelfth land *before* the D0 freeze.
+  `ComputeNode` became `StoreNode` over an `ExprNode` tree; `BranchNode` joined `PlanNode`;
+  `LegalMapping` gained `pi_u`/`ker_pi_u`; `MappingSummary` gained `residency`; the error
+  catalogue is **43** codes.
+* **Per-core L1**: W1 `12 288`, W1-flip `24 576` (`16 384` at M3's scope, before M4 adds the
+  cascade `recv` tile), W2 `1 280`, W3 `240` (`232` at M3's scope) bytes. The arithmetic is in
+  `design/02-hld.md` §7 and nowhere else.
+
+**Residual unknowns that need a device or a build, and cannot be closed by editing** (now risks
+R-18…R-21 and open questions B-O1/B-O4 in `design/01-requirements.md` §6–§7):
+
+1. Whether a **merged MM2S stream** is correctly demultiplexed at two destinations (N-3). Every
+   core is kept at ≤ 2 outbound endpoints as the mitigation.
+2. The **packet-vs-circuit DMA rule** is measured on four module shapes and is **not** a
+   documented upstream contract, so `DMA-CHANNELS` stays a warning wherever packet flows may
+   appear. A device run is the only thing that turns "it compiled" into "it is correct".
+3. **`npu2`** — nothing has been built for it; four of the eight goldens target a device no probe
+   has touched. Due D2.
+4. Whether **ping-pong fires** on W1's K loop in the real emitted module (one `air-opt` run).
+5. **W2 and W3 end-to-end numerics** — every structural check is a proxy; `air.api` has no
+   interpreter and `air-runner` is a timing model. Only a device run closes it.
+
+**Next action: D0.** Install the pinned toolchain on all three machines and cache the four wheels
+on the pinned interpreter (`design/07-environment.md` §1–§2); **sign `06-interfaces.md` v3**; and
+write the three kernel sources — `kernels/w1_gemm.py`, `w2_jacobi.py`, `w3_sw.py` — verbatim from
+`design/03-lld-M8-kernels-demo.md` §3.1, §3.3 and §3.4. `design/05-work-breakdown.md` §2 D0 has
+the per-person task list.
