@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spatial-dsl"
+version = "0.0.0"
+description = "A spatial DSL for NPUs, lowering to MLIR-AIR"
+requires-python = "==3.12.*"
+# numpy is the only runtime dependency. The toolchain (mlir_air[aie], mlir_aie, llvm_aie) is
+# NOT a pyproject dependency: nothing of it is on PyPI, so it is installed from the pinned
+# wheel cache — `pip install --no-index --find-links vendor/wheels 'mlir_air[aie]'` — per
+# design/07-environment.md §2. Listing it here would make a plain `pip install .` fail.
+dependencies = ["numpy==2.5.3"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["spatial", "kernels"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not slow and not requires_device' --strict-markers -q"
+testpaths = ["tests"]

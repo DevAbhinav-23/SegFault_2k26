@@ -44,7 +44,9 @@ so the `-f` flags are **mandatory** (`docs/buildingRyzenLin.md:28-32`).
 `latest-air-wheels` is not a reproducible reference. Two actions, both at D0 (risk R-13):
 
 1. Substitute a `v*.*.*` release tag for `latest-air-wheels` once the team knows which tag
-   carries `0.0.1.2026091204+ff95a9b`.
+   carries `0.0.1.2026091204+ff95a9b`. **Impossible as of 2026-09-13: `Xilinx/mlir-air` publishes
+   no `v*.*.*` release tag at all — only `latest-air-wheels` and `latest-air-wheels-no-rtti` —
+   so action 2, the local wheel cache, is the only mitigation for R-13.**
 2. **Download the four wheels to `vendor/wheels/` and record their sha256 in this file.** CI and
    every re-install then use `pip install --no-index --find-links vendor/wheels 'mlir_air[aie]'`.
    A pruned asset mid-week then costs nothing.
@@ -55,12 +57,31 @@ so the `-f` flags are **mandatory** (`docs/buildingRyzenLin.md:28-32`).
    interpreter of §1 and for `manylinux` x86-64. A second platform needs a second cache; the
    three laptops and the CI runner are all on the pinned pair.
 
+**Filled at D0, 2026-09-13.** The cache is **16** wheels, not four: `mlir_air[aie]` pulls eight
+transitive dependencies and `pytest` four more. Total 644 MB on disk. Resolved on Python 3.12.14
+against the three `-f` pages above; `sha256sum -c vendor/wheels/SHA256SUMS` is the check, and
+`vendor/wheels/SHA256SUMS` is the committed copy of this list.
+
 ```
-# to be filled in at D0 by Person C:
-# vendor/wheels/mlir_air-0.0.1.2026091204+ff95a9b-*.whl   sha256: ...
-# vendor/wheels/mlir_aie-1.4.3.dev55+g10767b5-*.whl        sha256: ...
-# vendor/wheels/llvm_aie-22.0.0.2026091201+386ca5c6-*.whl  sha256: ...
-# vendor/wheels/numpy-2.5.3-*.whl                          sha256: ...
+# the pin (07-environment.md §1)
+39089ba72304ffbff0552dc4bc6a6288d459c8fdd6bb5cad22a7916286e50d1a  mlir_air-0.0.1.2026091204+ff95a9b-cp312-cp312-linux_x86_64.whl
+4b4513267e6ff35ffaa9e93b9a37953683c9839a9556cf3fee9c2018b3e87baa  mlir_aie-1.4.3.dev55+g10767b5-cp312-cp312-manylinux_2_35_x86_64.whl
+1f3987e0581a444907b3b1ba286e73508718917d012de3480fff723150cb9f7c  llvm_aie-22.0.0.2026091201+386ca5c6-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+b7e18c623bb5c95acb3b3328861272816ba199fb531921c5d6d0b675f1fde9e3  numpy-2.5.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+# transitive, from mlir_air[aie]
+3b4a480aa8fd54a1805b8ac10f3f91763926a74f73c0c364c10f9231854f4170  ml_dtypes-0.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+57dbda9b35157b05fb3e58ee91448612eb674172fab98ee235ccb0b5bee19a1c  filelock-3.13.1-py3-none-any.whl
+abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695  aiofiles-25.1.0-py3-none-any.whl
+9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a  cloudpickle-3.1.2-py3-none-any.whl
+33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb  rich-15.0.0-py3-none-any.whl
+2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9  pygments-2.21.0-py3-none-any.whl
+9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a  markdown_it_py-4.2.0-py3-none-any.whl
+84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8  mdurl-0.1.2-py3-none-any.whl
+# dev only, so a laptop can install the suite offline too
+37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c  pytest-9.1.1-py3-none-any.whl
+e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746  pluggy-1.6.0-py3-none-any.whl
+f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12  iniconfig-2.3.0-py3-none-any.whl
+d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c  packaging-26.3-py3-none-any.whl
 ```
 
 ### Verify — with no environment variables set at all
