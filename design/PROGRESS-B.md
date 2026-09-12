@@ -110,3 +110,97 @@ B's own critical path starts at M0/M4/M5. Before any of it:
    anything.
 5. Person C: machines 2 and 3, and the `.github/workflows/ci.yml` of M7 §3.9 — steps 2–4 restore
    from `vendor/wheels/SHA256SUMS`, so **CI never sees the `-f` release URLs**.
+
+---
+
+# Phase P0b — M0, the frozen shared contract
+
+*2026-09-13. `spatial/model.py` at `CONTRACT_VERSION = 3`, its unit tests, and the test-harness
+helpers. Nothing pushed.*
+
+## Landed
+
+| # | Item | Where |
+|---|---|---|
+| 1 | **M0** — every dataclass of `06-interfaces.md` §1–§6 (33 classes), frozen, tuple-valued, value-equal, hashable. `Dtype` enum with `.bits/.sizeof/.mlir/.numpy`; `Expr` canonical and structurally hashable; the `Literal` aliases plus a `frozenset` per alias; `Diagnostic`; `SpatialError` + the six leaf classes; `CATALOGUE` with all **43** codes | `spatial/model.py` |
+| 2 | **73 enforced invariants** (`I01`–`I73`), each one line in the module docstring with its `06-interfaces.md` section, each with ≥ 1 negative test (**108** cases). Violations raise `TypeError`/`ValueError` naming class, field and value | `spatial/model.py` docstring |
+| 3 | Canonical JSON: one generic encoder/decoder driven by dataclass fields and annotations, `__type__` tags for `Expr` and the `ExprNode`/`PlanNode` union members, `sort_keys=True, indent=2`, trailing `\n`. Round-trip exact and idempotent for all 33 classes | `to_json` / `from_json` |
+| 4 | `check_pin()` + `PIN` (FR-T6, M6 §3.9). `importlib.metadata` imported inside the function; the other M6 stubs untouched | `spatial/m6_tools.py` |
+| 5 | Harness helpers, spec-exact, marked "written by B at P0b to unblock; C owns": `assert_diagnostic` + `CATALOGUE` parsed from `06-interfaces.md` §6.3 (asserts 43 rows) + `RAISED_CODES`; `assert_golden`/`canonical_json`/`UPDATED`/terminal summary; `in_fresh_process` | `tests/helpers/{diagnostics,golden,determinism}.py` |
+| 6 | `tests/conftest.py` — the five marks, `--update-goldens`, its **three guards** (CI env, pin mismatch, dirty `tests/golden`), and `tests.helpers.golden` registered as a plugin | `tests/conftest.py` |
+| 7 | `tests/__init__.py` — **closes B-P2**: `tests` is now a package, so `importlib.resources.files("tests.fixtures")` resolves | `tests/__init__.py` |
+| 8 | M0 unit tests: frozen-ness, hashability, no-list, one case per invariant, the Q-M2-3 *negative* rule, JSON, `Expr`, `Dtype`, the catalogue guard, rendering, the six leaf classes, `check_pin` | `tests/unit/test_m0_model.py` |
+
+## Verified (command → result)
+
+| Command | Result |
+|---|---|
+| `.venv/bin/python -m pytest` | **328 passed, 0.33 s** reported (0.42 s wall including start-up). Budget NFR-3 is 180 s |
+| `PYTHONHASHSEED=1 pytest -vv` vs `PYTHONHASHSEED=2 pytest -vv` | **identical**: `diff` of the 328 `PASSED` lines (ids, order, outcome) is empty |
+| `env -i .venv/bin/python -W error -c "import spatial, spatial.model, spatial.m6_tools"` | `ok 3` — **no import-time warning**, no environment at all |
+| `grep -rn 'import air\|from air' spatial/` | **no match** (FR-S20 holds) |
+| `CI=1 pytest --update-goldens` | `UsageError: --update-goldens is refused in CI…` (guard layer 1) |
+| `pytest --update-goldens` with `PIN["mlir_air"]` temporarily wrong | `UsageError: … is refused: the installed toolchain is not the pinned one…` + the `mismatched` pair (layer 2) |
+| `pytest --update-goldens` with a stray file under `tests/golden` | `UsageError: tests/golden has uncommitted changes…` (layer 3) |
+| `pytest --update-goldens` on a clean tree | passes, prints `--update-goldens rewrote 0 golden(s)` — the terminal-summary hook runs |
+| `in_fresh_process(to_json, PLAN)` | equals the in-process text; a deliberately failing callable surfaces the child's stderr as an `AssertionError` |
+| `check_pin()` in this venv | returns `None`; monkeypatching `metadata.version` raises `ToolchainError(TOOL-VERSION-PIN)` and passes `assert_diagnostic` |
+
+Counts: **73** invariants / **108** negative cases / **33** classes with a minimal instance /
+**43** catalogue codes, both in `model.CATALOGUE` and parsed from the document, asserted equal.
+
+## Spec ambiguities, and the reading taken
+
+1. **`SpatialError`'s base.** §6.2 reads `SpatialError(Diagnostic)`; HLD §4.1 and FR-D1 both say
+   it *carries* a `Diagnostic`. Read as `SpatialError(Exception)` with a `.diagnostic`
+   attribute — a `Diagnostic` is data, not an exception.
+2. **`CATALOGUE`'s value type.** M7 §3.2 writes `CATALOGUE[code].stage`; the contract is
+   `dict[str, Stage]`, so the helper indexes the stage directly.
+3. **When a `clause` is required.** §6.1 requires it for `clause`/`legality`; M7 §3.2's
+   `assert_diagnostic` requires it for *every* non-`grammar` stage. Both kept: M0 enforces the
+   §6.1 rule, and `check_pin`'s diagnostic carries `clause="build()"` so the stricter helper
+   passes. M6 §5's verbatim FR-T3 message also shows a toolchain diagnostic with a clause.
+4. **No reference-existence checks at M0.** The brief excludes site→channel/buffer existence; the
+   same reading is applied to every other *reference* (an `AccessMap.operand` naming a `Param`, a
+   `Param.shape` entry naming a `shape_param`, `reductions` naming an axis). Those are M2/M3/M4.
+5. **`ChannelPlan.sites` "≥ 1 put and ≥ 1 get" is not enforced.** `04-test-plan.md` §2's corrupt
+   corpus reaches `BALANCE` by *dropping a get*; enforcing this at construction could make that
+   code unreachable. Balance stays M4's self-check.
+6. **`ChannelSite.id`'s `f"{channel}.{kind}.{order}@{scope}"` spelling is not enforced** — it is
+   in the Meaning column, not the Invariant column, and the same `(channel, kind, order, scope)`
+   can legitimately recur in two different loop bodies. M0 enforces non-emptiness, and that one
+   id names one site across the plan (equal objects may appear twice, e.g. in `ChannelPlan.sites`
+   and again in a body).
+7. **Sorted means strictly increasing.** `stationary`, `double_buffer`, `sequential`,
+   `shape_params`, `residency`, `stationary_ops`, `channels` are sorted *and* duplicate-free: a
+   duplicate has no meaning and NFR-1 wants exactly one canonical form.
+8. **Grid extents ≥ 1 and tile factors ≥ 1 are enforced** (stated in §3.2) even though
+   `CLAUSE-BAD-VALUE` mentions them: M2 validates at clause-call time, before a `ScheduleModel`
+   exists, so the code stays reachable. Grid *rank*, `len(place)==len(grid)`, tile-divides and
+   `sequential ∩ place` are **not** enforced — `test_L11_rank`'s `grid=(2,2,2)` constructs, and
+   there is a test asserting exactly that.
+9. **`Statement.op` is set iff `kind == "accumulate"`** — from §2.4's Meaning column.
+10. **`Diagnostic.details`** is typed `Mapping[str, object]` (§6.1) yet the object must hash. It
+    is stored as an immutable `dict` subclass in sorted key order whose values are canonicalised
+    (lists → tuples, nested mappings → the same type), so it stays `json.dumps`-able, hashable,
+    and round-trips exactly. A `details` key literally named `__type__` is handled.
+11. **`PIN` key spelling.** M6 §3.9 writes `llvm-aie`, the brief writes `llvm_aie`; both resolve
+    through `importlib.metadata` (verified). Used `llvm_aie`, as the brief specifies.
+12. **`check_pin(strict=True)`** — the pseudo-code never reads `strict`, so the parameter is not
+    implemented.
+13. **`Dtype.bf16.numpy`** returns `ml_dtypes.bfloat16`: numpy has no bf16. `ml_dtypes` is
+    already a transitive dependency of `mlir_air[aie]`, so NFR-2's count is unchanged. The whole
+    property is lazy, so `spatial.model` imports with no numpy present.
+
+## Open / blockers
+
+| # | Item | Detail |
+|---|---|---|
+| **B-P2** | **CLOSED** | `tests/__init__.py` added; `tests` is a package |
+| **B-P1** | superseded | `pytest` exits 0 now that tests exist |
+| **B-P5** | `assert_golden`'s *compare* path is unexercised | No golden file exists yet (M8/D2). Only the update path ran, on an empty set. The compare path is 10 lines and spec-shaped, but it is **not verified** |
+| **B-P6** | `RAISED_CODES` is populated by exactly one code so far | `TOOL-VERSION-PIN`. `test_D3_catalogue_complete` (FR-D3) belongs to C's negative suite and is not written yet |
+
+Not verified in this phase: anything on a device; `aircc`; `air-opt`; the network gate, the time
+budget hook and the fixture fixtures of M7 §3.3/§3.6/§3.7 (Person C, later phase); the tensor
+read-before-write ordering and every other M2/M3/M4 check, by design (Q-M2-3).
