@@ -12,6 +12,9 @@ Four readings §6.1 leaves open are recorded in `design/PROGRESS-B.md`, phase P0
 `LoopPlan.depth` counts enclosing loops (0 at the top of its own body); `ChannelSite.order` is
 the index in the enclosing body; an `Expr` over a loop IV names the `LoopPlan.axis` that binds
 it; and `plan.buffers` is in allocation order (`06-interfaces.md` §5.6).
+
+At `CONTRACT_VERSION = 4` §6.1 line 6's `<HERD>` is a real node: the `HerdPlan` at
+`segment_body` index 2 (`06-interfaces.md` §5.6 invariant 8), which closed B-P7.
 """
 
 from __future__ import annotations
@@ -97,22 +100,30 @@ CHANNELS = (
 # Bodies
 # --------------------------------------------------------------------------------------------
 
-SEGMENT_BODY = (
-    # 0-2: the bundle index must be a trace-time constant, so its loop is a Python loop;
-    #      the k loop reuses no L1 buffer here but stays air.sequential (LOOP_KIND's default).
-    LoopPlan(axis="pi_bundle", lo=ZERO, hi=const(PI), step=const(1), kind="unrolled", depth=0,
-             body=(LoopPlan(axis="k0", lo=ZERO, hi=const(K), step=const(TK),
-                            kind="sequential", depth=1, body=(A_PUT,)),)),
-    # 3-5
-    LoopPlan(axis="pj_bundle", lo=ZERO, hi=const(PJ), step=const(1), kind="unrolled", depth=0,
-             body=(LoopPlan(axis="k0", lo=ZERO, hi=const(K), step=const(TK),
-                            kind="sequential", depth=1, body=(B_PUT,)),)),
-    # 6 is <HERD>, which `PlanNode` has no node for; see the module docstring and PROGRESS-B.
-    # 7-9: the drain, after the herd
-    LoopPlan(axis="i_drain", lo=ZERO, hi=const(PI), step=const(1), kind="unrolled", depth=0,
-             body=(LoopPlan(axis="j_drain", lo=ZERO, hi=const(PJ), step=const(1),
-                            kind="unrolled", depth=1, body=(C_GET,)),)),
-)
+# 0-2: the bundle index must be a trace-time constant, so its loop is a Python loop;
+#      the k loop reuses no L1 buffer here but stays air.sequential (LOOP_KIND's default).
+FILL_A = LoopPlan(axis="pi_bundle", lo=ZERO, hi=const(PI), step=const(1), kind="unrolled",
+                  depth=0,
+                  body=(LoopPlan(axis="k0", lo=ZERO, hi=const(K), step=const(TK),
+                                 kind="sequential", depth=1, body=(A_PUT,)),))
+# 3-5
+FILL_B = LoopPlan(axis="pj_bundle", lo=ZERO, hi=const(PJ), step=const(1), kind="unrolled",
+                  depth=0,
+                  body=(LoopPlan(axis="k0", lo=ZERO, hi=const(K), step=const(TK),
+                                 kind="sequential", depth=1, body=(B_PUT,)),))
+# 7-9: the drain, after the herd
+DRAIN = LoopPlan(axis="i_drain", lo=ZERO, hi=const(PI), step=const(1), kind="unrolled", depth=0,
+                 body=(LoopPlan(axis="j_drain", lo=ZERO, hi=const(PJ), step=const(1),
+                                kind="unrolled", depth=1, body=(C_GET,)),))
+
+
+def segment_body(herd: HerdPlan) -> tuple:
+    """§6.1's segment body. Line 6 `<HERD>` **is** the `HerdPlan` node, at index 2.
+
+    `06-interfaces.md` §5.6 invariant 8 at `CONTRACT_VERSION = 4`: `segment_body` holds exactly
+    one `HerdPlan`, at top level, equal to `MappingPlan.herd`. It closes B-P7.
+    """
+    return (FILL_A, FILL_B, herd, DRAIN)
 
 _ZERO_STORE = StoreNode(buffer_id="acc", subscripts=(lin("m0"), lin("n0")),
                         expr=Const(value=0.0, text="0.0", dtype=Dtype.f32))
@@ -204,21 +215,22 @@ def _summary(physical: tuple[int, ...], repeats: tuple[int, ...]) -> MappingSumm
 def plan(target: str = "npu1") -> MappingPlan:
     """W1's `MappingPlan`, node by node from `03-lld-M4-mapping.md` §6.1."""
     mapping = w1_legal.legal(target)
+    herd = HerdPlan(name="gemm_herd", grid=(PI, PJ), shape=mapping.physical_herd, at=None,
+                    coords=("tx", "ty"))
     return MappingPlan(
         mapping=mapping,
         tensors=TENSORS,
         launch_name="gemm",                                 # kernel.name (§3.1)
         segment_name="gemm_seg",                            # f"{kernel.name}_seg" (§3.1)
-        herd=HerdPlan(name="gemm_herd", grid=(PI, PJ), shape=mapping.physical_herd, at=None,
-                      coords=("tx", "ty")),
+        herd=herd,
         buffers=BUFFERS,
         channels=CHANNELS,
-        segment_body=SEGMENT_BODY,
+        segment_body=segment_body(herd),
         herd_body=HERD_BODY,
         delivery=DELIVERY,
         summary=_summary(mapping.physical_herd, mapping.repeats),
     )
 
 
-__all__ = ["EMPTY", "TENSORS", "BUFFERS", "CHANNELS", "SEGMENT_BODY", "HERD_BODY", "DELIVERY",
-           "RESIDENCY", "REDUCTION_SPLIT", "plan"]
+__all__ = ["EMPTY", "TENSORS", "BUFFERS", "CHANNELS", "FILL_A", "FILL_B", "DRAIN",
+           "segment_body", "HERD_BODY", "DELIVERY", "RESIDENCY", "REDUCTION_SPLIT", "plan"]

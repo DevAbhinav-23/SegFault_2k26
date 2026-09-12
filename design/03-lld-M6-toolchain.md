@@ -167,7 +167,15 @@ FUNCTION invoke(argv, cwd, env=None, timeout=600):
 # The FR-T5 rule, in one place. Order matters: the diagnostic is reported before
 # the exit code, because the diagnostic is the informative half and the exit
 # code is the half that lies.
-ERROR_LINE = compile(r"^(?P<loc>[^\s:]+:\d+:\d+:\s*)?error:\s*(?P<msg>.*)$", MULTILINE)
+ERROR_LINE = compile(
+    r'^(?P<loc>(?:loc\("[^"]*":\d+:\d+\)|[^\s:]+:\d+:\d+):\s*)?error:\s*(?P<msg>.*)$',
+    MULTILINE)
+# The `loc` group carries two alternatives because the two tools spell diagnostics
+# differently: `aircc` prints MLIR's loc(...) form, measured at P0c as
+# `loc("malformed.mlir":15:39): error: use of undeclared SSA value name`
+# (`tests/fixtures/stderr/exit1_with_error.txt`, line 1), while `air-opt` prints
+# `<file>:<line>:<col>: error: ...`. The single-alternative pattern this document
+# carried before CONTRACT_VERSION 4 matched no `aircc` diagnostic at all.
 
 FUNCTION verdict(run):
     hits = [m.group(0) for m in ERROR_LINE.finditer(run.stderr)]

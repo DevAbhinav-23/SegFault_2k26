@@ -59,7 +59,8 @@ it disagrees with the plan's — §5 says what happens then.
  4      launch := OPEN(air.launch, name=plan.launch_name)         # verbatim; M5 derives no name
  5      segment := OPEN(air.segment, name=plan.segment_name)
  6      WALK(plan.segment_body, bindings={})                   # §3.4
- 7      #   ... which contains the <HERD> marker, at which WALK does:
+ 7      #   ... the <HERD> marker is the HerdPlan node in plan.segment_body (§5.6 invariant 8,
+ 7a     #   exactly one, at top level, == plan.herd), at which WALK does:
  8      #       herd := OPEN(air.herd, iterable, name=plan.herd.name, shape=plan.herd.shape,
  9      #                    at=plan.herd.at)
 10      #       bind plan.herd.coords to the body's positional parameters

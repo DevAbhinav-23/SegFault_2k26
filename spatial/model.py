@@ -102,6 +102,14 @@ I70 `Diagnostic.fix` is non-empty (§6.1)
 I71 `Diagnostic.location` is present when `stage == "grammar"` (§6.1)
 I72 `Diagnostic.clause` is present when `stage` is `"clause"` or `"legality"` (§6.1)
 I73 `Diagnostic.details` is JSON-serialisable, with str keys, and is stored canonically (§6.1)
+I74 `KernelModel.bindings` holds one entry per `shape_params` name - the same names, in the
+    same sorted order. The value bound of §2.7 is **not** enforced here: W2's `T = 0` is the
+    only reachable `SWAP-PARITY` condition (`design/03-lld-M3-checker.md` §9), and Q-M2-3
+    forbids M0 from making a §6.3 code unreachable (§2.7)
+I75 `MappingPlan.segment_body` holds exactly one `HerdPlan` node at top level (§5.5, §5.6)
+I76 that `HerdPlan` node equals `MappingPlan.herd` (§5.5, §5.6)
+I77 no `HerdPlan` node appears in `MappingPlan.herd_body`, or nested inside any `LoopPlan` or
+    `BranchNode` body (§5.5, §5.6)
 """
 
 from __future__ import annotations
@@ -117,7 +125,7 @@ from functools import lru_cache
 from math import prod
 from typing import Any, Literal, Union, get_args, get_origin
 
-CONTRACT_VERSION = 3
+CONTRACT_VERSION = 4
 """The version of design/06-interfaces.md this module implements."""
 
 
@@ -513,12 +521,14 @@ class ReductionSpec(_Model):
 
 @dataclass(frozen=True)
 class KernelModel(_Model):
-    """The whole captured kernel: params, axes, statements, dependences and any reduction."""
+    """The whole captured kernel: params, shape-parameter bindings, axes, statements,
+    dependences and any reduction."""
 
     name: str
     source: str
     params: tuple[Param, ...]
     shape_params: tuple[str, ...]
+    bindings: tuple[tuple[str, int], ...]
     axes: tuple[Axis, ...]
     statements: tuple[Statement, ...]
     dependences: tuple[Dependence, ...]
@@ -529,6 +539,9 @@ class KernelModel(_Model):
         _need(self, "params", any(p.is_written for p in self.params),
               "at least one param must be written", tuple(p.name for p in self.params))
         _sorted_unique(self, "shape_params", self.shape_params, "name")
+        _need(self, "bindings", tuple(n for n, _ in self.bindings) == self.shape_params,
+              f"must hold one entry per shape_params name, sorted: {self.shape_params}",
+              self.bindings)
         _unique(self, "axes", tuple(a.name for a in self.axes), "name")
         _need(self, "statements", len(self.statements) >= 1, "must have at least one statement",
               self.statements)
@@ -895,8 +908,12 @@ class BranchNode(_Model):
     otherwise: tuple[PlanNode, ...]
 
 
-PlanNode = Union[BufferPlan, ChannelSite, LoopPlan, StoreNode, BranchNode]
-"""The union of everything a plan body may hold (design/06-interfaces.md §5.5)."""
+PlanNode = Union[BufferPlan, ChannelSite, LoopPlan, StoreNode, BranchNode, HerdPlan]
+"""The union of everything a plan body may hold (design/06-interfaces.md §5.5).
+
+A `HerdPlan` node is the herd-position marker: it may appear only at the top level of
+`MappingPlan.segment_body`, exactly once, and must equal `MappingPlan.herd` (§5.6 invariant 8).
+"""
 
 
 @dataclass(frozen=True)
@@ -956,6 +973,18 @@ class MappingPlan(_Model):
                   f"{tensor.name!r} must have level 'L3'", tensor.level)
         _sorted_unique(self, "channels", tuple(c.name for c in self.channels), "name")
         _unique(self, "delivery", tuple(d[0] for d in self.delivery), "operand")
+        marks = tuple(n for n in self.segment_body if isinstance(n, HerdPlan))
+        _need(self, "segment_body", len(marks) == 1,
+              "must hold exactly one HerdPlan node at top level, marking the herd's position",
+              len(marks))
+        _need(self, "segment_body", marks[0] == self.herd,
+              "the HerdPlan node must equal MappingPlan.herd", marks[0])
+        _need(self, "herd_body", not any(isinstance(n, HerdPlan) for n in _walk(self.herd_body)),
+              "must hold no HerdPlan node: the marker belongs to segment_body", self.herd_body)
+        _need(self, "segment_body",
+              sum(isinstance(n, HerdPlan) for n in _walk(self.segment_body)) == 1,
+              "the HerdPlan node must not be nested inside a LoopPlan or a BranchNode",
+              self.segment_body)
         nodes = tuple(_walk(self.segment_body)) + tuple(_walk(self.herd_body))
         seen_buffers: dict[str, BufferPlan] = {}
         for buffer in self.tensors + self.buffers + tuple(
@@ -1131,7 +1160,7 @@ class ToolchainError(SpatialError):
 # --------------------------------------------------------------------------------------------
 
 _TAGGED: tuple[type, ...] = (Expr, Load, Const, BinOp, Neg, MaxMin, Select, StoreNode,
-                             BranchNode, BufferPlan, ChannelSite, LoopPlan)
+                             BranchNode, BufferPlan, ChannelSite, LoopPlan, HerdPlan)
 _TAG_REGISTRY = {cls.__name__: cls for cls in _TAGGED}
 
 

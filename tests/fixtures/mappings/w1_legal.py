@@ -37,6 +37,7 @@ def kernel() -> KernelModel:
             Param(name="C", dtype=Dtype.f32, shape=("M", "N"), is_written=True),
         ),
         shape_params=("K", "M", "N"),
+        bindings=(("K", 64), ("M", 64), ("N", 64)),     # `M = N = K = 64`, SOURCE line 1
         # i(0, M, 1, extent 64, depth 0), j(...64..., 1), k(...64..., 2)
         axes=(
             Axis(name="i", lo=ZERO, hi=lin("M"), step=ONE, extent=64, parent=None, depth=0),

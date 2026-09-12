@@ -78,7 +78,7 @@ ACCESS = AccessMap("A", ((1, 0),), (E0,), True)
 STATEMENT = Statement("assign", ACCESS, (ACCESS,), None, ("i",), 7)
 DEPENDENCE = Dependence((1, 0), "RAW", "A")
 REDUCTION = ReductionSpec("A", ((1, 0),), ((0, 1),), "+")
-KERNEL = KernelModel("k", "def k(): ...", (PARAM,), ("M",), (AXIS,), (STATEMENT,),
+KERNEL = KernelModel("k", "def k(): ...", (PARAM,), ("M",), (("M", 4),), (AXIS,), (STATEMENT,),
                      (DEPENDENCE,), None)
 
 STREAM = StreamClause("A", "broadcast", "py", None, None)
@@ -117,7 +117,7 @@ SUMMARY = MappingSummary(("herd: 2x2 logical",), (("A", "resident for the whole 
                          (2, 2), (1, 2), (2, 1), ("{}", "{e_k}"), 1024, 65536,
                          (("A2L1", (1,), None),))
 PLAN = MappingPlan(LEGAL, (TENSOR,), "launch", "segment", HERD, (BUFFER,), (CHANNEL,),
-                   (PUT,), (GET, LOOP, BRANCH), (("A", "MULTICAST", "py", True),), SUMMARY)
+                   (PUT, HERD), (GET, LOOP, BRANCH), (("A", "MULTICAST", "py", True),), SUMMARY)
 EMIT = EmitResult("module {}\n", "npu1", PLAN, SUMMARY, 1024)
 DIAGNOSTIC = Diagnostic("CLAUSE-BAD-ENUM", "clause", 'stream("A", pattern="nope")',
                         "pattern 'nope' is not one of broadcast/forward/cascade",
@@ -333,6 +333,22 @@ CASES: list[tuple] = [
     ("I72", Diagnostic, dict(clause=None), ValueError, "required for a clause diagnostic"),
     ("I73", Diagnostic, dict(details={"x": object()}), TypeError, "not JSON-serialisable"),
     ("I73", Diagnostic, dict(details={1: "x"}), TypeError, "keys must be str"),
+    ("I74", KernelModel, dict(bindings=()), ValueError, "one entry per shape_params name"),
+    ("I74", KernelModel, dict(bindings=(("N", 4),)), ValueError,
+     "one entry per shape_params name"),
+    ("I74", KernelModel, dict(shape_params=("M", "N"), bindings=(("N", 4), ("M", 4))),
+     ValueError, "one entry per shape_params name"),
+    ("I75", MappingPlan, dict(segment_body=(PUT,)), ValueError,
+     "exactly one HerdPlan node at top level"),
+    ("I75", MappingPlan, dict(segment_body=(PUT, HERD, HERD)), ValueError,
+     "exactly one HerdPlan node at top level"),
+    ("I76", MappingPlan,
+     dict(segment_body=(PUT, dataclasses.replace(HERD, name="not_the_herd"))),
+     ValueError, "must equal MappingPlan.herd"),
+    ("I77", MappingPlan, dict(herd_body=(GET, HERD)), ValueError, "must hold no HerdPlan node"),
+    ("I77", MappingPlan,
+     dict(segment_body=(PUT, HERD, LoopPlan("k", E0, E4, E1, "sequential", 0, (HERD,)))),
+     ValueError, "must not be nested inside a LoopPlan"),
 ]
 
 
@@ -458,6 +474,9 @@ def test_json_tags_the_expr_and_plan_node_unions():
     assert json.loads(to_json(E0))["__type__"] == "Expr"
     body = json.loads(to_json(PLAN))["herd_body"]
     assert [node["__type__"] for node in body] == ["ChannelSite", "LoopPlan", "BranchNode"]
+    # §5.6 invariant 8: the herd marker is a tagged node, so segment_body round-trips (v4).
+    assert [node["__type__"] for node in json.loads(to_json(PLAN))["segment_body"]] \
+        == ["ChannelSite", "HerdPlan"]
     assert json.loads(to_json(STORE))["expr"]["__type__"] == "BinOp"
 
 
@@ -580,5 +599,5 @@ def test_schedule_model_is_pure_data():
     assert hash(SCHEDULE)
 
 
-def test_contract_version_is_three():
-    assert m.CONTRACT_VERSION == 3
+def test_contract_version_is_four():
+    assert m.CONTRACT_VERSION == 4

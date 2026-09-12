@@ -368,3 +368,94 @@ tested against synthetic text and the `pairs` pipeline is exercised by
 output, because M5 does not exist yet); `air-runner`; `tool_env`'s Peano fallback branch on a
 machine without `llvm-aie`; and every M3/M4 check — the four `LegalMapping`s are **literals**,
 not checker output, so nothing here proves M3 will agree with them.
+
+---
+
+# Phase P0d — CONTRACT_VERSION 4 applied (architect ruling)
+
+*Person B, 2026-09-13. The architect's ruling of 2026-09-13 on B-P7 and B-P9, plus the three LLD
+corrections P0c's measurements forced. Two additions to the frozen interface, nothing else.
+**Not pushed** — the architect verifies and pushes.*
+
+## Landed
+
+| # | What | Where |
+|---|---|---|
+| 1 | `CONTRACT_VERSION = 4`, with a *Version 4* paragraph naming both forcing requirements | `design/06-interfaces.md` header, `spatial/model.py` |
+| 2 | **`HerdPlan` ∈ `PlanNode`.** `MappingPlan.segment_body` holds exactly one `HerdPlan`, at top level, `== MappingPlan.herd`; it marks where M5 opens `air.herd` and walks `herd_body`. Forced by FR-E1 + D-14 | `06-interfaces.md` §5.5, §5.6 (invariant **8**), `spatial/model.py` `I75`-`I77` |
+| 3 | **`KernelModel.bindings`** — the integer value of every shape parameter at capture, one entry per `shape_params` name, sorted. Forced by FR-M7 (`TENSOR_PLAN` needs concrete L3 shapes) | `06-interfaces.md` §2.7, `spatial/model.py` `I74` |
+| 4 | §2.1's `shape` meaning is now normative: a positive int, a shape-parameter NAME, or — for an expression that is not a bare NAME (`MQ + 1`) — the int it evaluates to under `bindings` at capture. That is P0c reading 6 | `06-interfaces.md` §2.1 |
+| 5 | §5.2 `ChannelSite.order`: "strictly increasing within a **body**" | `06-interfaces.md` §5.2 |
+| 6 | Signature row `06-interfaces.md v4` (unticked) and change-log row 4; §3's Interfaces row now reads `CONTRACT_VERSION = 4`, v4 pending signatures | `design/00-README.md` §3, §4 |
+| 7 | `_TAGGED` gains `HerdPlan`, so a `segment_body` carrying the marker round-trips through §8's canonical JSON | `spatial/model.py` |
+| 8 | Four `bindings` literals; the W1 plan's `segment_body` is now `(FILL_A, FILL_B, herd, DRAIN)` — the `HerdPlan` at **index 2**, which is §6.1 line 6's `<HERD>` | `tests/fixtures/mappings/*.py`, `tests/fixtures/plans/w1_plan.py` |
+| 9 | Negatives for `I74`-`I77`; `test_w1_plan_marks_the_herd_position`; `bindings` asserted per literal and across the W2 parametrisation | `tests/unit/test_m0_model.py`, `tests/unit/test_fixture_literals.py` |
+| 10 | M6 §3.2's `ERROR_LINE` replaced by the pattern in `spatial/m6_tools.py`, with the measured `exit1_with_error.txt` line cited | `design/03-lld-M6-toolchain.md` §3.2 |
+| 11 | M4 §3.3 line 23 `sorted(out, key=name)` → `tuple(out)  # allocation order` — the frozen contract wins | `design/03-lld-M4-mapping.md` §3.3 |
+| 12 | M4 §3.1 and M5 §3.1: the `<HERD>` marker **is** the `HerdPlan` node in `segment_body` | `design/03-lld-M4-mapping.md`, `design/03-lld-M5-emitter.md` |
+
+Counts: **77** invariants (`I01`-`I77`) / **116** negative cases / 33 classes with a minimal
+instance.
+
+## Verified (command → result)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `.venv/bin/python -m pytest` | **391 passed, 1 deselected** in 0.59 s (was 381 before this phase) |
+| 2 | `PYTHONHASHSEED=1 .venv/bin/python -m pytest` | 391 passed, 1 deselected |
+| 3 | `PYTHONHASHSEED=2 .venv/bin/python -m pytest` | 391 passed, 1 deselected |
+| 4 | `.venv/bin/python -c "import spatial; print(spatial.CONTRACT_VERSION)"` | `4` |
+| 5 | the M6 §3.2 regex compiled from the document, compared to `m6_tools.ERROR_LINE` and run over `tests/fixtures/stderr/exit1_with_error.txt` | patterns and flags identical; matches `loc("malformed.mlir":15:39): error: use of undeclared SSA value name` |
+
+## Blockers closed
+
+| # | Resolution |
+|---|---|
+| **B-P7** | **Closed by change 2.** The herd's position is a `HerdPlan` node in `segment_body`, not a positional rule: `PlanNode` gains the member, `06-interfaces.md` §5.6 invariant 8 states it, M0 enforces it (`I75`-`I77`) and the W1 literal carries it at index 2. M5 no longer has to infer anything (D-14). |
+| **B-P9** | **Closed by changes 3 and 4.** The doc's `S i32 ("MQ+1","NR+1")` is shorthand: a shape entry that is not a bare NAME resolves to an int under `bindings` at capture, which §2.1 now says normatively. M0's `I06` and §2.1's "every `str` entry appears in `shape_params`" are unchanged, so the P0c literals stand as written. |
+| **B-P8** | **Closed by change 10.** `03-lld-M6-toolchain.md` §3.2 now carries the two-alternative `loc` group already in `spatial/m6_tools.py`, and cites the measured line. Code and document agree; no code change was needed. |
+| **B-P11** | **Closed by change 5.** §5.2's `order` invariant now reads "strictly increasing within a body", which is what the W1 literal does and what §6.1's three given numbers pin. |
+| *(the `plan.buffers` note, P0c reading 14)* | **Closed by change 11.** M4 §3.3 line 23 no longer contradicts §5.6's "in allocation order". |
+
+## One deviation from the ruling, for the architect to settle at signature time
+
+The ruling's wording for `KernelModel.bindings` was, verbatim:
+
+> `KernelModel` gains `bindings: tuple[tuple[str, int], ...]` — the integer value of every shape
+> parameter at capture, sorted by name, **exactly one entry per `shape_params` name**, every
+> value ≥ 1.
+
+**The `every value ≥ 1` half is not enforced, and §2.7 records the exception.** Enforcing it at
+M0 would make a §6.3 error code unreachable: `03-lld-M3-checker.md` §9 `test_L14_swap_parity`
+says of W2's `T = 0` fixture that
+
+> `T = 0` is the **only** reachable `SWAP-PARITY` condition after the D-4 override, so without
+> this fixture `test_D3_catalogue_complete` fails
+
+and `T` is in W2's `shape_params`, so `bindings` must be able to carry `("T", 0)`. The same
+fixture is named in `04-test-plan.md` §4, `03-lld-M8-kernels-demo.md` §4, `REVIEW-round1.md`
+G-11 and `01-requirements.md` Q-C16. `spatial/model.py`'s own Q-M2-3 rule — M0 enforces only
+structural, object-local invariants, "so that the error codes of `06-interfaces.md` §6.3 stay
+reachable" — points the same way. M0 therefore checks the names and the order; §2.7's invariant
+column states the bound **and** the exception, and `I74`'s docstring line says why.
+**If the architect prefers the bound enforced, the `w2_zero_t` negative needs another vehicle
+first.**
+
+Two smaller corrections, applied silently because they are citations, not decisions: the brief
+cited `Q-M1-2` as `M3 §10`; it is **`03-lld-M1-frontend.md` §10**, and that is what §6.4's
+Version 4 paragraph cites. And `w1flip_legal.py` needed no `bindings` edit — it imports
+`kernel` from `w1_legal`, so FR-K2's "the flip is a schedule edit, not a source edit" gives it
+the W1 bindings for free; `test_fixture_literals` asserts the value for both.
+
+## Open / blockers
+
+| # | Item | Detail |
+|---|---|---|
+| **v4 signatures** | A and C have not signed | `00-README.md` §4's process needs all three. **A** is affected: M1 must now emit `bindings` (it already reads the integer bindings at `03-lld-M1-frontend.md` §3.4 line 18) and M3 passes the `KernelModel` through unchanged. **C** is affected: nothing in M6/M7/M8 may construct a `HerdPlan` node anywhere but the top level of `segment_body`, and any hand-written plan fixture needs the marker. |
+| **B-P10** | still open | M1 §6.2's dependence list is not in M0's sort order — a re-ordering of five lines in the document, Person A's. |
+| **B-P5**, **B-P6** | unchanged from P0c | — |
+
+**Not verified in this phase**: nothing new was measured. The one measurement quoted (the
+`aircc` `loc(...)` spelling) is P0c's, re-checked against the committed fixture rather than
+re-run against the tool. M3 and M4 still do not exist, so nothing here proves the checker will
+produce these `bindings` or that M4 will place the `HerdPlan` where the W1 literal does.

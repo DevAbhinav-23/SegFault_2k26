@@ -63,7 +63,7 @@ negotiable inside the week.
 |---|---|---|---|
 | Requirements | **drafted** | — | — |
 | HLD | **drafted** | — | — |
-| Interfaces | **drafted at `CONTRACT_VERSION = 3`, not yet signed**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze | all three | **D0** |
+| Interfaces | **drafted at `CONTRACT_VERSION = 4`, v4 pending signatures**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze | all three | **D0** |
 | Per-module LLDs (M1…M8 + B's probe log) | **drafted**, revised per REVIEW-round1 | per module | — |
 | Design review round 1 | **answered** — `RESPONSE-review1.md` | — | — |
 | Test plan | **drafted** | — | — |
@@ -129,6 +129,7 @@ fails without it.** By then the cost of churn exceeds the cost of an ugly interf
 | Document | Person A | Person B | Person C | Date |
 |---|---|---|---|---|
 | `06-interfaces.md` v3 | ☐ | ☐ | ☐ | |
+| `06-interfaces.md` v4 | ☐ | ☐ | ☐ | |
 
 *Sign **v3**, not v1 or v2: the round-1 review found eleven holes in the contract and RULING 9
 found a twelfth, and a freeze over a contract with known holes is worse than a one-hour delay
@@ -141,6 +142,7 @@ found a twelfth, and a freeze over a contract with known holes is worse than a o
 | 1 | 2026-09-12 | initial | — | superseded before D0 |
 | 2 | 2026-09-12 | §5.5 `ComputeNode` → `StoreNode` + the `ExprNode` tree (`Load`/`Const`/`BinOp`/`Neg`/`MaxMin`/`Select`); §5.5 `BranchNode` added to `PlanNode`; §5.5 `LoopPlan.axis` synthetic-name footnote; §4.1 `LegalMapping.pi_u`, `.ker_pi_u` and the two-frame note; §5.2 `ChannelSite.id`; §5.3 `ChannelPlan.chain_direction`; §5.6 `MappingPlan.launch_name`, `.segment_name`, the `tensors` construction rule and invariants 6-7; §6.3 `GRAMMAR-NONUNIFORM-DEP` and `DMA-CHANNELS` (catalogue 41 → **43**); §8 the closed `<variant>` vocabulary | REVIEW-round1 B-3, B-4, B-5, B-9, B-10, B-13 | *(pending D0)* |
 | 3 | 2026-09-12 | §5.7 `MappingSummary.residency` — one `(operand, duration)` pair per operand — and the residency line each pair renders into `lines` (`03-lld-M4-mapping.md` §3.9 computes it) | architect **RULING 9**: the stationarity predicate is spatial, so "stationary" alone does not say how long an operand stays in L1 (FR-M11, FR-D2) | *(pending D0)* |
+| 4 | 2026-09-13 | §5.5 `HerdPlan` ∈ `PlanNode`, §5.6 `segment_body` carries exactly one `HerdPlan` == `herd` (invariant 8); §2.7 `KernelModel.bindings`; §2.1 expression shape entries resolve to ints at capture; §5.2 `order` per body | FR-E1 + D-14 (B-P7); FR-M7 + Q-M1-2 (B-P9) | *proposed by B's architect 2026-09-13; pending A, B, C signatures* |
 
 ---
 

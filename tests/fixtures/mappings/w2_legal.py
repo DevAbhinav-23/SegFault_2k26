@@ -56,6 +56,7 @@ def kernel(T: int = 4) -> KernelModel:
         # the bare NAME `W` stays symbolic. See design/PROGRESS-B.md, phase P0c.
         params=(Param(name="U", dtype=Dtype.f32, shape=(T + 1, H + 2, "W"), is_written=True),),
         shape_params=("H", "T", "W"),
+        bindings=(("H", H), ("T", T), ("W", W)),        # `T = {T}; H = W = 16`, SOURCE line 1
         # t(0, T, 1, extent T), i(1, H+1, 1, extent 16), j(1, W-1, 1, extent 14)
         axes=(
             Axis(name="t", lo=ZERO, hi=lin("T"), step=ONE, extent=T, parent=None, depth=0),

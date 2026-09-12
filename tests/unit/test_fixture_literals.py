@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from spatial.model import LegalMapping, MappingPlan, from_json, to_json
+from spatial.model import HerdPlan, LegalMapping, MappingPlan, from_json, to_json
 from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 
@@ -43,6 +43,7 @@ EXPECTED = {
         herd={"npu1": ((1, 2), (2, 1)), "npu2": ((2, 2), (1, 1))},
         params=("A", "B", "C"),
         dependences=((((0, 0, 1)), "RAW", "C"),),
+        bindings=(("K", 64), ("M", 64), ("N", 64)),
     ),
     # §6.2: axes = (i0, i1, j, k0, k1), extents (2, 32, 64, 4, 16); Sπ = [e_k0]
     "w1flip": dict(
@@ -62,6 +63,7 @@ EXPECTED = {
         herd={"npu1": ((4,), (1,)), "npu2": ((4,), (1,))},
         params=("A", "B", "C"),
         dependences=((((0, 0, 1)), "RAW", "C"),),
+        bindings=(("K", 64), ("M", 64), ("N", 64)),      # the same kernel text as W1
     ),
     # §6.3: axes = (t, i0, i1, j), extents (4, 2, 8, 14); UCoord = (t, i, j)
     "w2": dict(
@@ -82,6 +84,7 @@ EXPECTED = {
         dependences=(((1, -1, 0), "RAW", "U"), ((1, 0, -1), "RAW", "U"),
                      ((1, 0, 0), "RAW", "U"), ((1, 0, 1), "RAW", "U"),
                      ((1, 1, 0), "RAW", "U")),
+        bindings=(("H", 16), ("T", 4), ("W", 16)),       # at the default T = 4
     ),
     # §6.4: axes = (i, j0, j1), extents (32, 4, 8); UCoord = (i, j)
     "w3": dict(
@@ -100,6 +103,7 @@ EXPECTED = {
         herd={"npu1": ((4,), (1,)), "npu2": ((4,), (1,))},
         params=("q", "r", "S"),                         # read-only first (§5.6 invariant 6)
         dependences=(((0, 1), "RAW", "S"), ((1, 0), "RAW", "S"), ((1, 1), "RAW", "S")),
+        bindings=(("MQ", 32), ("NR", 32)),
     ),
 }
 
@@ -137,6 +141,9 @@ def test_mapping_fields(workload, target):
     assert tuple(p.name for p in got.kernel.params) == want["params"]
     assert tuple((d.vector, d.kind, d.operand) for d in got.kernel.dependences) \
         == want["dependences"]
+    # §2.7 at CONTRACT_VERSION 4: one binding per shape parameter, sorted by name.
+    assert got.kernel.bindings == want["bindings"]
+    assert tuple(n for n, _ in got.kernel.bindings) == got.kernel.shape_params
 
 
 def test_two_frames(workload):
@@ -255,6 +262,7 @@ def test_w2_parametrisation(T, PI, extents, l1, grid):
     assert got.schedule.grid == grid
     assert got.schedule.tiles == (("i", 16 // PI),)             # PI·HS == H == 16
     assert got.kernel.params[0].shape == (T + 1, 18, "W")       # U carries the halo
+    assert got.kernel.bindings == (("H", 16), ("T", T), ("W", 16))
     assert f"T = {T};" in got.kernel.source
 
 
@@ -279,6 +287,16 @@ def test_w1_plan_constructs_and_round_trips(target):
     assert got.delivery == (("A", "MULTICAST", "py", False),
                             ("B", "MULTICAST", "px", False),
                             ("C", "STATIONARY", None, False))
+
+
+@pytest.mark.parametrize("target", TARGETS)
+def test_w1_plan_marks_the_herd_position(target):
+    """§6.1 line 6 `<HERD>` is the `HerdPlan` node at `segment_body` index 2 (§5.6 inv. 8)."""
+    got = w1_plan.plan(target)
+    assert [type(n).__name__ for n in got.segment_body] \
+        == ["LoopPlan", "LoopPlan", "HerdPlan", "LoopPlan"]
+    assert got.segment_body[2] == got.herd
+    assert not any(isinstance(n, HerdPlan) for n in got.herd_body)
 
 
 def test_w1_plan_summary_first_six_lines():

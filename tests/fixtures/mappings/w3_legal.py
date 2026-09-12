@@ -47,6 +47,7 @@ def kernel() -> KernelModel:
             Param(name="S", dtype=Dtype.i32, shape=(MQ + 1, NR + 1), is_written=True),
         ),
         shape_params=("MQ", "NR"),
+        bindings=(("MQ", MQ), ("NR", NR)),              # `MQ = NR = 32`, SOURCE line 1
         # i(1, MQ+1, 1, extent 32), j(1, NR+1, 1, extent 32)
         axes=(
             Axis(name="i", lo=const(1), hi=lin("MQ", 1, 1), step=ONE, extent=MQ,

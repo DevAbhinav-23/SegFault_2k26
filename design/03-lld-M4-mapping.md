@@ -66,6 +66,8 @@ separately unit-testable; the order is a topological sort of what needs what.
  5      channels := CHANNEL_PLAN(mapping, delivery, herd, buffers)   # §3.4-3.5
  6      loops    := LOOP_PLAN(mapping, buffers)                # §3.5
  7      bodies   := PROTOCOL(mapping, delivery, herd, buffers, channels, loops)  # §3.6
+ 7a     #   bodies.segment_body carries `herd` itself as its one HerdPlan node, at top level:
+ 7b     #   that node IS the herd's position (`06-interfaces.md` §5.6 invariant 8, v4)
  8      plan     := MappingPlan(tensors=tensors, herd=herd, ...,
  8a                             launch_name  = mapping.kernel.name,
  8b                             segment_name = f"{mapping.kernel.name}_seg",
@@ -196,7 +198,7 @@ broadcast axis and `g % 1 = 0` on it), which is the rule `_channel.py:137-145` e
 20                                loop_depth  = DEPTH(a, delivery, mapping),
 21                                ping_pong_candidate = PP(a, delivery, mapping)))
 22      out += PROTOCOL_BUFFERS(mapping)                          # u/v pair, edge_in/edge_out, recv
-23      return sorted(out, key=name)
+23      return tuple(out)                                      # allocation order, 06-interfaces §5.6
 24
 24a function TENSOR_PLAN(mapping) -> tuple[BufferPlan]:           # MappingPlan.tensors, FR-M7
 24b     reads  := [ p for p in mapping.kernel.params if not p.is_written ]   # declaration order

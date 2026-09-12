@@ -6,7 +6,17 @@ sign it in `00-README.md` §4 and a version bump of `CONTRACT_VERSION` below.*
 **This file is specification text, not code.** Field lists and signatures describe what must be
 built; no implementation exists.
 
-`CONTRACT_VERSION = 3`
+`CONTRACT_VERSION = 4`
+
+*Version 4 (architect ruling, 2026-09-13) adds two things P0c's measurements proved missing.
+`HerdPlan` joins the `PlanNode` union and `MappingPlan.segment_body` carries exactly one
+`HerdPlan` node, at top level, equal to `MappingPlan.herd` — it marks where the emitter opens
+`air.herd` and walks `herd_body`; forcing requirement: FR-E1's launch/segment/herd nesting
+together with D-14, since without the marker M5 would have to infer the herd's position from
+site kinds. `KernelModel.bindings` records the integer value of every shape parameter at
+capture; forcing requirement: FR-M7, because `TENSOR_PLAN` must produce concrete L3 shapes and
+M4 has no other source for them (`03-lld-M1-frontend.md` §10 Q-M1-2 already says the bindings are
+recorded in the model). Signed in `00-README.md` §4.*
 
 *Version 3 (architect RULING 9, pre-D0) adds `MappingSummary.residency` and the residency
 lines it renders: the stationarity predicate is spatial, so a summary that says only
@@ -51,7 +61,7 @@ All dataclasses in this document are **frozen** (immutable), with tuples rather 
 |---|---|---|---|
 | `name` | `str` | the Python parameter name | a valid identifier; unique within a kernel |
 | `dtype` | `Dtype` | element type from the annotation | — |
-| `shape` | `tuple[int \| str, ...]` | per-dim extent: a positive int, or a shape-parameter name | rank ≥ 1; every `str` entry appears in `KernelModel.shape_params` |
+| `shape` | `tuple[int \| str, ...]` | per-dim extent: a positive int, a shape-parameter NAME, or — when the annotation entry is an expression that is not a bare NAME, e.g. `MQ + 1` — the int it evaluates to under `KernelModel.bindings` at capture | rank ≥ 1; every `str` entry appears in `KernelModel.shape_params` |
 | `is_written` | `bool` | the body assigns to it | at least one param has `is_written` |
 
 ### 2.2 `Axis`
@@ -109,6 +119,7 @@ All dataclasses in this document are **frozen** (immutable), with tuples rather 
 | `source` | `str` | the exact source text captured | — |
 | `params` | `tuple[Param, ...]` | in declaration order | — |
 | `shape_params` | `tuple[str, ...]` | sorted names of symbolic extents | — |
+| `bindings` | `tuple[tuple[str, int], ...]` | the integer value of every shape parameter at capture | one entry per `shape_params` name, sorted by name, values ≥ 1 — **except** a parameter bound to `0` to reach a §6.3 code (W2's `T = 0`, the only reachable `SWAP-PARITY` condition, `03-lld-M3-checker.md` §9). M0 therefore enforces the names and the order, and leaves the bound to M2/M3 (Q-M2-3) |
 | `axes` | `tuple[Axis, ...]` | outermost first | names unique |
 | `statements` | `tuple[Statement, ...]` | in source order | ≥ 1 |
 | `dependences` | `tuple[Dependence, ...]` | sorted by `(operand, vector)` | — |
@@ -210,7 +221,7 @@ and no reference to the kernel function. It is serialisable to JSON by field ord
 | `guard` | `Guard \| None` | an `ops.branch` condition on herd coordinates | never a Python `if` (`_cond.py:41-45`) |
 | `is_async` | `bool` | emitted in asynchronous form | — |
 | `depends_on` | `tuple[str, ...]` | `ChannelSite.id` values this site takes a token from | **empty for the halo gets** (FR-M4) |
-| `order` | `int` | position in the enclosing body | strictly increasing within a scope |
+| `order` | `int` | position in the enclosing body | strictly increasing within a body |
 
 `Region`: `(offsets: tuple[Expr, ...], sizes: tuple[int, ...], strides: tuple[int, ...])`.
 `Guard`: `(coord: str, relation: "==" | "!=" | "<" | "<=" | ">" | ">=", value: Expr)`.
@@ -250,7 +261,11 @@ and no reference to the kernel function. It is serialisable to JSON by field ord
 `LoopPlan.axis` is a kernel axis name, **or** a plan-synthesised name for a bundle-index or a
 drain loop (`<operand>_bundle`, `<operand>_drain`), which no `KernelModel.axes` entry matches.
 
-`PlanNode` is the union `BufferPlan | ChannelSite | LoopPlan | StoreNode | BranchNode`.
+`PlanNode` is the union `BufferPlan | ChannelSite | LoopPlan | StoreNode | BranchNode | HerdPlan`.
+
+A `HerdPlan` node may appear only in `MappingPlan.segment_body`, exactly once and at top level,
+and must equal `MappingPlan.herd`; it marks where the emitter opens the herd and walks
+`herd_body`.
 
 `StoreNode`: `(buffer_id: str, subscripts: tuple[Expr, ...], expr: ExprNode)` — one store of one
 expression tree into one buffer. `ExprNode` is the frozen union
@@ -297,7 +312,7 @@ further `BranchNode`s. `ChannelSite.guard` stays for the single-site case and is
 | `herd` | `HerdPlan` | — | — |
 | `buffers` | `tuple[BufferPlan, ...]` | non-L3 buffers, in allocation order | — |
 | `channels` | `tuple[ChannelPlan, ...]` | sorted by name | — |
-| `segment_body` | `tuple[PlanNode, ...]` | nodes emitted at segment scope, before and after the herd | — |
+| `segment_body` | `tuple[PlanNode, ...]` | nodes emitted at segment scope, before and after the herd | contains exactly one `HerdPlan` node, at top level, `== herd` |
 | `herd_body` | `tuple[PlanNode, ...]` | nodes emitted inside the herd body | — |
 | `delivery` | `tuple[tuple[str, Delivery, str \| None, bool], ...]` | `(operand, delivery, along PE axis, declared)` | one per operand |
 | `summary` | `MappingSummary` | see §5.7 | — |
@@ -326,6 +341,10 @@ further `BranchNode`s. `ChannelSite.guard` stays for the single-site case and is
    `scope == "tensor"`, and `tensors` is the only place an L3 `BufferPlan` is created.
 7. **Names**: `launch_name` and `segment_name` are set by M4 and emitted verbatim by M5, which
    derives no name.
+8. **Herd position**: `segment_body` contains exactly one `HerdPlan` node, at top level — never
+   nested inside a `LoopPlan` or a `BranchNode` arm, and never in `herd_body` — and it equals
+   `herd`. It is the position at which M5 opens `air.herd` and walks `herd_body`; without it M5
+   would have to infer the herd's position from site kinds, which D-14 forbids.
 
 ### 5.7 `MappingSummary`
 
