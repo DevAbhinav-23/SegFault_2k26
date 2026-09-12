@@ -1,0 +1,4 @@
+tests/fixtures/modules/unpaired_channel.mlir:15:7: error: 'air.channel.put' op found channel op not in pairs
+      air.channel.put @C[%c0b, %c0b] (%alloc[] [] []) : (memref<32xi32, 1>)
+      ^
+tests/fixtures/modules/unpaired_channel.mlir:15:7: note: see current operation: %3 = "air.channel.put"(%2#0, %1, %1, %2#1) <{chan_name = @C, operandSegmentSizes = array<i32: 1, 2, 1, 0, 0, 0, 0>, static_src_offsets = array<i64>, static_src_sizes = array<i64>, static_src_strides = array<i64>}> {id = 1 : i32} : (!air.async.token, index, index, memref<32xi32, 1>) -> !air.async.token

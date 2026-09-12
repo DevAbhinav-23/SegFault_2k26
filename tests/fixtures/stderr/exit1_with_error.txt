@@ -1,0 +1,2 @@
+loc("malformed.mlir":15:39): error: use of undeclared SSA value name
+Error parsing MLIR file: malformed.mlir
