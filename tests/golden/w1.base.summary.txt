@@ -1,0 +1,15 @@
+A: multicast along py (derived)
+B: multicast along px (derived)
+C: stationary (derived)
+A: multicast along py, re-fetched per k0
+B: multicast along px, re-fetched per k0
+C: stationary (spatial), resident for the whole run
+herd: logical (2, 2) physical (1, 2) repeats (2, 1)
+reduction (tiled axes): R_time = span{e_k0, e_k1}, R_space = {}
+  acc (32, 32) f32 = 4096 B
+  a (32, 16) f32 = 2048 B  x2 (ping-pong)
+  b (16, 32) f32 = 2048 B  x2 (ping-pong)
+L1: 12288 of 65536 bytes
+  A2L1 size=(2, 1) broadcast_shape=(2, 2)
+  B2L1 size=(1, 2) broadcast_shape=(2, 2)
+  C2L3 size=(2, 2)

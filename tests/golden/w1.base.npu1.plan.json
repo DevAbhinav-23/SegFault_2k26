@@ -1,0 +1,1957 @@
+{
+  "buffers": [
+    {
+      "__type__": "BufferPlan",
+      "bytes": 4096,
+      "dtype": "f32",
+      "level": "L1",
+      "loop_depth": 0,
+      "name": "acc",
+      "operand": "C",
+      "ping_pong_candidate": false,
+      "scope": "herd.private",
+      "shape": [
+        32,
+        32
+      ]
+    },
+    {
+      "__type__": "BufferPlan",
+      "bytes": 2048,
+      "dtype": "f32",
+      "level": "L1",
+      "loop_depth": 1,
+      "name": "a",
+      "operand": "A",
+      "ping_pong_candidate": true,
+      "scope": "herd.private",
+      "shape": [
+        32,
+        16
+      ]
+    },
+    {
+      "__type__": "BufferPlan",
+      "bytes": 2048,
+      "dtype": "f32",
+      "level": "L1",
+      "loop_depth": 1,
+      "name": "b",
+      "operand": "B",
+      "ping_pong_candidate": true,
+      "scope": "herd.private",
+      "shape": [
+        16,
+        32
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "broadcast_shape": [
+        2,
+        2
+      ],
+      "chain_direction": null,
+      "channel_type": null,
+      "dtype": "f32",
+      "name": "A2L1",
+      "sites": [
+        {
+          "__type__": "ChannelSite",
+          "buffer": "A",
+          "channel": "A2L1",
+          "depends_on": [],
+          "guard": null,
+          "id": "A2L1.put.0@segment",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "pi_bundle",
+                  1
+                ]
+              ],
+              "const": 0
+            },
+            {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 0,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "pi_bundle",
+                    32
+                  ]
+                ],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "k0",
+                    1
+                  ]
+                ],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              32,
+              16
+            ],
+            "strides": [
+              64,
+              1
+            ]
+          },
+          "scope": "segment"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "a",
+          "channel": "A2L1",
+          "depends_on": [],
+          "guard": null,
+          "id": "A2L1.get.2@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            },
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "ty",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 2,
+          "region": {
+            "offsets": [],
+            "sizes": [],
+            "strides": []
+          },
+          "scope": "herd"
+        }
+      ],
+      "size": [
+        2,
+        1
+      ]
+    },
+    {
+      "broadcast_shape": [
+        2,
+        2
+      ],
+      "chain_direction": null,
+      "channel_type": null,
+      "dtype": "f32",
+      "name": "B2L1",
+      "sites": [
+        {
+          "__type__": "ChannelSite",
+          "buffer": "B",
+          "channel": "B2L1",
+          "depends_on": [],
+          "guard": null,
+          "id": "B2L1.put.0@segment",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            },
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "pj_bundle",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 0,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "k0",
+                    1
+                  ]
+                ],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "pj_bundle",
+                    32
+                  ]
+                ],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              16,
+              32
+            ],
+            "strides": [
+              64,
+              1
+            ]
+          },
+          "scope": "segment"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "b",
+          "channel": "B2L1",
+          "depends_on": [],
+          "guard": null,
+          "id": "B2L1.get.3@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            },
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "ty",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 3,
+          "region": {
+            "offsets": [],
+            "sizes": [],
+            "strides": []
+          },
+          "scope": "herd"
+        }
+      ],
+      "size": [
+        1,
+        2
+      ]
+    },
+    {
+      "broadcast_shape": null,
+      "chain_direction": null,
+      "channel_type": null,
+      "dtype": "f32",
+      "name": "C2L3",
+      "sites": [
+        {
+          "__type__": "ChannelSite",
+          "buffer": "acc",
+          "channel": "C2L3",
+          "depends_on": [],
+          "guard": null,
+          "id": "C2L3.put.3@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            },
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "ty",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 3,
+          "region": {
+            "offsets": [],
+            "sizes": [],
+            "strides": []
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "C",
+          "channel": "C2L3",
+          "depends_on": [],
+          "guard": null,
+          "id": "C2L3.get.0@segment",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "i_drain",
+                  1
+                ]
+              ],
+              "const": 0
+            },
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "j_drain",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 0,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "i_drain",
+                    32
+                  ]
+                ],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "j_drain",
+                    32
+                  ]
+                ],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              32,
+              32
+            ],
+            "strides": [
+              64,
+              1
+            ]
+          },
+          "scope": "segment"
+        }
+      ],
+      "size": [
+        2,
+        2
+      ]
+    }
+  ],
+  "delivery": [
+    [
+      "A",
+      "MULTICAST",
+      "py",
+      false
+    ],
+    [
+      "B",
+      "MULTICAST",
+      "px",
+      false
+    ],
+    [
+      "C",
+      "STATIONARY",
+      null,
+      false
+    ]
+  ],
+  "herd": {
+    "__type__": "HerdPlan",
+    "at": null,
+    "coords": [
+      "tx",
+      "ty"
+    ],
+    "grid": [
+      2,
+      2
+    ],
+    "name": "gemm_herd",
+    "shape": [
+      1,
+      2
+    ]
+  },
+  "herd_body": [
+    {
+      "__type__": "BufferPlan",
+      "bytes": 4096,
+      "dtype": "f32",
+      "level": "L1",
+      "loop_depth": 0,
+      "name": "acc",
+      "operand": "C",
+      "ping_pong_candidate": false,
+      "scope": "herd.private",
+      "shape": [
+        32,
+        32
+      ]
+    },
+    {
+      "__type__": "LoopPlan",
+      "axis": "m0",
+      "body": [
+        {
+          "__type__": "LoopPlan",
+          "axis": "n0",
+          "body": [
+            {
+              "__type__": "StoreNode",
+              "buffer_id": "acc",
+              "expr": {
+                "__type__": "Const",
+                "dtype": "f32",
+                "text": "0.0",
+                "value": 0.0
+              },
+              "subscripts": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "m0",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "n0",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                }
+              ]
+            }
+          ],
+          "depth": 1,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 32
+          },
+          "kind": "sequential",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        }
+      ],
+      "depth": 0,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 32
+      },
+      "kind": "sequential",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 1
+      }
+    },
+    {
+      "__type__": "LoopPlan",
+      "axis": "k0",
+      "body": [
+        {
+          "__type__": "BufferPlan",
+          "bytes": 2048,
+          "dtype": "f32",
+          "level": "L1",
+          "loop_depth": 1,
+          "name": "a",
+          "operand": "A",
+          "ping_pong_candidate": true,
+          "scope": "herd.private",
+          "shape": [
+            32,
+            16
+          ]
+        },
+        {
+          "__type__": "BufferPlan",
+          "bytes": 2048,
+          "dtype": "f32",
+          "level": "L1",
+          "loop_depth": 1,
+          "name": "b",
+          "operand": "B",
+          "ping_pong_candidate": true,
+          "scope": "herd.private",
+          "shape": [
+            16,
+            32
+          ]
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "a",
+          "channel": "A2L1",
+          "depends_on": [],
+          "guard": null,
+          "id": "A2L1.get.2@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            },
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "ty",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 2,
+          "region": {
+            "offsets": [],
+            "sizes": [],
+            "strides": []
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "b",
+          "channel": "B2L1",
+          "depends_on": [],
+          "guard": null,
+          "id": "B2L1.get.3@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            },
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "ty",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 3,
+          "region": {
+            "offsets": [],
+            "sizes": [],
+            "strides": []
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "LoopPlan",
+          "axis": "m",
+          "body": [
+            {
+              "__type__": "LoopPlan",
+              "axis": "n",
+              "body": [
+                {
+                  "__type__": "LoopPlan",
+                  "axis": "t",
+                  "body": [
+                    {
+                      "__type__": "StoreNode",
+                      "buffer_id": "acc",
+                      "expr": {
+                        "__type__": "BinOp",
+                        "lhs": {
+                          "__type__": "Load",
+                          "buffer_id": "acc",
+                          "subscripts": [
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "m",
+                                  1
+                                ]
+                              ],
+                              "const": 0
+                            },
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "n",
+                                  1
+                                ]
+                              ],
+                              "const": 0
+                            }
+                          ]
+                        },
+                        "op": "+",
+                        "rhs": {
+                          "__type__": "BinOp",
+                          "lhs": {
+                            "__type__": "Load",
+                            "buffer_id": "a",
+                            "subscripts": [
+                              {
+                                "__type__": "Expr",
+                                "coeffs": [
+                                  [
+                                    "m",
+                                    1
+                                  ]
+                                ],
+                                "const": 0
+                              },
+                              {
+                                "__type__": "Expr",
+                                "coeffs": [
+                                  [
+                                    "t",
+                                    1
+                                  ]
+                                ],
+                                "const": 0
+                              }
+                            ]
+                          },
+                          "op": "*",
+                          "rhs": {
+                            "__type__": "Load",
+                            "buffer_id": "b",
+                            "subscripts": [
+                              {
+                                "__type__": "Expr",
+                                "coeffs": [
+                                  [
+                                    "t",
+                                    1
+                                  ]
+                                ],
+                                "const": 0
+                              },
+                              {
+                                "__type__": "Expr",
+                                "coeffs": [
+                                  [
+                                    "n",
+                                    1
+                                  ]
+                                ],
+                                "const": 0
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "subscripts": [
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "m",
+                              1
+                            ]
+                          ],
+                          "const": 0
+                        },
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "n",
+                              1
+                            ]
+                          ],
+                          "const": 0
+                        }
+                      ]
+                    }
+                  ],
+                  "depth": 3,
+                  "hi": {
+                    "__type__": "Expr",
+                    "coeffs": [],
+                    "const": 16
+                  },
+                  "kind": "sequential",
+                  "lo": {
+                    "__type__": "Expr",
+                    "coeffs": [],
+                    "const": 0
+                  },
+                  "step": {
+                    "__type__": "Expr",
+                    "coeffs": [],
+                    "const": 1
+                  }
+                }
+              ],
+              "depth": 2,
+              "hi": {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 32
+              },
+              "kind": "sequential",
+              "lo": {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              "step": {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              }
+            }
+          ],
+          "depth": 1,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 32
+          },
+          "kind": "sequential",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        }
+      ],
+      "depth": 0,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 64
+      },
+      "kind": "sequential",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 16
+      }
+    },
+    {
+      "__type__": "ChannelSite",
+      "buffer": "acc",
+      "channel": "C2L3",
+      "depends_on": [],
+      "guard": null,
+      "id": "C2L3.put.3@herd",
+      "indices": [
+        {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "tx",
+              1
+            ]
+          ],
+          "const": 0
+        },
+        {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "ty",
+              1
+            ]
+          ],
+          "const": 0
+        }
+      ],
+      "is_async": false,
+      "kind": "put",
+      "order": 3,
+      "region": {
+        "offsets": [],
+        "sizes": [],
+        "strides": []
+      },
+      "scope": "herd"
+    }
+  ],
+  "launch_name": "gemm",
+  "mapping": {
+    "axes": [
+      {
+        "depth": 0,
+        "extent": 2,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 2
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        },
+        "name": "i0",
+        "parent": "i",
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      {
+        "depth": 1,
+        "extent": 32,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 32
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        },
+        "name": "i1",
+        "parent": "i",
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      {
+        "depth": 2,
+        "extent": 2,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 2
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        },
+        "name": "j0",
+        "parent": "j",
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      {
+        "depth": 3,
+        "extent": 32,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 32
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        },
+        "name": "j1",
+        "parent": "j",
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      {
+        "depth": 4,
+        "extent": 4,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 4
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        },
+        "name": "k0",
+        "parent": "k",
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      {
+        "depth": 5,
+        "extent": 16,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 16
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        },
+        "name": "k1",
+        "parent": "k",
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      }
+    ],
+    "halo_footprint": [],
+    "ker_pi": [
+      [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ]
+    ],
+    "ker_pi_u": [
+      [
+        0,
+        0,
+        1
+      ]
+    ],
+    "kernel": {
+      "axes": [
+        {
+          "depth": 0,
+          "extent": 64,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [
+              [
+                "M",
+                1
+              ]
+            ],
+            "const": 0
+          },
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "name": "i",
+          "parent": null,
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        },
+        {
+          "depth": 1,
+          "extent": 64,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [
+              [
+                "N",
+                1
+              ]
+            ],
+            "const": 0
+          },
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "name": "j",
+          "parent": null,
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        },
+        {
+          "depth": 2,
+          "extent": 64,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [
+              [
+                "K",
+                1
+              ]
+            ],
+            "const": 0
+          },
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "name": "k",
+          "parent": null,
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        }
+      ],
+      "bindings": [
+        [
+          "K",
+          64
+        ],
+        [
+          "M",
+          64
+        ],
+        [
+          "N",
+          64
+        ]
+      ],
+      "dependences": [
+        {
+          "kind": "RAW",
+          "operand": "C",
+          "vector": [
+            0,
+            0,
+            1
+          ]
+        }
+      ],
+      "name": "gemm",
+      "params": [
+        {
+          "dtype": "f32",
+          "is_written": false,
+          "name": "A",
+          "shape": [
+            "M",
+            "K"
+          ]
+        },
+        {
+          "dtype": "f32",
+          "is_written": false,
+          "name": "B",
+          "shape": [
+            "K",
+            "N"
+          ]
+        },
+        {
+          "dtype": "f32",
+          "is_written": true,
+          "name": "C",
+          "shape": [
+            "M",
+            "N"
+          ]
+        }
+      ],
+      "reduction": {
+        "op": null,
+        "projection": [
+          [
+            1,
+            0,
+            0
+          ],
+          [
+            0,
+            1,
+            0
+          ]
+        ],
+        "space": [
+          [
+            0,
+            0,
+            1
+          ]
+        ],
+        "target": "C"
+      },
+      "shape_params": [
+        "K",
+        "M",
+        "N"
+      ],
+      "source": "M = N = K = 64\n\n@sp.kernel\ndef gemm(A: sp.f32[M, K], B: sp.f32[K, N], C: sp.f32[M, N]):\n    for i in range(M):\n        for j in range(N):\n            for k in range(K):\n                C[i, j] += A[i, k] * B[k, j]\n",
+      "statements": [
+        {
+          "axes": [
+            "i",
+            "j",
+            "k"
+          ],
+          "kind": "accumulate",
+          "line": 8,
+          "op": "+",
+          "reads": [
+            {
+              "is_write": false,
+              "matrix": [
+                [
+                  1,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  0,
+                  1
+                ]
+              ],
+              "offsets": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                }
+              ],
+              "operand": "A"
+            },
+            {
+              "is_write": false,
+              "matrix": [
+                [
+                  0,
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  1,
+                  0
+                ]
+              ],
+              "offsets": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                }
+              ],
+              "operand": "B"
+            }
+          ],
+          "target": {
+            "is_write": true,
+            "matrix": [
+              [
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0
+              ]
+            ],
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "operand": "C"
+          }
+        }
+      ]
+    },
+    "l1_bytes": 12288,
+    "physical_herd": [
+      1,
+      2
+    ],
+    "pi": [
+      [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ]
+    ],
+    "pi_u": [
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ]
+    ],
+    "r_space": [],
+    "r_time": [
+      [
+        0,
+        0,
+        1
+      ]
+    ],
+    "repeats": [
+      2,
+      1
+    ],
+    "schedule": {
+      "double_buffer": [
+        "A",
+        "B"
+      ],
+      "exchanges": [],
+      "grid": [
+        2,
+        2
+      ],
+      "pipeline": [
+        "k0"
+      ],
+      "place": [
+        "i0",
+        "j0"
+      ],
+      "reductions": [
+        [
+          "k",
+          "+"
+        ]
+      ],
+      "residency": [
+        [
+          "A",
+          "L1"
+        ],
+        [
+          "B",
+          "L1"
+        ],
+        [
+          "C",
+          "L1"
+        ]
+      ],
+      "sequential": [],
+      "skew": null,
+      "stationary": [
+        "C"
+      ],
+      "streams": [],
+      "target": "npu1",
+      "tiles": [
+        [
+          "i",
+          32
+        ],
+        [
+          "j",
+          32
+        ],
+        [
+          "k",
+          16
+        ]
+      ],
+      "windows": []
+    },
+    "sigma": [
+      [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ]
+    ],
+    "stationary_ops": [
+      "C"
+    ]
+  },
+  "segment_body": [
+    {
+      "__type__": "LoopPlan",
+      "axis": "pi_bundle",
+      "body": [
+        {
+          "__type__": "LoopPlan",
+          "axis": "k0",
+          "body": [
+            {
+              "__type__": "ChannelSite",
+              "buffer": "A",
+              "channel": "A2L1",
+              "depends_on": [],
+              "guard": null,
+              "id": "A2L1.put.0@segment",
+              "indices": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "pi_bundle",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                }
+              ],
+              "is_async": false,
+              "kind": "put",
+              "order": 0,
+              "region": {
+                "offsets": [
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "pi_bundle",
+                        32
+                      ]
+                    ],
+                    "const": 0
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "k0",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  }
+                ],
+                "sizes": [
+                  32,
+                  16
+                ],
+                "strides": [
+                  64,
+                  1
+                ]
+              },
+              "scope": "segment"
+            }
+          ],
+          "depth": 1,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 64
+          },
+          "kind": "sequential",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 16
+          }
+        }
+      ],
+      "depth": 0,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 2
+      },
+      "kind": "unrolled",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 1
+      }
+    },
+    {
+      "__type__": "LoopPlan",
+      "axis": "pj_bundle",
+      "body": [
+        {
+          "__type__": "LoopPlan",
+          "axis": "k0",
+          "body": [
+            {
+              "__type__": "ChannelSite",
+              "buffer": "B",
+              "channel": "B2L1",
+              "depends_on": [],
+              "guard": null,
+              "id": "B2L1.put.0@segment",
+              "indices": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "pj_bundle",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                }
+              ],
+              "is_async": false,
+              "kind": "put",
+              "order": 0,
+              "region": {
+                "offsets": [
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "k0",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "pj_bundle",
+                        32
+                      ]
+                    ],
+                    "const": 0
+                  }
+                ],
+                "sizes": [
+                  16,
+                  32
+                ],
+                "strides": [
+                  64,
+                  1
+                ]
+              },
+              "scope": "segment"
+            }
+          ],
+          "depth": 1,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 64
+          },
+          "kind": "sequential",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 16
+          }
+        }
+      ],
+      "depth": 0,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 2
+      },
+      "kind": "unrolled",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 1
+      }
+    },
+    {
+      "__type__": "HerdPlan",
+      "at": null,
+      "coords": [
+        "tx",
+        "ty"
+      ],
+      "grid": [
+        2,
+        2
+      ],
+      "name": "gemm_herd",
+      "shape": [
+        1,
+        2
+      ]
+    },
+    {
+      "__type__": "LoopPlan",
+      "axis": "i_drain",
+      "body": [
+        {
+          "__type__": "LoopPlan",
+          "axis": "j_drain",
+          "body": [
+            {
+              "__type__": "ChannelSite",
+              "buffer": "C",
+              "channel": "C2L3",
+              "depends_on": [],
+              "guard": null,
+              "id": "C2L3.get.0@segment",
+              "indices": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "i_drain",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "j_drain",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                }
+              ],
+              "is_async": false,
+              "kind": "get",
+              "order": 0,
+              "region": {
+                "offsets": [
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "i_drain",
+                        32
+                      ]
+                    ],
+                    "const": 0
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "j_drain",
+                        32
+                      ]
+                    ],
+                    "const": 0
+                  }
+                ],
+                "sizes": [
+                  32,
+                  32
+                ],
+                "strides": [
+                  64,
+                  1
+                ]
+              },
+              "scope": "segment"
+            }
+          ],
+          "depth": 1,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 2
+          },
+          "kind": "unrolled",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        }
+      ],
+      "depth": 0,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 2
+      },
+      "kind": "unrolled",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 1
+      }
+    }
+  ],
+  "segment_name": "gemm_seg",
+  "summary": {
+    "channels": [
+      [
+        "A2L1",
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          2
+        ]
+      ],
+      [
+        "B2L1",
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          2
+        ]
+      ],
+      [
+        "C2L3",
+        [
+          2,
+          2
+        ],
+        null
+      ]
+    ],
+    "herd_logical": [
+      2,
+      2
+    ],
+    "herd_physical": [
+      1,
+      2
+    ],
+    "l1_budget": 65536,
+    "l1_bytes": 12288,
+    "lines": [
+      "A: multicast along py (derived)",
+      "B: multicast along px (derived)",
+      "C: stationary (derived)",
+      "A: multicast along py, re-fetched per k0",
+      "B: multicast along px, re-fetched per k0",
+      "C: stationary (spatial), resident for the whole run",
+      "herd: logical (2, 2) physical (1, 2) repeats (2, 1)",
+      "reduction (tiled axes): R_time = span{e_k0, e_k1}, R_space = {}",
+      "  acc (32, 32) f32 = 4096 B",
+      "  a (32, 16) f32 = 2048 B  x2 (ping-pong)",
+      "  b (16, 32) f32 = 2048 B  x2 (ping-pong)",
+      "L1: 12288 of 65536 bytes",
+      "  A2L1 size=(2, 1) broadcast_shape=(2, 2)",
+      "  B2L1 size=(1, 2) broadcast_shape=(2, 2)",
+      "  C2L3 size=(2, 2)"
+    ],
+    "reduction_split": [
+      "span{e_k0, e_k1}",
+      "{}"
+    ],
+    "repeats": [
+      2,
+      1
+    ],
+    "residency": [
+      [
+        "A",
+        "re-fetched per k0"
+      ],
+      [
+        "B",
+        "re-fetched per k0"
+      ],
+      [
+        "C",
+        "resident for the whole run"
+      ]
+    ]
+  },
+  "tensors": [
+    {
+      "__type__": "BufferPlan",
+      "bytes": 16384,
+      "dtype": "f32",
+      "level": "L3",
+      "loop_depth": 0,
+      "name": "A",
+      "operand": "A",
+      "ping_pong_candidate": false,
+      "scope": "tensor",
+      "shape": [
+        64,
+        64
+      ]
+    },
+    {
+      "__type__": "BufferPlan",
+      "bytes": 16384,
+      "dtype": "f32",
+      "level": "L3",
+      "loop_depth": 0,
+      "name": "B",
+      "operand": "B",
+      "ping_pong_candidate": false,
+      "scope": "tensor",
+      "shape": [
+        64,
+        64
+      ]
+    },
+    {
+      "__type__": "BufferPlan",
+      "bytes": 16384,
+      "dtype": "f32",
+      "level": "L3",
+      "loop_depth": 0,
+      "name": "C",
+      "operand": "C",
+      "ping_pong_candidate": false,
+      "scope": "tensor",
+      "shape": [
+        64,
+        64
+      ]
+    }
+  ]
+}

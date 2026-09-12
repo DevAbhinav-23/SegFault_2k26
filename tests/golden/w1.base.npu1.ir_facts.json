@@ -1,0 +1,10 @@
+{
+  "_pipeline_broadcast": "builtin.module(air-dependency,air-broadcast-detection)",
+  "_pipeline_pingpong": "builtin.module(air-dependency,air-label-scf-for-to-ping-pong{device=npu1})",
+  "_pipeline_transform": "builtin.module(air-dependency,air-annotate-packet-ids{assign=true},air-hoist-dma-in-accum-pattern,air-dma-to-channel,canonicalize,cse,air-dependency-canonicalize,canonicalize,cse,air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse,air-fuse-channels,canonicalize,cse,func.func(air-fuse-alloc-dealloc),func.func(air-shrink-memref-sizes-by-access),air-label-scf-for-to-ping-pong{device=npu1},air-ping-pong-transform,canonicalize,cse)",
+  "broadcast_pattern_count": 0,
+  "cascade_channels": 0,
+  "hoist_alloc_count": 2,
+  "pingpong_iter_args": 4,
+  "pingpong_unroll": 2
+}

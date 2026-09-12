@@ -459,3 +459,103 @@ the W1 bindings for free; `test_fixture_literals` asserts the value for both.
 `aircc` `loc(...)` spelling) is P0c's, re-checked against the committed fixture rather than
 re-run against the tool. M3 and M4 still do not exist, so nothing here proves the checker will
 produce these `bindings` or that M4 will place the `HerdPlan` where the W1 literal does.
+
+---
+
+# Phase P1 — M5, the AIR emitter
+
+*2026-09-13. Branch `role-b`. `spatial/m5_emit.py` driven by the hand-written W1 `MappingPlan`
+literal, through `air.api` to text, verified against the upstream-API probe, `air-opt` and
+`aircc`. **Nothing here was pushed.***
+
+## Landed
+
+| # | What | Where |
+|---|---|---|
+| 1 | `emit(plan, target) -> EmitResult`: all thirteen rows of M5 §3.2, §3.4's binding, §3.6's compute walk, §3.7's slices, §3.8's build and text capture. 450 lines, one public name | `spatial/m5_emit.py` |
+| 2 | `import air` happens **inside** `emit()` and nowhere else (FR-S20) | same |
+| 3 | The five §5 precondition checks: bundle-index-is-IV, ping-pong direct child, row-major strides, allocation scope, `l1_peak` vs the plan's L1 total. Each is an `EmissionError` whose `fix` asks for a bug report and whose `details` carry `internal_consistency: true` | same |
+| 4 | 21 unit cases, including the three lint tests that make D-14 mechanical | `tests/unit/test_m5_emit.py` |
+| 5 | Goldens for W1 × {npu1, npu2}: module text, canonical plan JSON, the summary | `tests/golden/w1.base.*` |
+| 6 | `ir_facts` tests and the facts golden | `tests/integration/test_ir_facts.py`, `tests/golden/w1.base.npu1.ir_facts.json` |
+| 7 | `aircc` smoke on **our** module for both targets plus one `pdi` build | `tests/integration/test_smoke.py` |
+
+## Verified (command → result)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `.venv/bin/python -m pytest` | **420 passed, 4 deselected** in 1.17 s (was 391 passed, 1 deselected) |
+| 2 | `PYTHONHASHSEED=1 … -m pytest` / `PYTHONHASHSEED=2 … -m pytest` | 420 passed, 4 deselected, 1.22 s / 1.19 s |
+| 3 | `.venv/bin/python -m pytest -m slow` (`tests/integration/test_smoke.py`) | 4 passed in 3.3 s |
+| 4 | `.venv/bin/python -c "import spatial.m5_emit, sys; print('air' in sys.modules)"` | `False` (FR-S20) |
+| 5 | `aircc --device npu1 --output-format=none` on the emitted `w1.base.npu1.air.mlir` | **exit 0**, 0.88 s, zero `error:` lines, 22/22 stages, two core ELFs (`gemm_seg_core_0_2`, `_0_3`) |
+| 6 | `aircc --device npu2 --output-format=none` on `w1.base.npu2.air.mlir` | **exit 0**, 0.30 s, zero `error:` lines, **four** core ELFs (`0_2`, `0_3`, `1_2`, `1_3`) — the 2×2 physical herd, so the compile is real and not a short circuit. **B-O4 answered for W1: npu2 needs no `xfail`** |
+| 7 | `aircc --device npu1 --output-format=pdi` | exit 0, 0.90 s, `air.pdi` written |
+| 8 | `air-opt <file> -o /dev/null` on the emitted text (`test_E7_text_roundtrip`) | exit 0, no `error:` line |
+| 9 | `ir_facts` on the emitted npu1 W1 | `pingpong_unroll = 2`, `hoist_alloc_count = 2`, `broadcast_pattern_count = **0**`, `cascade_channels = 0`, `pingpong_iter_args = 4` |
+| 10 | `air-opt -pass-pipeline=PIPELINES["transform"]` | the K loop becomes `scf.for … step %c32 iter_args(…4…) -> (4 × !air.async.token)` — step doubled from 16, exactly `04-test-plan.md` §3.2's expectation |
+| 11 | `diff tests/golden/w1.base.npu1.air.mlir <(python vendor/probes/q/q7_a.py)` | see **the probe oracle** below |
+
+## The probe oracle (D4)
+
+**Byte-identical.** `cmp` of the golden against the probe's module text, with `print()`'s extra
+trailing newline removed, reports no difference; the raw `diff` shows exactly one hunk,
+`126a127 > ` — the probe file has 127 lines because `print(launch.build(...))` appends a newline
+to a `str(module)` that already ends in one. Our emitter writes the 126-line text unchanged.
+
+That is the strongest statement available for this phase: the plan literal, walked by M5's
+translation table, reproduces a hand-written upstream-API program op for op, SSA name for SSA
+name, `affine_map` for `affine_map` — including the strip-mine loop and
+`#map1 = affine_map<()[s0, s1] -> (s0 * 2 + s1)>` that `air.api` inserts on npu1 because the
+2×2 logical grid runs on a 1×2 physical herd (finding N-7).
+
+## What `air.api` actually does, against what the LLD assumed
+
+| # | LLD said | `air.api` does | Consequence |
+|---|---|---|---|
+| **1** | `ChannelSite.is_async` — "emitted in asynchronous form" (`06-interfaces.md` §5.2); W2 §6.3 sets it on the halo puts | **There is no asynchronous form to select.** `put`/`get` take `obj, indices, dependency` (+ `dest` on `put`) and nothing else (`_channel.py:511`, `:524`), and **every** call returns a `Token` on all three return paths (`_channel.py:471`, `:485`, `:507`). A `Token` "carries no SSA value … AIR's own asynchrony is built by the `air-dependency` pass from the program order this tracer emits" (`_value.py:26-33`) | M5 emits the same call whether `is_async` is true or false, and the field is read by nothing. **For the architect**: either §5.2 records `is_async` as documentation of intent (which is what it now is), or it is dropped at the next contract version. It cannot be honoured |
+| **2** | `dependency=<tok or None>` (§3.2 rows 9-10) | `_check_dependency` (`ops.py:82-91`) accepts a `Token` or a list/tuple of them and **validates only** — the value is never used by `_emit`, because a v1 `Token` has no SSA value | Implemented as specified (a list of the tokens the named sites returned, `None` for `depends_on == ()`), and it is inert until upstream gives `Token` a value. W1 has `depends_on = ()` everywhere, so **untested** |
+| **3** | FR-E9 / §5: "`build()` runs `module.operation.verify()`; failure surfaces as `EmissionError`" | The failure surfaces as a `RuntimeError` whose text begins `air.api emitted invalid IR -- this is a bug in the DSL, not in the kernel:` (`_compile.py:174-180`). That prefix is the **only** signal separating it from `_check_interface`'s `RuntimeError`, which must stay `EMIT-AIR-API` | M5 matches on that marker. `test_E9_verify_surfaced` raises the marker message in `build()`'s place and asserts the classification: **no plan we can construct reaches the real path**, because M5 checks its own preconditions first and every W1-shaped module verifies |
+| **4** | §3.6 line 14: "fold `air.ops.maximum` … left to right"; the paragraph below it and §6.4's `ROW` show `maximum(a, maximum(b, maximum(c, d)))` | — | The two readings disagree. M5 implements the **shape the LLD draws** (right-nested, `maximum(op[0], maximum(op[1], …))`), because that is what the W3 golden will be compared against. Untested until W3 |
+| **5** | §3.2 row 12 / §3.6: `MaxMin` and `Select` take the emitted operands | `ops.maximum`/`minimum` reject a bare `BufferSlice`: `_elementwise`'s guard admits `(Buffer, BufferExpr, int, float)` only (`ops.py:384-391`), even though `BufferExpr.coerce` handles `BufferSlice` two lines of the file later (`_value.py:1046`). `$PROBE/w3b.py` never hits it because every slice there goes through an operator first (`p[j] - 1`) | **A W3 finding, logged now**: `MaxMin(operands=(Load(p, j), …))` — an operand that is a bare load — will raise `TypeError` out of `air.api` and become `EMIT-AIR-API`. The fix when W3 lands is one coercion in M5 or one widened isinstance upstream; do not discover it on D4 |
+
+## Spec readings taken
+
+| # | Reading | Why |
+|---|---|---|
+| 1 | **Internal-consistency failures are raised as `EMIT-AIR-API`** with `details["internal_consistency"] = true`. §5 says what they mean but not which code, and `06-interfaces.md` §6.3 gives the emission stage exactly two codes, both of which `spatial/model.py` enforces (`I67`) | A third code (`EMIT-PLAN-INVARIANT`) would be the honest spelling. The contract is frozen; **for the architect to rule**. The `fix` line says "this is a defect in the compiler, not in your program … report it", so nothing tells the user to edit a clause |
+| 2 | Every emission `Diagnostic` carries `clause="build()"` | `tests/helpers/diagnostics.py` asserts `clause is not None` for every non-grammar code, and `build()` is the surface call that funnels through `m5.emit` (§7.1). M6 already uses the same string |
+| 3 | The `.summary.txt` golden is written for **npu1 only**, under §8's target-less name | §8's path is `<workload>.<variant>.summary.txt` while `04-test-plan.md` §3.1 says the summary is "stored per target too". W1's summary line 7 carries the *physical* herd and repeats, which differ between targets, so one file cannot hold both. `w1.base.npu2.plan.json` embeds the npu2 rendering of the same lines, so nothing is unwitnessed. **A naming conflict for the architect**: either §8 gains the target, or §3.1 drops the claim |
+| 4 | The plan JSON goldens are per target (`w1.base.<target>.plan.json`) | Same reason; `MappingPlan.mapping` differs by `physical_herd`, `repeats` and `schedule.target` |
+| 5 | `test_sequential_emits_scf_for` counts **emissions**, not `LoopPlan` nodes | A sequential loop's body is traced once whatever its trip count, an unrolled loop's body is traced once **per trip**, and `air.api` adds one `scf.for` of its own when `shape=` strip-mines the grid. W1/npu1: 4 (segment) + 6 (herd) + 1 (strip-mine) = **11**; npu2: 10, with no strip-mine. M5 §7's "count == count of `LoopPlan(kind='sequential')` in the plan" is true of neither |
+| 6 | `air.tensor(..., name=<BufferPlan.name>)` | Left to itself `air.api` recovers the name by `inspect.stack()` on the caller's source line (`_trace.py:441-455`). It is cosmetic — the name never reaches the IR — but reading our own source at emission time is exactly what determinism rule 5 forbids in spirit, and the plan already carries the name |
+| 7 | A herd body is a fresh index scope | `air.herd` is `IsolatedFromAbove`. A segment-scope loop axis referenced inside `herd_body` is the defect `_compile.py:162-172` was written for; M5 refuses it as an internal-consistency error naming the axis, rather than emitting IR that only `verify()` would catch |
+
+## Not done, and why
+
+| # | Item | Reason |
+|---|---|---|
+| 1 | Rows 5c (`channel_type=`) and 11 (`BranchNode`/`Guard`) are **implemented and untested** | W1 has no cascade channel and no guard. Both are single expressions — one keyword on `air.channel`, one `with air.ops.branch(...)` — and both wait on the W1-flip and W3 plan literals |
+| 2 | `Select`, `MaxMin`, `Neg`, `BinOp` for `-`, `*`, `/` | W1's compute tree is `+` and `*` over `Load`/`Const` only. The rest are implemented from §3.6 and wait on W2/W3 |
+| 3 | `depends_on` / `dependency=` | W1's sites all have `depends_on = ()` (finding 2 above) |
+| 4 | M5 §7's `test_E1_herd_arity`, `test_E8_cascade_text`, `test_M5_uses_branch`, `test_E_peel_is_plan_driven`, `test_E_select_emitted`, `test_E_branch_node`, `test_E_tensor_order`, `test_pipeline_is_hint`, and the six other goldens | Every one needs a W1-flip, W2 or W3 `MappingPlan`, none of which exists. They are not skipped, they are **absent**; this row is the list |
+| 5 | `lock_init_histogram` (`air-to-aie`) | M5 §3.8 lists it; `04-test-plan.md` §3.2 marks `test_I_lock_inits` optional at D6 |
+| 6 | Person C's `has_device`/`run`/`diff`/`trace` | Not ours |
+
+## Open / blockers
+
+| # | Item | Detail |
+|---|---|---|
+| **B-P12** | `is_async` cannot be honoured | Finding 1 above. M4 may keep setting it; M5 will keep ignoring it. Needs a ruling before the W2 golden is frozen, because `06-interfaces.md` §5.2's wording implies emitted output that does not exist |
+| **B-P13** | No error code for a broken plan precondition | Reading 1 above. `EMIT-AIR-API` with `internal_consistency: true` is the least-bad spelling under the frozen §6.3 |
+| **B-P14** | `.summary.txt` naming | Reading 3 above |
+| **B-P15** | M5 §7's `test_sequential_emits_scf_for` row is unimplementable as written | Reading 5 above; the test exists and is stricter, but the LLD row should be corrected |
+| **B-P16** | `ops.maximum` rejects a bare `BufferSlice` | Finding 5 above. It will bite on W3's first `MaxMin(Load, …)` operand |
+| **B-O8** | still open | Whether `str(module)` is stable across a `--upgrade` within the pin is Person C's Q-3; byte-for-byte goldens plus `check_pin` are the standing answer |
+| **v4 signatures** | unchanged | A and C have still not signed `CONTRACT_VERSION = 4` |
+
+**Not verified in this phase**: that M4 will produce this plan (M4 does not exist — the W1
+literal is B's own hand transcription of `03-lld-M4-mapping.md` §6.1, and a D6 test is meant to
+assert `m4.plan(...) == w1_plan.plan()`); that the emitted module computes GEMM (no device, and
+`04-test-plan.md` §3.4 is explicit that the oracle link is structural, not executed); that
+anything holds for W1-flip, W2 or W3.
