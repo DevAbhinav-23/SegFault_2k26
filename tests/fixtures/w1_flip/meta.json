@@ -1,0 +1,15 @@
+{
+  "dtype": "f32",
+  "generator": "make_fixture.py",
+  "params": {
+    "K": 64,
+    "M": 64,
+    "N": 64,
+    "PK": 4,
+    "TK": 16,
+    "TM": 32
+  },
+  "seed": 0,
+  "tol": 0.0,
+  "workload": "W1"
+}

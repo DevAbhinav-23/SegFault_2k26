@@ -1,0 +1,19 @@
+{
+  "code": "L1-CAPACITY",
+  "dtype": "f32",
+  "expect": "reject",
+  "generator": "make_fixture.py",
+  "params": {
+    "K": 192,
+    "M": 192,
+    "N": 192,
+    "PI": 2,
+    "PJ": 2,
+    "TK": 32,
+    "TM": 96,
+    "TN": 96
+  },
+  "seed": null,
+  "tol": null,
+  "workload": "W1"
+}

@@ -15,6 +15,7 @@ returns passes through `verdict` before its output is read (I-2).
 
 from __future__ import annotations
 
+import glob
 import os
 import re
 import shutil
@@ -23,10 +24,12 @@ import sysconfig
 import tempfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from time import monotonic
 
-from spatial.model import Diagnostic, Target, ToolchainError
+import numpy as np
+from spatial.model import Diagnostic, DiffReport, Target, ToolchainError
 
 _NOT_BUILT = "m6_tools: not built yet; see design/03-lld-M6-toolchain.md"
 
@@ -72,13 +75,11 @@ def _tail(text: str, lines: int = _TAIL_LINES) -> list[str]:
 
 def check_pin() -> None:
     """Raise `ToolchainError(TOOL-VERSION-PIN)` unless the installed wheels match `PIN`."""
-    from importlib import metadata
-
     installed = {}
     for name in PIN:
         try:
-            installed[name] = metadata.version(name)
-        except metadata.PackageNotFoundError:
+            installed[name] = importlib_metadata.version(name)
+        except importlib_metadata.PackageNotFoundError:
             installed[name] = None
     mismatched = {n: [PIN[n], installed[n]] for n in PIN if installed[n] != PIN[n]}
     if not mismatched:
@@ -338,6 +339,12 @@ def artifact(mlir_path: str, target: Target, output_format: str,
         raise _xclbinutil_error()                           # FR-T3, before spending 2 minutes
 
     work = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="m6-"))
+    try:
+        work.mkdir(parents=True, exist_ok=True)  # else FileLock raises a bare OSError (NFR-7)
+    except OSError as exc:
+        raise _fail("TOOL-AIRCC-FAILED", f"the work directory {work} is not usable: {exc}",
+                    "pass a writable workdir, or none at all for a scratch directory",
+                    {"workdir": str(work)}) from None
     env, peano = tool_env()
     argv: list[object] = [tool("aircc"), "--device", resolved,
                           "--output-format", output_format,
@@ -466,6 +473,12 @@ def ir_facts(mlir_path: str, target: Target, facts: Iterable[str],
     if unknown:
         raise ValueError(f"unknown ir fact(s) {unknown}; known: {sorted(PIPELINE_OF)}")
     work = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="m6-"))
+    try:
+        work.mkdir(parents=True, exist_ok=True)  # else FileLock raises a bare OSError (NFR-7)
+    except OSError as exc:
+        raise _fail("TOOL-AIRCC-FAILED", f"the work directory {work} is not usable: {exc}",
+                    "pass a writable workdir, or none at all for a scratch directory",
+                    {"workdir": str(work)}) from None
     air_opt = tool("air-opt")
     geometry = AIE_GEOMETRY.get(target, AIE_GEOMETRY["npu1"])
     out: dict[str, object] = {}
@@ -491,19 +504,117 @@ def ir_facts(mlir_path: str, target: Target, facts: Iterable[str],
 
 def has_device() -> bool:
     """True when a `/dev/accel*` character device exists. Raises nothing."""
-    raise NotImplementedError(_NOT_BUILT)  # Person C, M6 §3.4-§3.6, §3.8
+    return bool(glob.glob("/dev/accel*") or glob.glob("/dev/accel/accel*"))
 
 
-def run(artifact: str, inputs: Sequence[object]) -> list[object]:
-    """Execute on a device. Raises ToolchainError."""
-    raise NotImplementedError(_NOT_BUILT)  # Person C, M6 §3.4-§3.6, §3.8
+def run(artifact: str, inputs: Sequence[object], target: Target, kernel_name: str,
+        workdir: str | os.PathLike[str] | None = None) -> list[object]:
+    """Execute on a device via `XRTBackend`'s invoker (M6 §3.5). Raises ToolchainError.
+
+    `target`/`kernel_name` extend the §7.2 contract — the frozen two-arg shape cannot
+    construct `XRTBackend` (logged as a v6 proposal with `DiffReport`). `workdir`
+    is optional and defaults to a scratch dir.
+    """
+    if not has_device():
+        raise _fail(
+            "TOOL-NO-DEVICE",
+            "a device run was requested but /dev/accel* is absent",
+            "run with output_format='none' for the off-device path",
+            {"looked_for": "/dev/accel*"},
+        )
+    from air.backend.xrt import XRTBackend  # noqa: PLC0415 — imports pyxrt lazily
+    from filelock import FileLock  # noqa: PLC0415 — NFR-2 allows stdlib + numpy at scope
+
+    arrays = [np.ascontiguousarray(a) for a in inputs]
+    if len(arrays) > 5:
+        raise _fail(
+            "TOOL-AIRCC-FAILED",
+            f"the xclbin path caps the arity at five, got {len(arrays)}",
+            "run fewer buffers per launch",
+            {"arity": len(arrays)},
+        )
+    shapes = [a.shape for a in arrays]
+    work = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="m6-"))
+    try:
+        work.mkdir(parents=True, exist_ok=True)  # else FileLock raises a bare OSError (NFR-7)
+    except OSError as exc:
+        raise _fail("TOOL-AIRCC-FAILED", f"the work directory {work} is not usable: {exc}",
+                    "pass a writable workdir, or none at all for a scratch directory",
+                    {"workdir": str(work)}) from None
+    backend = XRTBackend(target_device=target, output_format="xclbin",
+                         omit_while_true_loop=False, instance_name=kernel_name)
+    with FileLock(str(work / "npu.lock")):  # one device, N pytest workers
+        invoke_fn = backend.load(artifact)
+        try:
+            flat = invoke_fn(*arrays)
+        finally:
+            backend.unload()
+    if len(flat) != len(shapes):
+        raise _fail(
+            "TOOL-AIRCC-FAILED",
+            f"the device returned {len(flat)} buffer(s) for {len(shapes)} input(s)",
+            "check the kernel's argument list against the fixture's inputs",
+            {"returned": len(flat), "expected": len(shapes)},
+        )
+    return [np.asarray(r).reshape(s) for r, s in zip(flat, shapes)]
 
 
-def diff(device: Sequence[object], oracle: Sequence[object], tol: float) -> object:
-    """Compare device output against the oracle. Raises nothing."""
-    raise NotImplementedError(_NOT_BUILT)  # Person C, M6 §3.4-§3.6, §3.8
+def diff(device: Sequence[object], oracle: Sequence[object], tol: float) -> DiffReport:
+    """Compare device output against the oracle. Raises nothing (FR-T4, M6 §3.6)."""
+    if len(device) != len(oracle):
+        # `zip` would truncate to the shorter side and report the surviving pairs as a match:
+        # a kernel that returned three buffers instead of four would pass. Charge every
+        # oracle element as mismatched, which is what a missing buffer costs.
+        size = sum(int(np.asarray(o).size) for o in oracle)
+        return DiffReport(False, float("inf"), None, size, size)
+    total = 0
+    mismatched = 0
+    max_abs = 0.0
+    first: tuple[int, ...] | None = None
+    for d, o in zip(device, oracle):
+        da = np.asarray(d, dtype=np.float64)
+        oa = np.asarray(o, dtype=np.float64)
+        if da.shape != oa.shape:
+            return DiffReport(False, float("inf"), None, int(oa.size), int(oa.size))
+        err = np.abs(da - oa)
+        bad = err > tol
+        total += int(oa.size)
+        mismatched += int(bad.sum())
+        max_abs = max(max_abs, float(err.max(initial=0.0)))
+        if first is None and bad.any():
+            first = tuple(int(i) for i in np.argwhere(bad)[0])
+    return DiffReport(mismatched == 0, max_abs, first, mismatched, total)
 
 
-def trace(mlir_path: str, model_json: str) -> str:
-    """Drive air-runner, a performance model only. Raises ToolchainError."""
-    raise NotImplementedError(_NOT_BUILT)  # Person C, M6 §3.4-§3.6, §3.8
+
+def trace(mlir_path: str, model_json: str, function: str,
+          workdir: str | os.PathLike[str] | None = None) -> str:
+    """Drive air-runner (M6 §3.8). Raises ToolchainError.
+
+    `function` extends the §7.2 contract — `air-runner -f` needs the top-level
+    function name (logged as a v6 proposal with `DiffReport`). The return value
+    carries the timing-model disclaimer (invariant I-8).
+    """
+    work = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="m6-"))
+    try:
+        work.mkdir(parents=True, exist_ok=True)  # else FileLock raises a bare OSError (NFR-7)
+    except OSError as exc:
+        raise _fail("TOOL-AIRCC-FAILED", f"the work directory {work} is not usable: {exc}",
+                    "pass a writable workdir, or none at all for a scratch directory",
+                    {"workdir": str(work)}) from None
+    async_ir = work / "async.mlir"
+    verdict(invoke([tool("air-opt"), mlir_path,
+                    "-pass-pipeline=builtin.module(air-dependency)",
+                    "-o", async_ir], cwd=work))
+    if "air.launch" not in async_ir.read_text(encoding="utf-8"):
+        raise _fail(
+            "TOOL-AIRCC-FAILED",
+            "air-runner needs an air.launch and this module has none",
+            "emit air.launch (FR-E1); air-runner dereferences the LaunchOp "
+            "without a null check and segfaults otherwise",
+            {"citation": "mlir/lib/Util/Runner.cpp:547-551"},
+        )
+    out = work / "trace.json"
+    verdict(invoke([tool("air-runner"), str(async_ir), "-f", function,
+                    "-m", model_json, "-o", str(out)], cwd=work))
+    return str(out) + "   # PERFORMANCE MODEL, NOT A CORRECTNESS ORACLE (VF §S7)"
