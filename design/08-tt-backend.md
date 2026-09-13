@@ -55,8 +55,8 @@ only two:
 
 **Ownership and blast radius.** Owner **B**. Touches no file owned by A or C: two new modules
 under `spatial/`, one new test directory, one new script, one new state file, plus the two
-one-line edits recorded in §9 of this document's commit. Branch `tt-backend` until every gate in
-§7 is green.
+one-line edits recorded in §9 of this document's commit. Merged to `main` 2026-09-13, with every
+gate in §7 green.
 
 **Requirements this document creates**: FR-TT1…FR-TT13 (§6). They are **not** part of
 `01-requirements.md`'s 70; they are a stretch group, and the traceability gate

@@ -6,8 +6,9 @@ Read [`hackathon/HANDOFF.md`](hackathon/HANDOFF.md) first. Ownership: [`design/0
 
 Python is pinned to **3.12**; the toolchain is pinned in [`design/07-environment.md`](design/07-environment.md) §1.
 
-Branch **`role-b`** carries Person B's implementation (M0, M4, M5, M6's off-device half) and
-`CONTRACT_VERSION = 5`; `main` may lag until it is fast-forwarded.
+Everything — the AIE path (M0, M4, M5, M6's off-device half, harness shell) and the Tenstorrent
+stretch backend — is on `main` at `f7ecd70` (2026-09-13), `CONTRACT_VERSION = 5`; `role-b` and
+`tt-backend` are the same commit and are kept only as history.
 
 ```bash
 uv venv --python python3.12 --seed .venv
@@ -62,8 +63,9 @@ source scripts/tt_env.sh
 ```
 
 Judge that run by its exit status and its `-rA` `PASSED` lines: ttsim's exit ends the process
-without flushing Python's stdout, so pytest's final summary line never reaches a pipe or a file.
-The emitter's own unit tests need none of that and run in the default suite. What the simulator
+without flushing Python's stdout, so no summary line prints after ttsim exits. Do not add a
+second `-q` — `addopts` already carries one, and a doubled `-q` suppresses the count line in the
+`.venv` suite as well. The emitter's own unit tests need none of that and run in the default suite. What the simulator
 run establishes and what it does not — silicon, the Tensix compute engine, double buffering,
 `f16`/`bf16`, and any timing claim, none of them touched — is
 [`design/PROGRESS-TT.md`](design/PROGRESS-TT.md).

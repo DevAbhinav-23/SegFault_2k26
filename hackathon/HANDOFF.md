@@ -262,7 +262,8 @@ the per-person task list.
 
 *Appended by Person B at close-out (phase P7). Full detail, phase by phase, is in
 [`../design/PROGRESS-B.md`](../design/PROGRESS-B.md); this section is the part someone who is
-not B needs. Branch **`role-b`**, **nothing pushed** — the architect verifies and pushes.*
+not B needs. All of it is on **`main`** at **`f7ecd70`**, pushed 2026-09-13; `role-b` is the
+same commit.*
 
 ### State
 
@@ -282,11 +283,13 @@ text → aircc`: W1 GEMM, the W1 weight-stationary flip, W2 Jacobi and W3 Smith-
 
 Tests: **611 passed, 1 skipped, 12 deselected in 12.4 s** (`pytest`), **12 passed in 5.9 s**
 (`pytest -m slow`), and the `PYTHONHASHSEED=1` vs `=2` `-vv` id/outcome diff over 612 lines is
-**empty**. The one skip is the traceability gate for A's and C's FR groups, and it prints the
+**empty**. Architect re-run on `main`, 2026-09-13: **662 passed, 1 skipped, 37 deselected in
+15.9 s** — the rise over 611 is B's `tests/tt` unit tests and the T5 traceability additions.
+The one skip is the traceability gate for A's and C's FR groups, and it prints the
 31 uncovered ids as its reason.
 
-**`main` does not have any of this.** `role-b` is ahead by the P0a–P7 commits; `main` is at the
-design set. Nothing has been pushed to either.
+**`main` has all of this.** The architect fast-forwarded `main` to `role-b` (`b220f24`) and then
+to `tt-backend` (`f7ecd70`) and pushed on 2026-09-13; all three branches name the same commit.
 
 **The load-bearing caveat.** Every `LegalMapping` in the suite is a **hand-written literal**
 transcribed from Person A's LLDs, because M1/M2/M3 do not exist. **No test here proves the
@@ -495,7 +498,7 @@ them M1/M2/M3's.
 
 **User / architect**
 
-1. **Fast-forward `main` to `role-b`.** Nothing has been pushed.
+1. **Fast-forward `main` to `role-b`** — **done 2026-09-13**: `main` is at `f7ecd70`, pushed.
 2. **Sign v4 and v5 as B** — B's rows in `00-README.md` §4's signature block.
 3. Rule on **B-P12** (`ChannelSite.is_async` cannot be honoured — `air.api` has no asynchronous
    form to select), **B-P13** / **B-P20** (no error code for an internal-consistency failure),
@@ -507,7 +510,7 @@ them M1/M2/M3's.
 ### How to resume
 
 ```bash
-git checkout role-b
+git checkout main                                 # f7ecd70; role-b is the same commit
 uv venv --python python3.12 --seed .venv          # or reuse the existing .venv
 .venv/bin/python -m pip install --no-index --find-links vendor/wheels 'mlir_air[aie]' pytest
 .venv/bin/python -m pip install -e . --no-deps
@@ -555,9 +558,9 @@ done and the consolidated open-items table.
 
 *Appended by Person B at the TT close-out (phase T5). Full detail, phase by phase, is in
 [`../design/PROGRESS-TT.md`](../design/PROGRESS-TT.md); the spec is
-[`../design/08-tt-backend.md`](../design/08-tt-backend.md). Branch **`tt-backend`**, **nothing
-pushed**. This is the stretch item and the designated cut: the AIE path above is unaffected by
-anything in it.*
+[`../design/08-tt-backend.md`](../design/08-tt-backend.md). Merged to **`main`** at **`f7ecd70`**,
+pushed 2026-09-13; `tt-backend` is the same commit. This is the stretch item and the designated
+cut: the AIE path above is unaffected by anything in it.*
 
 #### State
 
@@ -588,7 +591,8 @@ did not have to change.
 **Suites.** The default `.venv` suite is green and carries the emitter's own unit tests (it needs
 no simulator: `m5tt_emit` imports nothing but the standard library and `spatial.model`). The
 device suite is `.venv-tt`, `-m requires_ttsim tests/tt`: **25 tests, all `PASSED`, exit status
-0** at T3. It was re-run by the architect on 2026-09-13; see `PROGRESS-TT.md` §T5.3.
+0** at T3, and again on the architect's re-run of 2026-09-13 — **25 `PASSED`, 0 failed, exit 0,
+47 577 057 ttsim cycles, 262 s**; see `PROGRESS-TT.md` §T5.3.
 
 **What is `[not run]`, and none of it is closeable here**: real Tenstorrent **silicon** (no
 hardware was touched at any point); the Tensix **compute engines** (matrix/vector — everything
@@ -713,12 +717,13 @@ Every number here was measured in this repository on 2026-09-13; the section of
 5. **Person C**: the slide text is written out ready to paste in `08-tt-backend.md` §8 and
    condensed to three bullets plus one Q&A row in `PROGRESS-TT.md` §T5.4. `05-work-breakdown.md`
    §5 and §6 are C's and were **not** edited by B.
-6. **Nothing is pushed.** `tt-backend` is ahead of `role-b`; the architect pushes.
+6. **Everything is pushed.** The architect merged `tt-backend` into `main` (`f7ecd70`) and pushed
+   it on 2026-09-13.
 
 #### How to resume
 
 ```bash
-git checkout tt-backend
+git checkout main                                         # f7ecd70; tt-backend is the same commit
 source scripts/tt_env.sh                                  # bash/zsh; builds .venv-tt on first use
 .venv-tt/bin/python -m pytest -rA -q -m requires_ttsim tests/tt   # 25 PASSED, exit 0, ~286 s
 ```

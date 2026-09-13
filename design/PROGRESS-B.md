@@ -2,17 +2,19 @@
 
 ## Status (2026-09-13, close-out)
 
-**Person B's side is built and closed out on branch `role-b`, phases P0a–P7, nothing pushed.**
+**Person B's side is built and closed out, phases P0a–P7, and merged to `main` (`f7ecd70`,
+pushed 2026-09-13).**
 `spatial/model.py` at `CONTRACT_VERSION = 5` (78 invariants, 43-code catalogue), `m4_mapping`
 (ten passes, four protocol builders), `m4_selfcheck` (P1′ balance, P2b acyclicity, the §3.7.3
 structural invariants, the P3 DMA budget), `m5_emit` (one public name, all thirteen §3.2 rows)
 and the **off-device half** of `m6_tools`, plus the M7 harness shell and helpers that unblocked
 them — all flagged for their real owners. All four variants run `LegalMapping → m4.plan →
 m5.emit → text` and compile: **`aircc` exit 0 with zero `error:` lines on npu1 and npu2 for
-W1, W1-flip, W2 and W3, re-measured 2026-09-13** (§P7). The suite is **611 passed, 1 skipped,
-12 deselected in 12.4 s** with `pytest -m slow` **12 passed in 5.9 s**; the two-seed `-vv`
-id/outcome diff is empty. Gates **G2–G5 are green on B's half only**: every `LegalMapping` in
-the suite is a hand-written literal, because M1/M2/M3 (A) do not exist, so **nothing here
+W1, W1-flip, W2 and W3, re-measured 2026-09-13** (§P7). The suite is **662 passed, 1 skipped,
+37 deselected in 15.9 s** (architect re-run on `main`, 2026-09-13; the rise over 611 is B's
+`tests/tt` unit tests and the T5 traceability additions, both B's) with `pytest -m slow`
+**12 passed in 5.9 s**; the two-seed `-vv` id/outcome diff is empty. Gates **G2–G5 are green on
+B's half only**: every `LegalMapping` in the suite is a hand-written literal, because M1/M2/M3 (A) do not exist, so **nothing here
 proves the checker will produce them** — that is the single largest open risk. Off-device
 throughout; no device has been touched. Read §P7 for the definitions of done item by item, the
 consolidated open-items table and who owns what next.
@@ -135,7 +137,7 @@ B's own critical path starts at M0/M4/M5. Before any of it:
 # Phase P0b — M0, the frozen shared contract
 
 *2026-09-13. `spatial/model.py` at `CONTRACT_VERSION = 3`, its unit tests, and the test-harness
-helpers. Nothing pushed.*
+helpers. Now on `main` (`f7ecd70`).*
 
 ## Landed
 
@@ -229,7 +231,7 @@ read-before-write ordering and every other M2/M3/M4 check, by design (Q-M2-3).
 # Phase P0c — stub fixtures and the M6 off-device wrappers
 
 *2026-09-13. The four `LegalMapping` literals, the W1 `MappingPlan` literal, `spatial/m6_tools.py`'s
-off-device half, and the M6 fixtures and tests. Nothing pushed.*
+off-device half, and the M6 fixtures and tests. Now on `main` (`f7ecd70`).*
 
 ## Landed
 

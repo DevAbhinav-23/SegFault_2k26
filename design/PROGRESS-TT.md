@@ -1,7 +1,7 @@
 # PROGRESS — the Tenstorrent backend
 
 *State file for the second emitter. Phases **T1**, **T2**, **T3** and the **T5** close-out, all
-2026-09-13, branch `tt-backend`. Nothing pushed. The AIR side's state file is
+2026-09-13, merged to `main` at `f7ecd70`, pushed 2026-09-13. The AIR side's state file is
 `design/PROGRESS-B.md`; nothing in the M5 LLDs changes.*
 
 ## Status
@@ -651,6 +651,9 @@ Two tests were added, one per uncovered id, and nothing else:
 **The TT suite**, `source scripts/tt_env.sh; .venv-tt/bin/python -m pytest -rA -q -m
 requires_ttsim tests/tt` → **25 `PASSED`, 0 failed, exit 0, 286 s**, 50 deselected of 75
 collected.
+
+*Architect re-run 2026-09-13 on `main`: **25 `PASSED`, exit 0, ttsim suite total 47 577 057
+cycles, 262 s**.*
 
 | | Count | Why |
 |---|---|---|
