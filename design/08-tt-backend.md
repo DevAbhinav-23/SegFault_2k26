@@ -127,7 +127,7 @@ shape the plan already has, and it is why one `KernelDescriptor` over one `CoreR
 | 4 | `BufferPlan`, `level == "L1"` (§5.1) | one `CBDescriptor` per buffer: `total_size = bytes`, one `CBFormatDescriptor(buffer_index=i, page_size=bytes, data_format=…)` | `i` is the buffer's index in `plan.buffers`. **`ping_pong_candidate` is ignored** — it is an AIE pass predicate (`isPingPongCandidate`), and the TT emitter allocates one slot |
 | 5 | a buffer's address | `get_write_ptr(cb_id)` (`$WHEEL/tt_metal/hw/inc/api/dataflow/dataflow_api.h:323`), taken once at kernel top into a `const uint32_t` | `get_read_ptr` (`:344`) is the same address for a one-page CB and is not used |
 | 6 | `ChannelPlan` with an L3 end (§5.3) | **no channel object at all** — the herd side does the DRAM transfer itself (§3.3) | there is no TT analogue of an `air.channel` whose other end is a shim DMA; the transfer is the core's own `noc_async_read`/`noc_async_write` |
-| 7 | `ChannelPlan` core↔core (§5.3) | a **depth-1 FIFO over a direct remote L1 write plus two counting semaphores** (§3.5) | the whole of the protocol work |
+| 7 | `ChannelPlan` core↔core (§5.3) | a **bounded FIFO over a direct remote L1 write plus two counting semaphores** (§3.5) | the whole of the protocol work. Depth 1 unless R-TT-B's occurrence pairing shows consecutive payloads landing in disjoint regions — W1-flip and W3 are depth 1, W2 is depth 2 |
 | 8 | `LoopPlan`, either `kind` (§5.5) | `for (int32_t <axis> = lo; <axis> < hi; <axis> += step) { … }` | `kind` collapses: `"sequential"` vs `"unrolled"` is an AIE trace-time distinction (D-3) with no TT counterpart. Both become the same C++ `for`; the emitter reads `kind` for nothing |
 | 9 | `StoreNode` (§5.5) | `<buf>[<flat index>] = <expr>;` over `volatile <ctype>*` views of the CB address | §3.6 |
 | 10 | `BranchNode` / `ChannelSite.guard` (§5.5) | `if (<predicate over the coordinate runtime args>) { then } else { otherwise }` | the `else` is omitted when `otherwise == ()`. A plain C++ `if` is correct here — the AIE prohibition (`_cond.py:41-45`) is an `air.api` tracing artefact and does not apply |
@@ -359,7 +359,7 @@ the plan, and emits those indices as literals. Coordinates are also available de
 one mechanism for every coordinate rather than two, and `BranchNode` predicates then read the same
 values on every target.
 
-### 3.5 Core ↔ core: a depth-1 FIFO over a direct remote L1 write
+### 3.5 Core ↔ core: a bounded FIFO over a direct remote L1 write
 
 This is the row that earns the document. Let a core↔core `ChannelPlan` have, at concrete bundle
 index `k`, producer core `p` and consumer core `c` (both fixed at plan time: the plan's guards and
@@ -373,12 +373,68 @@ number on every core. This is what makes a remote write addressable: the produce
 the fallback is to pass each consumer's buffer address as a further runtime-arg block; that is a
 change to §3.4 block B, nothing else.
 
-**Two counting semaphores per link**, both created with `initial_value = 0` and **never reset**:
+> ### Ruling R-TT-B — pairing is by **occurrence**, not by site
+>
+> *(architect, 2026-09-13; **amended by measurement the same day** — see "the credit" below,
+> which is the form implemented. The pairing is unchanged; the number of slots it implies is not
+> what the ruling assumed.)*
+>
+> T2 paired a channel's two ends by *site* and refused W2, whose `ToNorth` has gets landing in
+> **both** `cur` and `next` (`design/PROGRESS-TT.md` §5). That is a limitation of pairing by
+> channel, not of the protocol: the same link is served by two put **occurrences** and two get
+> **occurrences** per `t` trip, and the ghost row lands in `cur` on one and in `next` on the
+> other. Because **every core runs the identical program**, the producer's k-th put occurrence on
+> a link — in program order, loops as written, *not* trip-expanded — is consumed by the
+> consumer's k-th get occurrence on that link.
+>
+> **The rule.** For each core↔core link, enumerate the producer core's put occurrences and the
+> consumer core's get occurrences in plan order and pair the k-th with the k-th. A put
+> occurrence's destination buffer and `Region` offset are its paired get's. Equal occurrence
+> counts per link are asserted, and so are equal trip counts where occurrences sit inside loops;
+> either mismatch is the TT internal-consistency error. A `STEP` peeled after a loop pairs
+> positionally after that loop's occurrences — W2 at `T = 5` pairs `cur, next, cur`. A put site
+> reached on more than one link must land the same way on each, because one kernel text serves
+> every core.
+>
+> Semaphores stay **per link** (`full_k`, `empty_k`; W2 has 2 links, so 4 semaphores) and the
+> per-link counters `n` run across occurrences in program order, exactly as at T2. The `empty`
+> increment stays at the top of the next get on the same link (T2's rule, point 5 below).
+>
+> **The credit — the ruling's one amendment, forced by a measured deadlock.** The ruling leaves
+> the depth-1 FIFO in place: the producer's put `n` waits `empty ≥ n`, one slot outstanding.
+> **On W2 that deadlocks**, and the reason is structural rather than incidental: W3 and the
+> cascade are *chains*, so the link graph is a path; W2's two PEs each **put before they get**, on
+> two links that run in opposite directions, so the link graph has a cycle. With one credit, PE0's
+> second put blocks on a slot that only PE1's *later* get can free, while PE1's second put blocks
+> on one only PE0's later get can free. Measured: the same W2 program with the credit expressions
+> replaced by the bare counters did not complete in **180 s** against **≈1.3 s** clean
+> (`design/PROGRESS-TT.md` §T3.3; the test keeps a 60 s cap).
+>
+> The credit is read off the pairing and off nothing else. Let `D_0, D_1, …` be the landing
+> regions of the link's get occurrences **in dynamic order** (loops expanded — the static list
+> cannot stand in, because W2 at `T = 5` runs `cur next cur next cur` where the static list spells
+> `cur cur next next cur`). The **credit** is the smallest `d ≥ 1` for which some `D_i` and
+> `D_{i+d}` overlap, and the producer's put `n` then waits `empty ≥ max(0, n − credit + 1)`.
+> The invariant it discharges: when put `n` fires, the consumer has released every slot up to
+> `n − credit` and may still be reading payloads `n − credit + 1 … n − 1`, whose regions the
+> smallest-gap definition makes disjoint from `D_n`. Different buffers are different circular
+> buffers and never alias; an offset the emitter cannot fold is assumed to overlap, which costs a
+> credit and is never wrong.
+>
+> **Consequences, measured.** W3's two get occurrences both land in the whole of `edge_in` and the
+> cascade's in the whole of `recv`, so both have credit 1 — T2's depth-1 FIFO, and their emitted
+> kernels are **byte-identical** to T2's (checked). W2's alternate between `cur` and `next`, which
+> do not alias, so it has credit 2 and the pair makes progress. The emitted wait is the unchanged
+> `…, <counter>);` at credit 1 and `…, (<counter> < c-1 ? 0 : <counter> - c-1));` above it.
+
+**Two counting semaphores per link**, both created with `initial_value = 0` and **never reset**.
+The pairing of R-TT-B says *where* a payload lands and how many may be in flight; these two say
+*when*:
 
 | Semaphore | Lives on | Counts |
 |---|---|---|
 | `full_k` | the **consumer** `c` | payloads delivered on link `k` |
-| `empty_k` | the **producer** `p` | slots freed by the consumer on link `k` |
+| `empty_k` | the **producer** `p` | slots freed by the consumer on link `k`; the producer's put `n` waits `empty_k ≥ max(0, n − credit + 1)`, the **credit** being R-TT-B's |
 
 `SemaphoreDescriptor{.id, .core_type = WORKER, .core_ranges, .initial_value = 0}` is the exact
 shape (`$WHEEL/ttnn/cpp/ttnn/operations/data_movement/move/device/move_overlap_program_factory.cpp:112-118`;
@@ -411,6 +467,9 @@ Six things this fixes, each of which is otherwise a decision:
    rendezvous. The destination is the consumer's *get-site* buffer plus the get site's `Region`
    offset — so W2's `get ToNorth[tx] -> src[HS+1:HS+2, :]` (`03-lld-M4-mapping.md` §6.3, STEP
    line 2) is written by the neighbour straight into row `HS+1` of that core's `src` strip.
+   **Which** get site that is, when a link has several, is R-TT-B's occurrence pairing above:
+   W2's first put of a `t` trip writes row 9 of the consumer's `cur` and its second writes row 9
+   of its `next`.
 2. **`noc_async_write`'s contract is exactly this shape**: its documentation says the destination
    is an on-chip node "located at NOC coordinates (x,y) and a local address created using
    `get_noc_addr`" (`$WHEEL/tt_metal/hw/inc/api/dataflow/dataflow_api.h:828` and the comment block
@@ -457,23 +516,37 @@ Six things this fixes, each of which is otherwise a decision:
 ### 3.6 Deadlock freedom
 
 **P1′ and P2b remain the load-bearing conditions and are unchanged** (`03-lld-M4-mapping.md`
-§3.7.1, §3.7.2). The TT protocol is a *depth-1 FIFO with a pre-signalled empty slot*, which is
-the same structure VF §C found SAFE for the AIE lock protocol. The argument is written out per
+§3.7.1, §3.7.2). The TT protocol is a *FIFO with `credit` pre-signalled empty slots* — credit 1,
+the structure VF §C found SAFE for the AIE lock protocol, except where R-TT-B's pairing shows
+more (W2: 2). **They are necessary and not sufficient**: they constrain the channel graph, and
+T3 measured a deadlock in a plan that satisfies both (§3.5, R-TT-B's credit). The argument is written out per
 workload, as M4 §6.3/§6.4 do:
 
 **W2, `PI = 2`, two PEs, two links** (`ToSouth[0]`: PE0 → PE1; `ToNorth[0]`: PE1 → PE0). Site
 order inside `STEP` is fixed and not negotiable: `PUT(north) → PUT(south) → GET(north) → GET(south)`
 (`03-lld-M4-mapping.md` §3.6.1).
 
+> **Amended at T3, by a measured deadlock.** The argument below was written for a depth-1 FIFO
+> and is **false** for it — see R-TT-B's credit paragraph in §3.5. W2's link graph is the one
+> that is not a path: each PE puts on its outbound link before it gets on its inbound one, so the
+> wait-for graph at credit 1 has a cycle and the pair hangs (measured, 180 s against ≈1.3 s
+> clean). The corrected argument is below it, at credit 2. **P1′ and P2b are properties of the
+> plan and are untouched** — they say the channel graph is acyclic and put/get balanced, which it
+> is; what T3 found is that *acyclic channels do not imply an acyclic wait-for graph* once each
+> core is both a producer and a consumer. That is a property of the protocol, and it is what the
+> credit repairs.
+
 * Every PE issues **both** of its puts before **either** of its gets. At step `n`, PE0's put on
-  `ToSouth[0]` waits `empty_ToSouth0 ≥ n`; PE1's put on `ToNorth[0]` waits `empty_ToNorth0 ≥ n`.
-  At `n = 0` both pass (the pre-signalled slot).
+  `ToSouth[0]` waits `empty_ToSouth0 ≥ n − 1`; PE1's put on `ToNorth[0]` waits
+  `empty_ToNorth0 ≥ n − 1` (credit 2, R-TT-B). At `n = 0` and `n = 1` both pass.
 * Both writes therefore land and both `full` counters reach `n+1`; both gets, waiting
   `full ≥ n+1`, unblock. Neither PE is ever blocked on a semaphore only the other's *later* work
-  could raise.
-* Inductively, PE `x` at step `n+1` waits `empty ≥ n+1`, which its partner increments at the end
-  of *its* step `n` body — after the 5-point update that read the ghost row. So the producer is
-  at most one step ahead: exactly depth 1.
+  could raise: the slot PE0's put `n` needs was freed by PE1's get `n−1`, which precedes PE1's
+  own put `n` in *its* program order.
+* Inductively, PE `x` at step `n+1` waits `empty ≥ n`, which its partner increments at the top of
+  *its* get `n` — after the 5-point update that read the ghost row of payload `n−1`. So the
+  producer is at most two steps ahead, and the two payloads in flight land in `cur` and in `next`,
+  which do not alias. That is the credit, and it is exactly 2 here.
 * The guards are what keep this exact at the domain edge: PE0's `ToNorth` put is guarded `tx > 0`
   and never fires; PE1's `ToSouth` put is guarded `tx < PI-1` and never fires. The links that do
   not exist cost nothing because their sites are not emitted on those coordinates.
@@ -588,7 +661,7 @@ double every `ping_pong_candidate` buffer (`06-interfaces.md` §5.6 invariant 5)
 |---|---|---|---|---|---|---|
 | W1 | `4096 + 2048 + 2048` = **8 192** | 12 288 | 0 | **0** | 0 | 0.56 % |
 | W1-flip | `8192 + 2048 + 4096 + 8192` = **22 528** | 24 576 | `PK−1 = 3` | 6 | **2** | 1.54 % |
-| W2 | `640 + 640` = **1 280** | 1 280 | 2 (`ToNorth[0]`, `ToSouth[0]`) | **4** | 2 | 0.09 % |
+| W2 | `640 + 640` = **1 280** (measured) | 1 280 | 2 (`ToNorth[0]`, `ToSouth[0]`) | **4** (measured) | 2 | 0.09 % |
 | W3 | `128 + 32 + 64 + 64 + 32 + 32` = **352** | 240 | `PJ−1 = 3` | **6** (measured, `3 links × 2`) | **2** | 0.02 % |
 
 *W3's CB row is the T2 **measured** figure and is larger than the design's 240: the emitter rounds
@@ -676,7 +749,8 @@ requires_ttsim' …"`), so the default suite is unchanged (FR-TT13).
 | **FR-TT4** | W1 executes on ttsim and the output tensor equals the numpy oracle **exactly** | `test_TT_exec_w1` — `np.array_equal(C, A @ B)` on the `default_rng(0)` integer-valued f32 fixture the AIR side already uses (`design/PROGRESS-B.md`: `C == A @ B` exactly, `np.array_equal`) |
 | **FR-TT5** | W1-flip (1-D `grid(4)`, ascending cascade) executes and matches exactly | `test_TT_exec_w1_flip` — same oracle, same exactness |
 | **FR-TT6** | W3 executes and matches the textbook Smith-Waterman DP exactly (`i32`; integer arithmetic, so exactness is not in question) | `test_TT_exec_w3` — `np.array_equal` against the two-loop DP |
-| **FR-TT7** | W2 executes and matches the two-loop numpy Jacobi **exactly**, at `T = 4` and `T = 5` | `test_TT_exec_w2[4\|5]` — `np.array_equal`, **not** a tolerance. The interpreter already matches at max abs error **0.0** (`design/PROGRESS-B.md`, the `default_rng(0)` run over both targets and both parities), so exact is the right bar; if soft-float moves it, **record the measured deviation in `design/PROGRESS-TT.md` and do not silently widen the test** |
+| **FR-TT7** | W2 executes and matches the two-loop numpy Jacobi **exactly**, at `T = 4` and `T = 5` | **MET at T3** (`design/PROGRESS-TT.md` §T3). `tests/tt/test_tt_w2.py::test_W2_is_exact_on_ttsim[4\|5]` — `np.array_equal` over the whole tensor, **not** a tolerance; max abs error **0.0** on both parities. Soft-float did not move it. The tolerance is not widened and the one thing that *would* have moved it is tested for instead: `test_f32_constants_are_narrowed_before_they_are_used` (§3.7's `(float)` cast; with the bare `double` literal the device returns 358 of 896 interior elements one ulp off — measured) |
+| **FR-TT7a** | W2's halo is **occurrence-paired** (R-TT-B): the two put occurrences of a `t` trip land in different buffers, the link carries 2 credits, and the program has 4 semaphores over 2 links | `tests/tt/test_m5tt_emit.py::test_W2_put_occurrences_land_in_alternating_buffers`, `…::test_W2_gives_each_link_two_credits_and_W3_the_flip_one`, `…::test_W2_has_two_links_and_four_semaphores`, `…::test_an_unpairable_link_is_refused_and_says_why`. **No device**, runs in the default suite. The credit's necessity is the `slow` `tests/tt/test_tt_w2.py::test_one_credit_per_link_deadlocks` |
 | **FR-TT8** | A **negative control** per variant: one deliberate perturbation of the emitted kernel produces a *wrong* result, proving the test could fail | `test_TT_neg[w1\|w2\|w3\|flip]` — the shape of `$TT/t6_neg.py`, which perturbs one page index (`{.page_id = i}` → `{.page_id = i + 1}`) and asserts `MATCH=False`. Per variant: W1 an offset row, W2 a dropped `full` increment, W3 a shifted edge column, flip a skipped accumulate |
 | **FR-TT9** | For each variant, the ttsim result equals `tests/helpers/plan_interp.run(plan, tensors)` on the same inputs | `test_TT_matches_interp[w1\|w2\|w3\|flip]` — `np.array_equal` between the two. **This is the backend-neutrality claim**: one plan, two executions, same numbers |
 | **FR-TT10** | The emitted program's semaphore count is within the measured per-core limit, and the check names the limit and where it came from | `test_TT_semaphore_budget` — asserts `len(program.semaphores) <= TT_SEM_LIMIT`, with `TT_SEM_LIMIT` a module constant carrying its provenance comment. T2 measured it: `TT_SEM_LIMIT = 16` |
@@ -685,7 +759,8 @@ requires_ttsim' …"`), so the default suite is unchanged (FR-TT13).
 | **FR-TT13** | The default suite is unaffected: same selected count, same outcomes, no `ttnn` import | `test_TT_default_suite_unaffected` — collection-only comparison of the default `-q` selection before and after the branch, plus an assertion that `sys.modules` has no `ttnn` after the default run |
 
 FR-TT4…FR-TT9 are `requires_ttsim`. FR-TT1, FR-TT2, FR-TT3, FR-TT11, FR-TT12 and FR-TT13 are not
-and run everywhere.
+and run everywhere. **FR-TT7a is a structural sub-requirement of FR-TT7**, added at T3 with
+ruling R-TT-B; it does **not** change the group's denominator, which stays FR-TT1…FR-TT13.
 
 ### 6.1 Error paths
 
@@ -720,7 +795,7 @@ fails as designed, and the result equals `plan_interp.run`. UB lines from ttsim 
 |---|---|---|---|
 | **T1** | **W1** (GEMM output-stationary) | DRAM row-wise transfer, `TensorAccessor`, CBs, per-core runtime args, the scalar compute walk, `BranchNode`-free path. **Zero semaphores.** Also settles C-TT1 (row-major/one-row pages) and C-TT2 (the raw NoC calls) | **GREEN** (2026-09-13; `design/PROGRESS-TT.md` §4) |
 | **T2** | **W3** (wavefront) | **the first semaphores**: a 3-link chain, `full`/`empty`, `wait_min`, remote `inc`. Settles A-TT1, the `get_noc_addr` coordinate space (C-TT3), the semaphore limit, the `-march` string, the 4-byte-transfer alignment question | **GREEN** (2026-09-13; `design/PROGRESS-TT.md` §T2.1). Exact against the textbook DP, 2.2 s and 24 426 simulated cycles. The `-march` string is the one item it did **not** settle — nothing required reading it |
-| **T3** | **W2** (Jacobi halo) | **bidirectional** exchange, two links per interior PE, the `cur`/`next` swap with the odd-`T` peel, and f32 exactness under soft-float | not started — and now the **only** gate left. The blocker is the ping-pong landing buffer, named in `design/PROGRESS-TT.md` §5 |
+| **T3** | **W2** (Jacobi halo) | **bidirectional** exchange, two links per interior PE, the `cur`/`next` swap with the odd-`T` peel, and f32 exactness under soft-float | **GREEN** (2026-09-13; `design/PROGRESS-TT.md` §T3). Exact at `T = 4` **and** `T = 5`, `np.array_equal` over the whole tensor; 183 914 / 229 133 simulated cycles, ≈1.3 s wall each. Two rulings came out of it: **R-TT-B** (occurrence pairing, §3.5) answered T2's blocker, and its **credit** answered the deadlock the blocker was hiding. **Q-TT4 and Q-TT6 closed** |
 | **T4** | **W1-flip** (cascade) | `chain_direction` read rather than derived; a 1-D grid; the accumulate-in-the-middle block | **GREEN** (2026-09-13; `design/PROGRESS-TT.md` §T2.2), reached at T2 with no emitter change: the emitter dispatches on plan shape, never on a workload. Exact, 54.9 s, 12 129 177 cycles. It is also the only workload that exercises a **multi-row** remote write (32 × 256 B per link crossing) |
 
 **Stop rule.** *A gate that is not green after two agent-days is abandoned, not extended.* Keep
@@ -759,9 +834,9 @@ All owned by **B**; each names the gate that closes it.
 | **Q-TT1** | **A-TT1** — is a buffer's L1 address identical on every core when one `CBDescriptor` list covers one `CoreRangeSet`? If not, consumer buffer addresses become a fourth runtime-arg block | **T2 — CLOSED: yes.** Measured on a 4-core program: CB bases `0x19ce0 / 0x19d00 / 0x19d20` and `get_semaphore(0) / (1)` = `0x88f0 / 0x8900`, byte-identical on all four cores. No fourth block |
 | **Q-TT2** | Which coordinate space does `get_noc_addr(noc_x, noc_y, addr)` expect — the header says *physical*, the Python helper's docstring says it returns *virtual* (C-TT3). The design passes `worker_core_from_logical_core`; confirm | **T2 — CLOSED, with the caveat the design predicted.** `worker_core_from_logical_core` returns the **virtual** coordinates `(18..21, 18)`; those deliver. So do the soc descriptor's physical `(1..4, 1)` — on ttsim's *unharvested* part the NoC accepts both, so this run cannot discriminate between them, only confirm the design's choice works. An off-by-one mis-delivers (negative control). See C-TT3 in §3.4 |
 | **Q-TT3** | Is `noc_async_write_barrier()` before `noc_semaphore_inc` sufficient ordering, or does the increment need a stronger fence? And does ttsim report the reversed order as UB? | **T2 — see `design/PROGRESS-TT.md` §T2** (the barrier/increment order is reversed in one deliberate run and the outcome recorded) |
-| **Q-TT4** | Does soft-float scalar f32 reproduce numpy bit-for-bit on W2's 5-point stencil, given §3.7's exact parenthesisation? If not, by how much — recorded, not tolerated away | **T3** |
+| **Q-TT4** | Does soft-float scalar f32 reproduce numpy bit-for-bit on W2's 5-point stencil, given §3.7's exact parenthesisation? If not, by how much — recorded, not tolerated away | **T3 — CLOSED: yes, bit-for-bit.** `np.array_equal` over the whole tensor at `T = 4` and `T = 5`, max abs error **0.0**, against the two-loop numpy oracle and against `plan_interp` (`tests/tt/test_tt_w2.py`). Two conditions carry it and **both were measured, not argued**: the exact parenthesisation of §3.7 (the five-term sum is emitted left-nested, as the `ExprNode` tree spells it), and the **narrowing of the `f32` literal before it is used** — `((float)(0.2))`. Emit the bare `0.2` instead and the multiply happens in `double`: 358 of 896 interior elements come out one ulp off (max abs error 4.77e-07, `U[1,1,1] = 1.8` against `1.8000001`) and the cycle count rises from 183 914 to 253 102, which is the soft-float `double` path showing up in the simulator's own counter. `0.2f` measures **identical** to the cast — same answer, same 183 914 cycles — so the suffix is a spelling, not a fix; the cast is kept because it also covers a `Const.text` with no decimal point, where `5f` would not compile |
 | **Q-TT5** | The per-core semaphore limit. Not derivable from the wheel (§4); read it from the host error by over-allocating deliberately | **T2 — CLOSED: 16** (ids `0..15`). 8 accepted, 32 refused with `Semaphore id 16 exceeds max value 15` (`tt_metal/impl/program/program.cpp:2001`, `semaphore_id < NUM_SEMAPHORES`). W3 uses 6 |
-| **Q-TT6** | ttsim wall time for W2 at `T = 4` on a 2-core grid. The 8×8 probe ran in seconds (`$TT/mc8.log`), but W2 has 4 timesteps × 2 halo exchanges per step. If it exceeds the suite budget, W2 becomes `slow` | **T3** (W3's measured wall time and cycle count are in `design/PROGRESS-TT.md` §T2 as the nearest data point) |
+| **Q-TT6** | ttsim wall time for W2 at `T = 4` on a 2-core grid. The 8×8 probe ran in seconds (`$TT/mc8.log`), but W2 has 4 timesteps × 2 halo exchanges per step. If it exceeds the suite budget, W2 becomes `slow` | **T3 — CLOSED: ≈1.3 s a run, no `slow` marker needed.** One `run()` in its own process, measured outside the process: **1.1–2.9 s** at `T = 4` (the spread is the JIT cache, not the simulation) and **1.3–1.5 s** at `T = 5`. ttsim's own counter, identical on every run: **183 914** cycles at `T = 4` and **229 133** at `T = 5`, against W3's 24 426 and W1's 11 509 553. W2 is 2 PEs × 4 or 5 `STEP`s × 112 five-point updates, so it is nearer W3 than W1 and nothing about it is slow. **One `slow` test exists in the module and it is not a W2 run**: `test_one_credit_per_link_deadlocks` is *expected* to hang and is capped at 60 s. The whole `-m requires_ttsim tests/tt` suite is 25 tests in ≈270 s, of which W1 and the cascade are ≈205 s |
 | **Q-TT7** | Alignment: are 36-byte and 4-byte CB pages accepted after rounding to `L1_ALIGNMENT = 16`, and is W3's 4-byte DRAM edge-column transfer legal against a 32-byte DRAM read alignment? | **T2 — CLOSED, and the question's premise was wrong.** 4-byte DRAM transfers are legal; the NoC constrains the *difference* of the source and destination offsets (mod 16 for a write, mod 32 for a read), not either address on its own, and not the size. CB sizes are rounded to 32 B, not 16. Ruling **R-TT-A′**, §3.3 |
 | **Q-TT8** | The row-major / one-row-page tensor path and the raw `noc_async_read`/`noc_async_write` calls — neither has been run (C-TT1, C-TT2) | **T1 — CLOSED: both run.** See C-TT1 and C-TT2 in §3.2 |
 

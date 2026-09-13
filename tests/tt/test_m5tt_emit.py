@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ import pytest
 
 from spatial import m4_mapping as m4
 from spatial import m5tt_emit as m5tt
+from spatial.model import ChannelSite
 from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 
 SOURCE = inspect.getsource(m5tt)
@@ -117,6 +119,12 @@ def test_W1_kernel_has_balanced_braces(w1):
 
 
 # -- the program W3 produces (T2) --------------------------------------------
+
+@pytest.fixture(scope="module")
+def w1flip():
+    """W1-flip's `TTProgram`: a 1-D grid and an ascending cascade, gate T4."""
+    return m5tt.emit(m4.plan(w1flip_legal.legal("npu1")))
+
 
 @pytest.fixture(scope="module")
 def w3():
@@ -232,6 +240,7 @@ def test_leading_pad_is_the_smallest_that_makes_every_transfer_congruent():
 
 @pytest.mark.parametrize("fixture,pads,pages", (
     (w1_legal, {"A": 0, "B": 0, "C": 0}, {"A": 256, "B": 256, "C": 256}),
+    (w2_legal, {"U": 0}, {"U": 64}),
     (w3_legal, {"q": 0, "r": 0, "S": 0}, {"q": 128, "r": 128, "S": 160}),
 ))
 def test_the_measured_layout_is_no_leading_pad_and_a_padded_row(fixture, pads, pages):
@@ -295,6 +304,7 @@ def test_semaphore_and_L1_budgets_are_measured_constants():
 
 @pytest.mark.parametrize("fixture,cb_bytes,sems", (
     (w1_legal, 8192, 0),
+    (w2_legal, 1280, 4),
     (w3_legal, 352, 6),
 ))
 def test_TT_P3_budget_rows(fixture, cb_bytes, sems):
@@ -317,26 +327,112 @@ def test_a_plan_over_the_semaphore_limit_is_refused():
         m5tt.emit(wide)
 
 
-# -- what this emitter still does not do -------------------------------------
+# -- R-TT-B: occurrence pairing, and the credit it forces ---------------------
 
-def test_W2_is_still_refused_and_says_why():
-    """W2's halo `get` lands in `cur` on an even timestep and in `next` on an odd one — the
-    ping-pong peel — and a remote write has one destination address. That is T3's problem, and
-    the diagnostic names the construct rather than emitting something plausible."""
-    with pytest.raises(m5tt.TTNotImplemented) as raised:
-        m5tt.emit(m4.plan(w2_legal.legal("npu1")))
-    assert isinstance(raised.value, NotImplementedError)
-    assert "ToNorth" in str(raised.value) and "'cur'" in str(raised.value)
-    assert "'next'" in str(raised.value)
+@pytest.fixture(scope="module")
+def w2():
+    """W2's `TTProgram` at `T = 4`. The simulator run is `tests/tt/test_tt_w2.py`."""
+    return m5tt.emit(m4.plan(w2_legal.legal("npu1", T=4)))
 
 
-def test_the_cascade_plan_now_emits_but_has_not_been_run():
-    """W1-flip's `CascadeK` is the same core↔core shape as `West`, so it emits — three links,
-    six semaphores. **It has not been executed**: gate T4, `design/PROGRESS-TT.md` §5."""
-    program = m5tt.emit(m4.plan(w1flip_legal.legal("npu1")))
-    assert [sem.name for sem in program.semaphores] == [
+def test_W2_has_two_links_and_four_semaphores(w2):
+    """`design/08-tt-backend.md` §4's W2 row: `ToNorth[0]` and `ToSouth[0]`, one `full` on each
+    consumer and one `empty` on each producer. `UIn`/`UOut` have an L3 end and carry none."""
+    assert [(sem.id, sem.name) for sem in w2.semaphores] == [
+        (0, "ToNorth.full[0]"), (1, "ToNorth.empty[0]"),
+        (2, "ToSouth.full[0]"), (3, "ToSouth.empty[0]")]
+    assert w2.grid == (2,) and [cb.name for cb in w2.cbs] == ["cur", "next"]
+
+
+def test_W2_put_occurrences_land_in_alternating_buffers(w2):
+    """**Ruling R-TT-B.** The blocker T2 hit was that `ToNorth` has gets landing in *both* `cur`
+    and `next`, and a remote write has one destination. The pairing answers it: the producer's
+    k-th put occurrence is consumed by the consumer's k-th get occurrence, so the first put of a
+    `t` trip writes row 9 of the consumer's `cur` and the second writes row 9 of its `next`.
+
+    Row 9 is `HS + 1` and 16 `f32` is 64 B, so each is one `noc_async_write` with no loop.
+    """
+    for channel, row in (("ToNorth", 9), ("ToSouth", 0)):
+        writes = [line.strip() for line in w2.source.splitlines()
+                  if f"get_noc_addr({channel}_put_x" in line and "noc_async_write(" in line]
+        assert len(writes) == 2, f"{channel} should have two put occurrences per t trip"
+        assert writes[0] != writes[1], f"{channel}'s two puts must not share a destination"
+        for occurrence, buffer in enumerate(("cur", "next")):
+            assert (f"get_noc_addr({channel}_put_x, {channel}_put_y, "
+                    f"{buffer}_l1 + (uint32_t)(({row} * 16) * 4)), 64);") in writes[occurrence]
+
+
+def test_W2_gives_each_link_two_credits_and_W3_the_flip_one(w2):
+    """R-TT-B's credit: how many payloads may be in flight is the smallest gap between two
+    landing regions that alias. W2's alternate between `cur` and `next`, which do not, so the
+    gap is 2 — and 1 **deadlocks**, because each PE puts before it gets on links that run the
+    other way (measured: `tests/tt/test_tt_w2.py::test_one_credit_per_link_deadlocks`). W3 and
+    the cascade land every payload in the same buffer, so they keep T2's depth-1 FIFO and their
+    emitted kernels are byte-identical to T2's.
+    """
+    for counter in ("ToNorth_put_n", "ToSouth_put_n"):
+        assert f"({counter} < 1 ? 0 : {counter} - 1));" in w2.source
+        assert w2.source.count(f"), {counter});") == 0, "a bare counter is one credit"
+    for fixture, counter in ((w3_legal, "West_put_n"), (w1flip_legal, "CascadeK_put_n")):
+        source = m5tt.emit(m4.plan(fixture.legal("npu1"))).source
+        assert f"), {counter});" in source and f"({counter} < " not in source
+
+
+def test_W2_seeds_next_and_drains_eight_rows_per_step(w2):
+    """The rest of W2's shape, which is ordinary emitter machinery rather than R-TT-B: the seed
+    copy is a plain `StoreNode` nest (`design/PROGRESS-B.md` §P5), the `UIn` stage reads all ten
+    rows of the strip including both ghosts, and each `STEP` drains eight interior rows into
+    plane `t + t_off + 1` through the twinless-loop occurrence counter of §3.3 rule 5."""
+    assert "next[((i1 * 16) + j)] = cur[((i1 * 16) + j)];" in w2.source
+    assert "for (int32_t _r1_0 = 0; _r1_0 < 10; _r1_0 += 1) {" in w2.source
+    assert w2.source.count("UOut_put_n += 1;") == 2          # one per STEP
+    for buffer, loop in (("next", "_r4_0"), ("cur", "_r7_0")):
+        assert (f"noc_async_write({buffer}_l1 + (uint32_t)(((1 + {loop}) * 16) * 4), "
+                f"U_ta.get_noc_addr((uint32_t)((((UOut_put_n + 1) * 18) + "
+                f"(((tx * 8) + 1) + {loop}))), (uint32_t)(0 * 4)), 64);") in w2.source
+
+
+@pytest.mark.parametrize("fixture", (w1_legal, w2_legal, w3_legal, w1flip_legal))
+def test_f32_constants_are_narrowed_before_they_are_used(fixture):
+    """**Q-TT4's other half, measured.** In C++ an unsuffixed `0.2` is a `double`, so
+    `0.2 * <float>` would be evaluated in `double` and narrowed only on the store — which is not
+    what `numpy.float32(0.2) * <float32>` computes. The emitter narrows every `f32` `Const` at
+    the point of use (`((float)(0.2))`), and the cast is load-bearing: with the bare literal the
+    device returns 358 of 896 interior elements off by one ulp (`design/PROGRESS-TT.md` §T3).
+
+    `0.2f` measures identical — same answer, same cycle count — but the cast also covers a
+    `Const.text` with no decimal point, where `5f` would not compile.
+    """
+    source = m5tt.emit(m4.plan(fixture.legal("npu1"))).source
+    assert "double" not in source
+    for line in source.splitlines():
+        for token in re.findall(r"(?<![\w.])\d+\.\d*(?:[eE][-+]?\d+)?", line):
+            assert f"((float)({token}))" in line, (
+                f"the literal {token} is not narrowed to float where it is used: {line.strip()}")
+
+
+def test_the_cascade_plan_emits_three_links(w1flip):
+    """W1-flip's `CascadeK` is the same core↔core shape as `West` — three links, six
+    semaphores — and it reached the device at T2 with no emitter change (gate T4)."""
+    assert [sem.name for sem in w1flip.semaphores] == [
         "CascadeK.full[0]", "CascadeK.empty[0]", "CascadeK.full[1]", "CascadeK.empty[1]",
         "CascadeK.full[2]", "CascadeK.empty[2]"]
+
+
+# -- what this emitter still does not do -------------------------------------
+
+def test_an_unpairable_link_is_refused_and_says_why():
+    """R-TT-B needs the two occurrence sequences to have the same length: a FIFO's n-th payload
+    is consumed by its n-th get. Drop W2's second `ToNorth` get and the emitter must refuse
+    rather than pair a put with a get that will not run."""
+    plan = m4.plan(w2_legal.legal("npu1", T=4))
+    loop = plan.herd_body[4]
+    dropped = tuple(node for node in loop.body
+                    if not (isinstance(node, ChannelSite) and node.id == "ToNorth.get.8@herd"))
+    broken = dataclasses.replace(plan, herd_body=plan.herd_body[:4] + (
+        dataclasses.replace(loop, body=dropped),))
+    with pytest.raises(m5tt.TTEmitError, match=r"'ToNorth' link 0 has 2 put occurrence"):
+        m5tt.emit(broken)
 
 
 # -- D-14, and the module's own dependencies ---------------------------------
@@ -395,7 +491,7 @@ def _at_module_level(tree: ast.Module, target: ast.AST) -> bool:
     return any(node is target for node in tree.body)
 
 
-@pytest.mark.parametrize("fixture", ("w1_legal", "w3_legal", "w1flip_legal"))
+@pytest.mark.parametrize("fixture", ("w1_legal", "w2_legal", "w3_legal", "w1flip_legal"))
 def test_emission_is_deterministic_across_hash_seeds(fixture):
     """No set or dict iteration order reaches the text: two interpreters with different
     `PYTHONHASHSEED` must emit byte-identical C++ and an identical program. W3 and the flip are

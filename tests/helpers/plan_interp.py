@@ -123,7 +123,14 @@ class _Actor:
             return self.array(node.buffer_id)[
                 tuple(evaluate(sub, env) for sub in node.subscripts)]
         if isinstance(node, Const):
-            return node.value
+            # In the plan's own dtype, not Python's. A bare `0.2` is a Python float, and whether
+            # `0.2 * <np.float32>` is evaluated in float32 or in float64 is then a **numpy
+            # version** question: NEP 50 (numpy >= 2) keeps it weak and gives float32, numpy 1.x's
+            # value-based casting promotes the *scalar* case to float64 and narrows only on the
+            # store. W2 is where that shows — 358 of its 1440 elements come out one ulp apart —
+            # and it is the same defect C++ has if an `f32` literal is not narrowed before use
+            # (`design/08-tt-backend.md` §3.7). `Const.dtype` is in the plan; use it.
+            return node.dtype.numpy(node.value)
         kind = type(node).__name__
         if kind == "BinOp":
             return _BINOP[node.op](self._value(node.lhs, env), self._value(node.rhs, env))

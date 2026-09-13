@@ -18,3 +18,5 @@ vendor/tt/*.txz
 vendor/tt/*.so
 vendor/tt/soc_descriptor.yaml
 generated/
+# Harness worktree metadata, not part of the project.
+.claude/

@@ -1,20 +1,21 @@
 # PROGRESS — the Tenstorrent backend
 
-*State file for the second emitter. Phases **T1** and **T2**, 2026-09-13, branch `tt-backend`.
-Nothing pushed. The AIR side's state file is `design/PROGRESS-B.md`; nothing in the M5 LLDs
-changes.*
+*State file for the second emitter. Phases **T1**, **T2** and **T3**, 2026-09-13, branch
+`tt-backend`. Nothing pushed. The AIR side's state file is `design/PROGRESS-B.md`; nothing in the
+M5 LLDs changes.*
 
 ## Status
 
-**T1 and T2 are done and measured. Three of the four workloads execute on `ttsim` and are exact
-— W1 (GEMM), W3 (Smith-Waterman wavefront) and W1-flip (cascade) — from the same `MappingPlan`
-the AIR emitter consumes.** `spatial/m5tt_emit.py` turns a `MappingPlan` into a `TTProgram` — a
-core range, one data-movement kernel's C++, a circular-buffer table, a semaphore table, an
-io-tensor list and per-core runtime args — and `spatial/m6tt_run.py` executes it through
-`ttnn.generic_op` on Tenstorrent's functional simulator. Each of the three is exact against its
-own oracle under `np.array_equal`, equal element for element to `tests/helpers/plan_interp.py`'s
-numpy interpretation of the same plan, and changed by a deliberate one-line mutation of the
-emitted kernel.
+**T1, T2 and T3 are done and measured. All four workloads execute on `ttsim` and are exact**
+— W1 (GEMM), W3 (Smith-Waterman wavefront), W1-flip (cascade) and, since T3, W2 (Jacobi halo) at
+both parities of `T` — **from the same `MappingPlan` the AIR emitter consumes.**
+`spatial/m5tt_emit.py` turns a `MappingPlan` into a `TTProgram` — a core range, one data-movement
+kernel's C++, a circular-buffer table, a semaphore table, an io-tensor list and per-core runtime
+args — and `spatial/m6tt_run.py` executes it through `ttnn.generic_op` on Tenstorrent's functional
+simulator. Each of the four is exact against its own oracle under `np.array_equal`, equal element
+for element to `tests/helpers/plan_interp.py`'s numpy interpretation of the same plan, and changed
+by a deliberate one-line mutation of the emitted kernel. **Every gate — T1, T2, T3, T4 — is
+green.**
 
 **T2's subject is the first core↔core protocol.** W1 has no core↔core channel at all, so its
 whole program is DRAM traffic on four independent cores. W3's `West` and the flip's `CascadeK`
@@ -23,9 +24,18 @@ are three-link chains, and every value that crosses one does so through the dept
 semaphores per link. The wavefront is **emergent** — nothing in the emitted kernel expresses the
 skew; each PE blocks on its own `noc_semaphore_wait_min` and the diagonal order follows.
 
-**W2 is still refused, by name** (§5). The claim this supports is therefore: one plan, two
-unrelated backends, the same arithmetic — on **three** of four workloads, one of which
-(W1-flip) was not in T2's brief and needed no emitter change to reach.
+**T3's subject is the first link graph that is not a path.** W2's two PEs each put on their
+outbound link before they get on their inbound one, so unlike a chain the *wait-for* graph has a
+cycle. Two things came out of it, both rulings and both measured: **R-TT-B**, pairing a link's
+put and get **occurrences** positionally rather than pairing channel ends — which is what lets one
+link land its payload in `cur` on one occurrence and in `next` on the next, T2's blocker — and
+R-TT-B's **credit**, which is what keeps the pair from deadlocking. W2 is also the only workload
+whose arithmetic is not integer-valued, so it is the one that answers **Q-TT4**: soft-float scalar
+`f32` on a Tensix data-movement core reproduces numpy **bit for bit**.
+
+The claim this supports is therefore: one plan, two unrelated backends, the same arithmetic — on
+**all four** workloads, two of which (W1-flip, and every structural mechanism W2 shares with W3)
+needed no workload-specific code to reach.
 
 No Tenstorrent hardware was touched. `ttsim` is a **functional** simulator of a Wormhole B0
 chip; it is not a timing model and its wall-clock numbers say nothing about a real part.
@@ -126,6 +136,8 @@ The spec governs. One line per difference between the table above (written at T1
 | 1 | T1's runtime-arg vector is **addresses, then coordinates**; the spec §3.4 lists blocks **A** (coordinates), **B** (neighbour NoC coordinates), **C** (DRAM base addresses) in that order | T1's third block *is* the spec's block C — it was never an extra invention. The **order** differs, and the spec was amended to C, A, B rather than renumbering a verified T1 artifact for an ordering that carries no meaning; T2 appends block B. Flagged for the architect |
 | 2 | T1's table says "a core↔core `ChannelPlan` → `TTNotImplemented`" | T2 implements it, exactly as spec §3.5: depth-1 FIFO, `full`/`empty` counting semaphores, `wait_min`, remote `noc_async_write` + barrier + `noc_semaphore_inc` |
 | 3 | T1's table says a segment loop that is not a bundle-index loop "must be matched by an enclosing herd loop of the same axis and the same `(lo, hi, step)`" | Still the first rule. T2 adds the fallback the spec now carries as §3.3 rule 5: no twin ⇒ bind the axis to the site's own occurrence counter, and check the occurrence count against the segment trip count |
+| 3a | T1/T2 pair a core↔core channel's two ends by **site**: every get of a channel must name the same buffer and region | Superseded at T3 by ruling **R-TT-B** (spec §3.5): pair by **occurrence**, the k-th put with the k-th get, and take the destination from the paired get. W3's and the cascade's emitted kernels are byte-identical either way, because their gets *do* all land in one region |
+| 3b | T1/T2 fix the FIFO at **depth 1** — the producer's put `n` waits `empty ≥ n` | Amended at T3 by measurement: correct for a chain, and it **deadlocks** on W2, whose two PEs each put before they get on links running in opposite directions. The credit is derived from R-TT-B's pairing — the smallest gap between two landing regions that alias — and is 1 for W3 and the cascade, 2 for W2 (§T3.3) |
 | 4 | T1 rounds CB sizes to 16 B (spec §4's original wording) | T2 rounds to **32 B**: measured, CB bases are 32 B aligned and R-TT-A′'s L1 residues depend on it |
 | 5 | T1's alignment rule (absolute, 32 B) | Superseded by R-TT-A′ (relative congruence), measured. The T1 rule is strictly stronger, so every W1 transfer still passes and W1's emitted kernel is byte-identical |
 
@@ -350,11 +362,199 @@ W1's emitted kernel is **byte-identical** to T1's — every T1 structural assert
 untouched — because the twin rule of §3.3 rule 4 still runs before the counter fallback, `p = 0`
 adds no term to any offset, and W1's circular buffers were already multiples of 32 B.
 
+## T3 — W2 on ttsim: occurrence pairing, and f32 exactness
+
+*2026-09-13. Every number below was run; the command that produced it is named beside it.*
+
+### T3.1 W2, the Jacobi halo — gate T3
+
+`tests/tt/test_tt_w2.py`, ten tests. Inputs are `test_semantics.w2_inputs(T)`: plane 0 is
+`rng(0)` integer-valued `f32`, and **B-P25** holds — plane 0's Dirichlet rows (`0`, `H+1`) and
+columns (`0`, `W-1`) are copied into every plane, which is what makes the plan and the kernel
+text compute the same thing.
+
+| Measurement | `T = 4` | `T = 5` (the odd peel) |
+|---|---|---|
+| **exact** — `np.array_equal(U, two-loop numpy Jacobi)` over the **whole** tensor | **yes**, max abs error **0.0** | **yes**, max abs error **0.0** |
+| equality with `tests/helpers/plan_interp.py` on the same inputs | **yes**, element for element | **yes** |
+| boundary — plane 0 unwritten; rows `0`/`17` and columns `0`/`15` of every written plane carry plane 0's | **yes** | **yes** |
+| non-vacuous — the interior is non-zero | yes | yes |
+| ttsim's own counter, one `run()` per process, **identical on every run** | **183 914** | **229 133** |
+| wall for the whole process, measured outside it (two repetitions each) | 2.9 s then 1.1 s | 1.3 s then 1.3 s |
+| `slow` marker on the run | **not needed** (Q-TT6) | not needed |
+| UndefinedBehavior lines | **none** (and UB is fatal, §T2.4) | none |
+| semaphores | **4**, ids 0..3: `ToNorth.full[0]=0`, `ToNorth.empty[0]=1`, `ToSouth.full[0]=2`, `ToSouth.empty[0]=3`. `UIn`/`UOut` have an L3 end and carry none | 4, the same |
+| circular buffers | `cur` 640 B, `next` 640 B — already multiples of 32, so the rounding of R-TT-A′ adds nothing | the same |
+| `U`'s DRAM layout | `pad_elems = 0`, `page_bytes = 64` (16 `f32` is already 32-B aligned) | the same |
+
+For scale: 183 914 cycles against W3's 24 426 and W1's 11 509 553. W2 is 2 PEs × 4 `STEP`s × 112
+five-point updates plus a 160-element seed copy, so it sits nearer W3 than W1.
+
+**The negative control.** `test_mutating_the_stencil_constant_changes_the_answer` rewrites the one
+`f32` literal, `((float)(0.2))` → `((float)(0.25))`, at both the places the two `STEP` bodies
+spell it, and asserts the device returns neither the oracle nor the clean result. It does not:
+**884 of 896** interior elements differ, `U[1,1,1]` is `2.25` against `1.8000001`, and ttsim
+reports a different cycle count for the run — **178 668** against the clean 183 914. A second,
+independent perturbation was measured but is not kept as a test (one suffices): dropping the
+fifth stencil term gives 875 of 896 differing and **170 793** cycles.
+
+**No W2-specific code exists.** Everything except R-TT-B below came from mechanisms T1 and T2
+already had: the rank-3 `UIn` slab `(1, 10, 16)` → the `(10, 16)` `cur` buffer is `_common`'s
+leading-unit-dimension rule (T2, §T2.5 item 4, verified unchanged); the seed copy P5 added is an
+ordinary `StoreNode` nest; the `UOut` drain's plane index is the twinless-segment-loop occurrence
+counter of §3.3 rule 5 (`UOut_put_n`, incremented once per `STEP`, so the two `STEP`s of a `t`
+trip write planes `t+1` and `t+2`); the 8 × 64 B drain rows and the 64 B halo rows are all
+congruent under R-TT-A′ with `p = 0` and needed nothing.
+
+### T3.2 Ruling R-TT-B — pairing by occurrence
+
+T2's blocker, verbatim from §5 as it stood: `TTNotImplemented: jacobi: channel 'ToNorth' has gets
+landing in both 'cur'Region(…) and 'next'Region(…); the producer writes one address and cannot
+serve two`.
+
+The architect's ruling (`design/08-tt-backend.md` §3.5) is that this is a limitation of pairing by
+*channel*: the link is served by two put **occurrences** and two get **occurrences** per `t` trip,
+every core runs the identical program, and so the producer's k-th put occurrence is consumed by
+the consumer's k-th get occurrence. What the emitter does, in `_pair`:
+
+1. `_survey` already enumerates the concrete grid; it now also records each link end's site
+   occurrences **in plan order with their trip counts** (only one core reaches each end, which the
+   existing `ends` check enforces, so the list is that core's program order).
+2. Occurrence k of the producer's put list is paired with occurrence k of the consumer's get list.
+   Unequal lengths, or unequal trip counts at the same position, are the internal-consistency
+   error. A put site reached on two links must land the same way on both — one kernel text serves
+   every core — and is refused otherwise.
+3. `_link_end` no longer scans `channel.sites` for a single landing region; it reads the paired
+   get. W2's first put of a trip therefore writes `cur_l1 + 9·16·4` and its second
+   `next_l1 + 9·16·4`, out of one kernel text.
+
+At `T = 5` the peeled `STEP` pairs positionally after the loop's occurrences: puts
+`[put.0, put.6, put.5]` against gets `[get.2, get.8, get.7]`, landing `cur, next, cur`.
+
+**W1, W3 and W1-flip are unaffected: their emitted kernels are byte-identical to T2's**, checked
+by diff before and after the change. W1 has no core↔core channel; W3's two `West` get occurrences
+both land in the whole of `edge_in` and the cascade's single one in the whole of `recv`, so the
+pairing returns what `_link_end` returned before.
+
+### T3.3 The credit — and the deadlock that is not in any of the other three workloads
+
+The ruling left the depth-1 FIFO in place. **It deadlocks on W2**, and the reason is structural:
+W3 and the cascade are chains, so the wait-for graph is a path; W2's two PEs each put on their
+outbound link *before* they get on their inbound one, so with one credit PE0's second put blocks
+on a slot only PE1's later get can free while PE1's second put blocks on one only PE0's later get
+can free. P1′ and P2b do **not** exclude this: they constrain the *channel* graph, which is
+acyclic here, and the cycle is in the wait-for graph the protocol builds on top of it.
+
+Measured, one simulator process, the clean W2 program with the two credit expressions replaced by
+the bare counters:
+
+```text
+$ source scripts/tt_env.sh
+$ timeout 180 .venv-tt/bin/python <the one-credit variant>
+exit=124 after 180s          # killed; the clean run of the same program takes ~1.3 s
+```
+
+No output past `Dispatch telemetry SMC buffer unavailable`, no `UndefinedBehavior`, no progress.
+The test that keeps this is `tests/tt/test_tt_w2.py::test_one_credit_per_link_deadlocks`, marked
+`slow`, which runs the variant in its own process with a **60 s** cap — 45× the clean run and
+enough to be conclusive without spending three minutes.
+
+**The credit, as implemented** (`_credit_of`): enumerate the link's get occurrences **in dynamic
+order**, loops expanded, and take the smallest `d ≥ 1` for which two landing regions `d` apart
+overlap. The producer's put `n` then waits `empty ≥ max(0, n − credit + 1)`. Two details are
+load-bearing:
+
+* **dynamic order, not the static occurrence list.** At `T = 5` the real sequence is
+  `cur next cur next cur` while the static list spells `cur cur next next cur`; the static list
+  would compute a credit of 1 and hang. The expansion prunes every subtree with no site of that
+  channel (so W1-flip's 32 × 64 × 16 compute nest is never walked) and refuses a link carrying
+  more than 100 000 payloads rather than expanding it.
+* **disjointness, not "a different buffer".** Different buffers are different circular buffers and
+  never alias; two regions of the same buffer are compared interval by interval, and an offset the
+  emitter cannot fold is assumed to overlap — which costs a credit and is never wrong.
+
+Measured consequence: **W3 and W1-flip get credit 1** and keep T2's exact text; **W2 gets 2**. The
+emitted wait is the unchanged `…, West_put_n);` at credit 1 and
+`…, (ToNorth_put_n < 1 ? 0 : ToNorth_put_n - 1));` at credit 2.
+
+### T3.4 Q-TT4 — soft-float `f32` is bit-exact, and what makes it so
+
+**Closed: yes, bit for bit.** `np.array_equal` over the whole tensor at both parities, max abs
+error 0.0, against the two-loop numpy oracle *and* against `plan_interp`. The tolerance
+`test_semantics.TOL = 1e-5` was not needed and was not widened.
+
+Two conditions carry it, and the second was measured rather than assumed:
+
+| Variant of the one `f32` literal | Result | ttsim cycles |
+|---|---|---|
+| `((float)(0.2))` — what the emitter emits | **exact**, max abs err 0.0 | 183 914 |
+| `0.2f` | **exact**, byte-for-byte the same answer | **183 914** (identical) |
+| `0.2` — unsuffixed, i.e. a C++ `double` | **not exact**: 358 of 896 interior elements one ulp off, max abs err **4.77e-07**, `U[1,1,1] = 1.8` against `1.8000001` | **253 102** |
+
+The third row is the evidence that the narrowing is load-bearing rather than decorative: an
+unsuffixed `0.2` is a `double`, `0.2 * <float>` is then evaluated in `double` and narrowed only on
+the store, which is not what `numpy.float32(0.2) * <float32>` computes — and the simulator's own
+cycle counter rises by 38 %, which is the soft-float `double` path showing up as work.
+
+The `f` suffix and the cast measure **identical**, so the suffix is a spelling and not a fix. The
+cast is kept: it is also correct for a `Const.text` with no decimal point, where `5f` would not
+compile. `tests/tt/test_m5tt_emit.py::test_f32_constants_are_narrowed_before_they_are_used` holds
+all four workloads to it and asserts no `double` token appears in any emitted kernel.
+
+The other condition is §3.7's exact parenthesisation, which was already the rule: W2's five-term
+sum is emitted left-nested, `((((a+b)+c)+d)+e)`, exactly as the `ExprNode` tree spells it and as
+Python's parser built it.
+
+### T3.5 Two defects the device found, neither of them in the emitter
+
+1. **`tests/helpers/plan_interp.py` evaluated `Const` in Python's dtype, not the plan's.** It
+   returned `node.value`, a Python float. Whether `0.2 * <np.float32>` is then computed in float32
+   or in float64 is a **numpy version** question: NEP 50 (numpy ≥ 2) keeps the scalar weak and
+   gives float32; numpy 1.x's value-based casting promotes to float64 and narrows on the store.
+   `.venv` has numpy 2.5.3 and `.venv-tt` has 1.26.4, so the interpreter agreed with the oracle in
+   the default suite and disagreed with it — by exactly the one-ulp pattern of §T3.4's third row,
+   358 of 1440 elements — under the TT venv, which is where
+   `test_W2_matches_the_plan_interpreter` runs. Fixed by returning `node.dtype.numpy(node.value)`:
+   the plan carries the dtype, so use it. Both venvs now agree at 0.0, and the default suite is
+   unchanged (659 passed). **Only W2 could have found this**: the other three workloads are `i32`
+   or integer-valued `f32`, where the promotion is invisible.
+2. **`ttnn.generic_op` refuses a single io tensor.** W2's plan declares one L3 tensor, `U`, read
+   and written in place; the host asserts
+   `TT_FATAL @ generic_op_device_operation.cpp:135: io_tensors.size() >= 2` — *"io_tensors must
+   contain at least one input tensor and one output tensor, got 1 tensors"* — because it expects
+   the pre-allocated output last. `m6tt_run.run` passes the same handle twice when there is only
+   one. A host-API shape, not a fact about the plan: `program.io_tensors`, the
+   `TensorAccessorArgs` block and the kernel's addressing are all unchanged.
+
+### T3.6 Test counts, both suites
+
+| Command | Result |
+|---|---|
+| `.venv/bin/python -m pytest` (default) | **659 passed, 1 skipped, 37 deselected in 12.9 s** (T2: 648 passed, 1 skipped, 27 deselected) |
+| `source scripts/tt_env.sh; .venv-tt/bin/python -m pytest -m requires_ttsim tests/tt` | **25 selected, 25 passed**, exit status 0, in **270 s** and **275 s** on two runs (T2: 15 in 206.9 s). Nine simulator sessions: W1 clean + negative, W3 clean + negative + Q-TT3 + A-TT1 probe, flip clean + negative, W2 `T = 4` + `T = 5` + negative, and the one-credit variant that is *meant* to hang |
+
+*A recording note, so the count above is not taken on trust: **pytest's own final summary line is
+lost** in this suite. `ttsim`'s exit path ends the process without flushing Python's stdout, so
+when stdout is a file or a pipe the `N passed in Ns` line never reaches it — reproduced with
+`PYTHONUNBUFFERED=1`, which does not help because the loss is in the C++ exit and not in the
+buffer policy. What is recorded instead is the progress line — **25 dots, no `F` or `E`** — the
+exit status (**0**, and pytest exits non-zero on any failure: the run where
+`test_W2_matches_the_plan_interpreter` failed did print its `FAILED …` section and exited 1) and
+`--collect-only -q`'s per-file counts, `flip 4 + w1 4 + w2 10 + w3 7 = 25`. ttsim's own total for
+the suite is **47 577 057** cycles, identical on both runs.*
+
+Of the ≈270 s, **W1 and the cascade are ≈205 s** (scalar C++ GEMM: 11.5 M and 12.1 M simulated
+cycles) and the deadlock demonstration is 60 s; all four W2 runs together are under 6 s.
+`-m requires_ttsim` overrides `addopts`, so the `slow` deadlock test **is** selected by the
+command above; `-m 'requires_ttsim and not slow'` is the 210 s form.
+
+---
+
 ## 5. Not run / not done
 
 | Item | Why | The exact error |
 |---|---|---|
-| **W2** (Jacobi) on ttsim | the halo `get` lands in `cur` on an even timestep and in `next` on an odd one — the ping-pong peel — and a remote write has one destination address. Gate **T3** | `TTNotImplemented: jacobi: channel 'ToNorth' has gets landing in both 'cur'Region(offsets=(Expr(coeffs=(), const=9), Expr(coeffs=(), const=0)), sizes=(1, 16), strides=(16, 1)) and 'next'Region(offsets=(Expr(coeffs=(), const=9), Expr(coeffs=(), const=0)), sizes=(1, 16), strides=(16, 1)); the producer writes one address and cannot serve two` |
+| ~~**W2** (Jacobi) on ttsim~~ | **done at T3** — exact at `T = 4` and `T = 5`, §T3.1. T2's refusal (`channel 'ToNorth' has gets landing in both 'cur'Region(…) and 'next'Region(…); the producer writes one address and cannot serve two`) is answered by ruling **R-TT-B**, occurrence pairing; the deadlock it was hiding is answered by R-TT-B's credit | — |
 | ~~**W1-flip** on ttsim~~ | **done at T2** — exact, §T2.2. T1's refusal (`channel 'CascadeK' has 0 segment-scope get(s) …; a core-to-core channel is T2/T3/T4`) no longer fires | — |
 | ~~the rank-3 L3 slab of W2's `UIn`~~ | **fixed at T2** by `_common`: T1's `site 'UIn.put.0@segment' moves a (1, 10, 16) slab … into the (10, 16) buffer 'cur'` is gone; W2 now reaches the ping-pong problem above | — |
 | ~~**W3** (Smith-Waterman) on ttsim~~ | **done at T2** — exact, §T2.1. T1's refusal (`the segment-scope loop over 'i_source' … is neither a bundle-index loop nor a loop the herd body runs …`) is answered by the occurrence counter of §3.3 rule 5 | — |
@@ -366,27 +566,31 @@ adds no term to any offset, and W1's circular buffers were already multiples of 
 
 ## 6. What is left
 
-**T2 (W3) and T4 (W1-flip) are green.** One gate remains, and one thing beyond the gates:
+**Every gate is green: T1 (W1), T2 (W3), T3 (W2) and T4 (W1-flip).** The `[not run]` list of §5
+now holds **no workload**. What remains is out of scope, unreachable here, or a limit:
 
-1. **T3 — W2, the Jacobi halo.** The blocker is named above: the halo `get` alternates between
-   `cur` and `next` across the ping-pong peel, and a remote write has one destination address.
-   Three honest shapes, in order of how much they concede: (a) the producer writes to whichever
-   buffer the consumer's *current* parity says, which means one more runtime value crossing the
-   link or a per-parity pair of sites the plan already distinguishes; (b) a landing buffer of its
-   own that the consumer copies out of, which costs a copy the plan did not ask for; (c) refuse.
-   Q-TT4 — whether soft-float scalar `f32` reproduces numpy bit-for-bit on the 5-point stencil —
-   is only reachable after that, and W2 is the only workload that can answer it.
-2. **Beyond the gates: the Tensix compute engine.** Everything runs on one data-movement RISC-V
-   in scalar C++, which is what makes W1 and the flip take ~50 s of simulated time against W3's
-   2 s. A `ComputeConfigDescriptor` kernel with `mm_init`/`matmul_tiles` over `TILE_LAYOUT`
+1. **Real Tenstorrent silicon.** No hardware was touched. Only `TT_METAL_SIMULATOR` separates the
+   two paths, and that is an *untested* claim, not a measured one.
+2. **The Tensix compute engine.** Everything runs on one data-movement RISC-V in scalar C++,
+   which is what makes W1 and the cascade take ~50 s of simulated time against W3's 2 s and W2's
+   1.3 s. A `ComputeConfigDescriptor` kernel with `mm_init`/`matmul_tiles` over `TILE_LAYOUT`
    tensors would be the real lowering — and would change the mapping table's CB row from "one
-   page is the whole buffer" to a tile-paged CB with `cb_reserve_back`/`cb_push_back`. It is not
-   in scope: this repo does not do performance work (`CLAUDE.md`).
+   page is the whole buffer" to a tile-paged CB with `cb_reserve_back`/`cb_push_back`. Out of
+   scope: this repo does not do performance work (`CLAUDE.md`).
+3. **Double buffering** (`ping_pong_candidate` is read and ignored), **`f16`/`bf16`** (no scalar
+   C++ type on a data-movement core), and **any timing claim** (`ttsim` is functional).
+4. **Two rulings are recorded here and need the architect's adjudication**, both from T3:
+   **R-TT-B** as written into `design/08-tt-backend.md` §3.5, and its **credit**, which is the
+   amendment T3's measurement forced on the ruling as briefed. Both are implemented, both are
+   measured, and the one-credit form's deadlock is reproducible in 180 s (§T3.3).
 
 A further honest note for any pitch: what this demonstrates is that **the `MappingPlan` is
-backend-neutral for W1, W3 and W1-flip** — a GEMM, a wavefront with a real core-to-core protocol,
-and a cascade — not that the DSL targets Tenstorrent. Tenstorrent is not an AIR target
-(`CLAUDE.md`'s scope rules already say so); this is a second, separate emitter behind the same
-plan. And ttsim is a functional simulator: **no Tenstorrent hardware was involved at any point**,
-and the one thing T2 measured about the simulator's own fidelity is a limit — it does not report
-a missing write barrier before a semaphore increment (Q-TT3).
+backend-neutral for all four workloads** — a GEMM, a wavefront with a real core-to-core protocol,
+a cascade, and a bidirectional halo exchange whose arithmetic is floating-point and bit-exact —
+not that the DSL targets Tenstorrent. Tenstorrent is not an AIR target (`CLAUDE.md`'s scope rules
+already say so); this is a second, separate emitter behind the same plan. And ttsim is a
+functional simulator: **no Tenstorrent hardware was involved at any point**, and the one thing T2
+measured about the simulator's own fidelity is a limit — it does not report a missing write
+barrier before a semaphore increment (Q-TT3). T3 adds a second, more useful limit in the other
+direction: a **deadlock** is a hang, not a wrong number, so the simulator does surface that class
+of protocol bug unambiguously (§T3.3).

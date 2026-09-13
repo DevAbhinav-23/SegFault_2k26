@@ -175,6 +175,14 @@ def run(program: TTProgram, tensors: dict[str, np.ndarray]) -> dict[str, np.ndar
         uploaded = {spec.name: _upload(ttnn, device, spec, tensors[spec.name])
                     for spec in program.io_tensors}
         order = [uploaded[spec.name] for spec in program.io_tensors]
+        if len(order) == 1:
+            # `ttnn.generic_op` refuses a single entry — `TT_FATAL @ generic_op_device_operation
+            # .cpp:135: io_tensors.size() >= 2`, "must contain at least one input tensor and one
+            # output tensor" — because it expects the pre-allocated output last. W2 declares one
+            # L3 tensor, read and written in place, so the same handle stands in both roles. A
+            # host-API shape, not a fact about the plan: the kernel is addressed through
+            # `TensorAccessorArgs` built from `program.io_tensors`, which is unchanged.
+            order = order + order
         ttnn.generic_op(order, _descriptor(ttnn, device, program, uploaded))
         return {spec.name: _download(spec, uploaded[spec.name])
                 for spec in program.io_tensors}

@@ -29,7 +29,7 @@ project's own `.venv` and its unit tests join the default suite. `ttnn` appears 
 | `BufferPlan.ping_pong_candidate` | **ignored** — a functional target does not double-buffer |
 | an L3↔L1 `ChannelPlan` | **the herd side transfers it itself**: row-wise `noc_async_read` / `noc_async_write` of the *segment* site's `Region`, plus a barrier (see `_bundle_env`) |
 | a segment loop wrapping only L3 sites | nothing of its own: a herd twin of the same name and bounds, else the site's own occurrence counter (see `_segment_env`) |
-| a core↔core `ChannelPlan` | a **depth-1 FIFO**: a direct remote L1 write plus `full`/`empty` counting semaphores (see `_link`) |
+| a core↔core `ChannelPlan` | a **bounded FIFO**: a direct remote L1 write plus `full`/`empty` counting semaphores (see `_link`). Which get occurrence a put occurrence feeds, and how many payloads may be in flight, are ruling **R-TT-B**'s (see `_pair`) |
 | `ChannelPlan.size` | one link per concrete bundle index; two semaphore ids each, `full` then `empty`, in `plan.channels` order |
 | `LoopPlan`, either `kind` | a C++ `for`; `"unrolled"` is an AIE tracing distinction |
 | `StoreNode` / `ExprNode` | scalar C++ over `volatile tt_l1_ptr <ctype>*`; `Const` from `Const.text`, never a float round-trip; `MaxMin`/`Select` as ternaries |
@@ -190,7 +190,7 @@ class TTTensor:
 
 @dataclass(frozen=True)
 class TTSemaphore:
-    """One end of one core↔core link's depth-1 FIFO (`design/08-tt-backend.md` §3.5)."""
+    """One end of one core↔core link's FIFO (`design/08-tt-backend.md` §3.5)."""
 
     id: int
     name: str
@@ -284,6 +284,8 @@ class _Emitter:
         self.counters: list[str] = list(counters)   # C++ occurrence counters, plan order
         self.sem_base: dict[str, int] = {}  # core-to-core channel -> its first semaphore id
         self.peers: dict[tuple[str, str, tuple[int, int]], tuple[int, int]] = {}
+        self.landing: dict[str, ChannelSite] = {}   # put site id -> the get it feeds (R-TT-B)
+        self.credit: dict[str, int] = {}    # put site id -> payloads that may be in flight
         self.tt_tensors: dict[str, TTTensor] = {}
         self.pending: str | None = None     # the counter this transfer advances
 
@@ -501,6 +503,9 @@ class _Emitter:
         ends: dict[tuple[str, int, str], tuple[int, int]] = {}    # link end -> its core
         held: dict[tuple[str, str, tuple[int, int]], int] = {}     # core's link, per channel end
         counts: dict[tuple[tuple[int, int], str, str], int] = {}
+        # R-TT-B: one link end's site occurrences, in plan order, with their trip counts. Only
+        # one core reaches each (the `ends` check below), so this is that core's program order.
+        occurrences: dict[tuple[str, int, str], list[tuple[ChannelSite, int]]] = {}
         for core, env in self._cores_of():
             reached: list[tuple[ChannelSite, tuple[int, ...], int]] = []
             self._static_sites(self.plan.herd_body, env, 1, reached)
@@ -510,6 +515,7 @@ class _Emitter:
                 if not self._is_c2c(site.channel):
                     continue
                 flat = self._flat_index(self.channels[site.channel], index, site)
+                occurrences.setdefault((site.channel, flat, site.kind), []).append((site, trips))
                 if ends.setdefault((site.channel, flat, site.kind), core) != core:
                     raise self._bug(
                         f"channel {site.channel!r} link {flat} has {site.kind}s on cores "
@@ -530,6 +536,7 @@ class _Emitter:
                                 f"and no {other[kind]}; the plan's put/get balance says it must")
             self.peers[(channel, kind, core)] = peer
         self._check_counts(counts)
+        self._pair(occurrences, ends)
 
     def _check_counts(self, counts: dict[tuple[tuple[int, int], str, str], int]) -> None:
         """The herd runs a channel end exactly as often as the segment side transfers one
@@ -546,6 +553,143 @@ class _Emitter:
                             f"the segment side of channel {channel!r} transfers one index "
                             f"{want} time(s) but core {core}'s herd body runs {got} {kind}(s) "
                             f"on it; the two must agree for the herd side to do the transfer")
+
+    # -- R-TT-B: which get occurrence each put occurrence feeds ---------------
+
+    def _pair(self, occurrences: dict[tuple[str, int, str], list[tuple[ChannelSite, int]]],
+              ends: dict[tuple[str, int, str], tuple[int, int]]) -> None:
+        """**Ruling R-TT-B** (architect, 2026-09-13). A link is not served by one put *site* and
+        one get *site* but by a sequence of put and get **occurrences**, and W2's halo lands in
+        `cur` on one and in `next` on the next. Every core runs the identical program, so the
+        producer's k-th put occurrence on a link — in plan order, loops as written rather than
+        trip-expanded — is consumed by the consumer's k-th get occurrence on that link. The
+        destination buffer and `Region` of a put occurrence are therefore its paired get's.
+
+        The counts must agree, and so must the trip counts of any loops the occurrences sit in;
+        either mismatch is an internal-consistency failure, not a user error. A put site reached
+        on more than one link must land the same way on each, because one kernel text serves
+        every core.
+        """
+        for (channel, flat, kind), puts in occurrences.items():
+            if kind != "put":
+                continue
+            gets = occurrences.get((channel, flat, "get"), [])
+            if len(puts) != len(gets):
+                raise self._bug(
+                    f"channel {channel!r} link {flat} has {len(puts)} put occurrence(s) on core "
+                    f"{ends[(channel, flat, 'put')]} against {len(gets)} get occurrence(s) on "
+                    f"core {ends.get((channel, flat, 'get'))}; a FIFO's n-th payload is consumed "
+                    f"by its n-th get, so the two sequences must have the same length "
+                    f"(design/08-tt-backend.md §3.5, R-TT-B)")
+            for (put, put_trips), (get, get_trips) in zip(puts, gets):
+                if put_trips != get_trips:
+                    raise self._bug(
+                        f"channel {channel!r} link {flat} runs the put {put.id!r} {put_trips} "
+                        f"time(s) against {get_trips} for the get {get.id!r} it is paired with; "
+                        f"occurrences inside a loop must have the same trip count on both ends "
+                        f"(design/08-tt-backend.md §3.5, R-TT-B)")
+                landed = self.landing.setdefault(put.id, get)
+                if landed != get:
+                    raise TTNotImplemented(
+                        f"{self.plan.launch_name}: the put {put.id!r} lands in "
+                        f"{landed.buffer!r}{landed.region} on one link of channel {channel!r} "
+                        f"and in {get.buffer!r}{get.region} on another; one kernel text serves "
+                        f"every core, so a put site has one destination")
+            credit = self._credit_of(channel, flat, ends.get((channel, flat, "get")))
+            for put, _ in puts:
+                if self.credit.setdefault(put.id, credit) != credit:
+                    raise TTNotImplemented(
+                        f"{self.plan.launch_name}: the put {put.id!r} may run "
+                        f"{self.credit[put.id]} payload(s) ahead on one link of channel "
+                        f"{channel!r} and {credit} on another; one kernel text serves every core")
+
+    def _credit_of(self, channel: str, flat: int, consumer: tuple[int, int] | None) -> int:
+        """How many payloads a link may carry before the producer must wait — the smallest gap
+        between two payloads whose landing regions overlap.
+
+        With R-TT-B the payloads of one link land in a *sequence* of regions, not in one. A
+        payload's slot is released at the top of the next get on the link (§3.5 point 5), so when
+        the producer sends payload `n` the consumer may still be reading payloads
+        `n-credit+1 … n-1`; the write is safe exactly when `n`'s landing region is disjoint from
+        all of those. W3's two get occurrences both land in the whole of `edge_in`, so the gap is
+        1 and the protocol is the depth-1 FIFO of T2, unchanged. W2's alternate between `cur` and
+        `next`, so the gap is 2 — **and 1 would deadlock**: PE0 and PE1 each put before they get,
+        so with one credit each blocks on a slot only the other's later get could free.
+        """
+        if consumer is None:
+            return 1
+        env = dict(zip(self.plan.herd.coords, self._coord_of(consumer)))
+        landings: list[ChannelSite] = []
+        self._payloads(self.plan.herd_body, env, channel, flat, landings)
+        for gap in range(1, len(landings)):
+            if any(self._overlaps(landings[at], landings[at + gap])
+                   for at in range(len(landings) - gap)):
+                return gap
+        return max(1, len(landings))
+
+    def _coord_of(self, core: tuple[int, int]) -> tuple[int, ...]:
+        return core if len(self.plan.herd.grid) > 1 else (core[0],)
+
+    _PAYLOAD_LIMIT = 100_000
+    """How many payloads of one link `_payloads` will enumerate before refusing. The credit of
+    R-TT-B is read off the dynamic sequence of landing regions, which loop trip counts expand;
+    the four workloads' longest link carries 32."""
+
+    def _mentions(self, nodes: tuple[Any, ...], channel: str) -> bool:
+        """Does this subtree carry a site of that channel? The compute nests are the bulk of a
+        herd body and none of them does, so this prunes the expansion below to the sites."""
+        return any(
+            (isinstance(node, LoopPlan) and self._mentions(node.body, channel))
+            or (isinstance(node, BranchNode) and (self._mentions(node.then, channel)
+                                                  or self._mentions(node.otherwise, channel)))
+            or (isinstance(node, ChannelSite) and node.channel == channel)
+            for node in nodes)
+
+    def _payloads(self, nodes: tuple[Any, ...], env: dict[str, int], channel: str, flat: int,
+                  out: list[ChannelSite]) -> None:
+        """The consumer's get occurrences on one link **in dynamic order**, loops expanded. The
+        static list cannot stand in for it: W2 at `T = 5` runs its two in-loop occurrences twice
+        and then the peel, `cur next cur next cur`, which the static list would spell
+        `cur cur next next cur`."""
+        for node in nodes:
+            if isinstance(node, LoopPlan):
+                if not self._mentions(node.body, channel):
+                    continue
+                for _ in range(self._static_trips(node, env)):
+                    self._payloads(node.body, env, channel, flat, out)
+                    if len(out) > self._PAYLOAD_LIMIT:
+                        raise TTNotImplemented(
+                            f"{self.plan.launch_name}: link {flat} of channel {channel!r} carries "
+                            f"more than {self._PAYLOAD_LIMIT} payloads; this emitter reads the "
+                            f"link's credit off the sequence of landing regions and enumerates "
+                            f"it (design/08-tt-backend.md §3.5, R-TT-B)")
+            elif isinstance(node, BranchNode):
+                self._payloads(node.then if self._static_guard(node.predicate, env, "a BranchNode")
+                               else node.otherwise, env, channel, flat, out)
+            elif isinstance(node, ChannelSite):
+                if (node.channel, node.kind) != (channel, "get"):
+                    continue
+                if node.guard is not None and not self._static_guard(node.guard, env, node.id):
+                    continue
+                index = tuple(self._static(value, env, node.id) for value in node.indices)
+                if self._flat_index(self.channels[channel], index, node) == flat:
+                    out.append(node)
+
+    def _overlaps(self, one: ChannelSite, two: ChannelSite) -> bool:
+        """Can two landing regions hold the same L1 byte? Different buffers are different
+        circular buffers and never alias; an offset this emitter cannot fold is assumed to
+        overlap, which costs a credit and is never wrong."""
+        if one.buffer != two.buffer:
+            return False
+        shape = self.buffers[one.buffer].shape
+        one_offsets, one_sizes = self._slab(one.region, shape, f"site {one.id!r}")
+        two_offsets, two_sizes = self._slab(two.region, shape, f"site {two.id!r}")
+        for here, size, there, extent in zip(one_offsets, one_sizes, two_offsets, two_sizes):
+            if here.coeffs or there.coeffs:
+                return True
+            if here.const + size <= there.const or there.const + extent <= here.const:
+                return False
+        return True
 
     def _flat_index(self, channel: ChannelPlan, index: tuple[int, ...],
                     site: ChannelSite) -> int:
@@ -932,22 +1076,17 @@ class _Emitter:
         if counter is not None:            # program order is the counter (S3.3 rule 5)
             self._emit(f"{counter} += 1;")
 
-    # -- core to core: a depth-1 FIFO over a direct remote L1 write -----------
+    # -- core to core: a bounded FIFO over a direct remote L1 write -----------
 
-    def _link_end(self, channel: ChannelPlan, kind: str) -> ChannelSite:
-        """The far end of a core↔core channel: where the payload lands. Every site of that kind
-        must name the same buffer and region, or one write address would not serve them all."""
-        ends = [end for end in channel.sites if end.kind == kind and end.scope == "herd"]
-        if not ends:
-            raise self._bug(f"channel {channel.name!r} has no herd-scope {kind}; a core-to-core "
-                            f"channel has both ends in the herd body")
-        for end in ends[1:]:
-            if (end.buffer, end.region) != (ends[0].buffer, ends[0].region):
-                raise TTNotImplemented(
-                    f"{self.plan.launch_name}: channel {channel.name!r} has {kind}s landing in "
-                    f"both {ends[0].buffer!r}{ends[0].region} and {end.buffer!r}{end.region}; "
-                    f"the producer writes one address and cannot serve two")
-        return ends[0]
+    def _link_end(self, site: ChannelSite) -> ChannelSite:
+        """Where this put occurrence's payload lands: the get occurrence R-TT-B paired it with,
+        found once per link in `_pair` and read here."""
+        landing = self.landing.get(site.id)
+        if landing is None:
+            raise self._bug(f"the put {site.id!r} on channel {site.channel!r} was paired with no "
+                            f"get occurrence; every put this core reaches is surveyed "
+                            f"(design/08-tt-backend.md §3.5, R-TT-B)")
+        return landing
 
     def _sem(self, channel: ChannelPlan, site: ChannelSite, which: str) -> str:
         """`get_semaphore(...)` for this link's `full` or `empty`, as C++ over the coordinates.
@@ -957,7 +1096,8 @@ class _Emitter:
         return f"get_semaphore((uint32_t)({link}))"
 
     def _link(self, site: ChannelSite) -> None:
-        """One end of a depth-1 FIFO (`design/08-tt-backend.md` §3.5)."""
+        """One end of a bounded FIFO (`design/08-tt-backend.md` §3.5, and R-TT-B for which get
+        occurrence a put occurrence feeds and how many payloads may be in flight)."""
         channel = self.channels[site.channel]
         counter = self._counter(channel.name, site.kind)
         peer = f"{channel.name}_{site.kind}"
@@ -973,7 +1113,7 @@ class _Emitter:
             self._emit(f"{counter} += 1;")
             return
 
-        far = self._link_end(channel, "get")
+        far = self._link_end(site)
         src, dst = self.buffers.get(site.buffer), self.buffers.get(far.buffer)
         if src is None or dst is None:
             raise self._bug(f"channel {channel.name!r} moves {site.buffer!r} into {far.buffer!r}, "
@@ -1007,8 +1147,14 @@ class _Emitter:
                 f"{src.name!r} to L1 byte {there_base} of {dst.name!r}; a NoC write needs the "
                 f"two congruent mod {_WRITE_ALIGN} (design/08-tt-backend.md §3.3, R-TT-A′)")
 
+        # R-TT-B: the producer may run `credit` payloads ahead, which is how many consecutive
+        # landing regions on this link are disjoint. One is the depth-1 FIFO of T2; W2's halo
+        # alternates between `cur` and `next` and gets two, without which the pair deadlocks.
+        credit = self.credit.get(site.id, 1)
+        free = (counter if credit == 1 else
+                f"({counter} < {credit - 1} ? 0 : {counter} - {credit - 1})")
         self._emit(f"noc_semaphore_wait_min((volatile tt_l1_ptr uint32_t*)"
-                   f"{self._sem(channel, site, 'empty')}, {counter});")
+                   f"{self._sem(channel, site, 'empty')}, {free});")
         for name, size in zip(names, common):
             self._open(f"for (int32_t {name} = 0; {name} < {size}; {name} += 1)")
         here = self._side_text(src_offsets, row_major(src.shape), src_walk, self.env)
