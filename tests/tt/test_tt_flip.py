@@ -63,6 +63,7 @@ def executed(runner, program):
     return result
 
 
+@pytest.mark.fr("FR-TT1")
 def test_flip_carries_a_whole_tile_over_the_link(program):
     """The cascade moves `acc` into the next PE's `recv` a row at a time — thirty-two 256-byte
     writes under one barrier and one `full` increment, which is the multi-row shape of §3.5 that
@@ -76,6 +77,7 @@ def test_flip_carries_a_whole_tile_over_the_link(program):
     assert "for (int32_t _r3_0 = 0; _r3_0 < 32; _r3_0 += 1) {" in program.source
 
 
+@pytest.mark.fr("FR-TT5")
 def test_flip_is_exact_on_ttsim(executed):
     """Same kernel and same data as W1, a different dataflow: each PE owns a `k`-slice, sums its
     own partial tile and hands it up the chain, and only `tx == PK-1` reaches L3. The values are
@@ -85,11 +87,13 @@ def test_flip_is_exact_on_ttsim(executed):
     assert np.array_equal(executed["C"], given["A"] @ given["B"])
 
 
+@pytest.mark.fr("FR-TT9")
 def test_flip_matches_the_plan_interpreter(executed):
     interpreted = plan_interp.run(m4.plan(w1flip_legal.legal("npu1")), inputs())
     assert np.array_equal(executed["C"], interpreted["C"])
 
 
+@pytest.mark.fr("FR-TT8")
 def test_dropping_the_cascade_accumulate_changes_the_answer(runner, program, executed):
     """The negative control: throw away what arrived over the link. The chain then reports only
     the tail PE's own `k`-slice, so the product is wrong — which is what proves the three links

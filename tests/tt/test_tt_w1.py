@@ -77,6 +77,7 @@ def executed(runner, program):
     return result
 
 
+@pytest.mark.fr("FR-TT4")
 def test_W1_is_exact_on_ttsim(executed):
     """The whole point: `MappingPlan` -> TT-Metalium -> ttsim reproduces `A @ B` exactly."""
     given = inputs()
@@ -84,6 +85,7 @@ def test_W1_is_exact_on_ttsim(executed):
     assert np.array_equal(executed["C"], given["A"] @ given["B"])
 
 
+@pytest.mark.fr("FR-TT4")
 def test_W1_leaves_its_inputs_alone(executed):
     """A kernel that wrote outside `C` would not be the plan's."""
     given = inputs()
@@ -91,12 +93,14 @@ def test_W1_leaves_its_inputs_alone(executed):
     assert np.array_equal(executed["B"], given["B"])
 
 
+@pytest.mark.fr("FR-TT9")
 def test_W1_matches_the_plan_interpreter(executed):
     """Plan semantics == simulator semantics, element for element."""
     interpreted = plan_interp.run(m4.plan(w1_legal.legal("npu1")), inputs())
     assert np.array_equal(executed["C"], interpreted["C"])
 
 
+@pytest.mark.fr("FR-TT8")
 def test_mutating_the_kernel_changes_the_answer(runner, program, executed):
     """The negative control: turn the compute node's `+` into `-` and the simulator must return
     something else. This is what proves the device executed *our* kernel."""

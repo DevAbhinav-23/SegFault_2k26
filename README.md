@@ -47,7 +47,10 @@ Read `aircc`/`air-opt` **stderr**, not the exit code: `air-opt` prints `error:` 
 
 A second emitter, `spatial/m5tt_emit.py`, turns the same backend-neutral `MappingPlan` into a
 TT-Metalium program that `spatial/m6tt_run.py` executes on Tenstorrent's **functional** simulator
-`ttsim` — no hardware, and nothing to do with MLIR-AIR. It needs its own venv, because the `ttnn`
+`ttsim` — no hardware, and nothing to do with MLIR-AIR. **All four variants — W1 GEMM, W3
+Smith-Waterman, W1-flip cascade and W2 Jacobi — execute exactly on `ttsim` (gates T1–T4 green,
+2026-09-13), each against numpy, each with a negative control, each equal to the plan
+interpreter.** It needs its own venv, because the `ttnn`
 wheel pins `numpy<2` against the project's `numpy==2.5.3`. Sourcing the script builds `.venv-tt`
 from the checksummed cache in `vendor/tt/` on first use (git-ignored, like `vendor/wheels/`; get
 the four artefacts from Person C or the shared drive and check them with `sha256sum -c
@@ -55,11 +58,14 @@ vendor/tt/SHA256SUMS`), then exports the simulator environment:
 
 ```bash
 source scripts/tt_env.sh
-.venv-tt/bin/python -m pytest -m requires_ttsim tests/tt     # ~100 s: two simulator runs
+.venv-tt/bin/python -m pytest -rA -q -m requires_ttsim tests/tt   # 25 PASSED, exit 0, ~286 s
 ```
 
+Judge that run by its exit status and its `-rA` `PASSED` lines: ttsim's exit ends the process
+without flushing Python's stdout, so pytest's final summary line never reaches a pipe or a file.
 The emitter's own unit tests need none of that and run in the default suite. What the simulator
-run establishes, what it does not, and what T2–T4 would need is
+run establishes and what it does not — silicon, the Tensix compute engine, double buffering,
+`f16`/`bf16`, and any timing claim, none of them touched — is
 [`design/PROGRESS-TT.md`](design/PROGRESS-TT.md).
 
 ## Layout

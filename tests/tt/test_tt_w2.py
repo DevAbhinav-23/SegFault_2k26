@@ -110,6 +110,7 @@ def executed(runner):
 # -- the program, before any device ------------------------------------------
 
 @pytest.mark.parametrize("T", (4, 5))
+@pytest.mark.fr("FR-TT7a", "FR-TT10")
 def test_W2_allocates_four_semaphores_over_two_links(T):
     """Two channels of `size=(1,)`, one link each, `full` on the consumer and `empty` on the
     producer: `design/08-tt-backend.md` §4's W2 row, which says 4."""
@@ -124,6 +125,7 @@ def test_W2_allocates_four_semaphores_over_two_links(T):
 # -- the device --------------------------------------------------------------
 
 @pytest.mark.parametrize("T", (4, 5))
+@pytest.mark.fr("FR-TT7")
 def test_W2_is_exact_on_ttsim(executed, T):
     """**Q-TT4.** The whole tensor, element for element, against the two-loop numpy Jacobi —
     `np.array_equal`, not a tolerance.
@@ -142,6 +144,7 @@ def test_W2_is_exact_on_ttsim(executed, T):
 
 
 @pytest.mark.parametrize("T", (4, 5))
+@pytest.mark.fr("FR-TT7")
 def test_W2_carries_the_dirichlet_boundary_into_every_plane(executed, T):
     """B-P25, from the device side. Rows `0` / `H+1` are never drained and columns `0` /
     `W-1` travel with the strip, so every written plane carries plane 0's read-only boundary —
@@ -157,6 +160,7 @@ def test_W2_carries_the_dirichlet_boundary_into_every_plane(executed, T):
 
 
 @pytest.mark.parametrize("T", (4, 5))
+@pytest.mark.fr("FR-TT9")
 def test_W2_matches_the_plan_interpreter(executed, T):
     """Plan semantics == simulator semantics, element for element. One plan, two unrelated
     executions, the same numbers — the backend-neutrality claim, now on the workload whose
@@ -165,6 +169,7 @@ def test_W2_matches_the_plan_interpreter(executed, T):
     assert np.array_equal(executed[T]["U"], interpreted["U"])
 
 
+@pytest.mark.fr("FR-TT8")
 def test_mutating_the_stencil_constant_changes_the_answer(runner, executed):
     """The negative control: `0.2` becomes `0.25` and the simulator must return something else.
 
@@ -184,6 +189,7 @@ def test_mutating_the_stencil_constant_changes_the_answer(runner, executed):
 
 
 @pytest.mark.slow
+@pytest.mark.fr("FR-TT7a")
 def test_one_credit_per_link_deadlocks(runner):
     """**The measurement behind R-TT-B's credit rule.** T2 fixed a depth-1 FIFO: the producer's
     put `n` waits for `empty >= n`, one slot outstanding. W3 and the cascade are chains and that

@@ -102,6 +102,7 @@ def executed(runner, program):
 
 # -- the program, before any device ------------------------------------------
 
+@pytest.mark.fr("FR-TT1", "FR-TT10")
 def test_W3_allocates_two_semaphores_per_link(program):
     """`West` has `size=(3,)` — three links over a four-PE chain — and each carries a `full` on
     its consumer and an `empty` on its producer. `WestIn` and `EastOut` have an L3 end and are
@@ -116,6 +117,7 @@ def test_W3_allocates_two_semaphores_per_link(program):
 
 # -- the device --------------------------------------------------------------
 
+@pytest.mark.fr("FR-TT6")
 def test_W3_is_exact_on_ttsim(executed):
     """The whole point: `MappingPlan` → TT-Metalium → ttsim reproduces the textbook DP exactly.
 
@@ -127,6 +129,7 @@ def test_W3_is_exact_on_ttsim(executed):
     assert executed["S"][1:, 1:].any(), "an all-zero score matrix would pass vacuously"
 
 
+@pytest.mark.fr("FR-TT6")
 def test_W3_leaves_the_boundary_and_its_inputs_alone(executed):
     """Row 0 and column 0 are the DP's boundary and nothing writes them — which is what makes
     `WestIn`'s constant source legitimate. `q` and `r` are read-only."""
@@ -136,6 +139,7 @@ def test_W3_leaves_the_boundary_and_its_inputs_alone(executed):
     assert np.array_equal(executed["r"], given["r"])
 
 
+@pytest.mark.fr("FR-TT9")
 def test_W3_matches_the_plan_interpreter(executed):
     """Plan semantics == simulator semantics, element for element. One plan, two unrelated
     executions, the same numbers — the backend-neutrality claim."""
@@ -143,6 +147,7 @@ def test_W3_matches_the_plan_interpreter(executed):
     assert np.array_equal(executed["S"], interpreted["S"])
 
 
+@pytest.mark.fr("FR-TT8")
 def test_mutating_the_match_score_changes_the_answer(runner, program, executed):
     """The negative control: turn every MATCH into a MISMATCH and the simulator must return
     something else. Without it, the exactness test would also pass against a simulator that never

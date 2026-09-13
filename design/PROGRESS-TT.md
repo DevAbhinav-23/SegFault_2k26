@@ -1,21 +1,51 @@
 # PROGRESS — the Tenstorrent backend
 
-*State file for the second emitter. Phases **T1**, **T2** and **T3**, 2026-09-13, branch
-`tt-backend`. Nothing pushed. The AIR side's state file is `design/PROGRESS-B.md`; nothing in the
-M5 LLDs changes.*
+*State file for the second emitter. Phases **T1**, **T2**, **T3** and the **T5** close-out, all
+2026-09-13, branch `tt-backend`. Nothing pushed. The AIR side's state file is
+`design/PROGRESS-B.md`; nothing in the M5 LLDs changes.*
 
 ## Status
 
-**T1, T2 and T3 are done and measured. All four workloads execute on `ttsim` and are exact**
-— W1 (GEMM), W3 (Smith-Waterman wavefront), W1-flip (cascade) and, since T3, W2 (Jacobi halo) at
-both parities of `T` — **from the same `MappingPlan` the AIR emitter consumes.**
-`spatial/m5tt_emit.py` turns a `MappingPlan` into a `TTProgram` — a core range, one data-movement
-kernel's C++, a circular-buffer table, a semaphore table, an io-tensor list and per-core runtime
-args — and `spatial/m6tt_run.py` executes it through `ttnn.generic_op` on Tenstorrent's functional
-simulator. Each of the four is exact against its own oracle under `np.array_equal`, equal element
-for element to `tests/helpers/plan_interp.py`'s numpy interpretation of the same plan, and changed
-by a deliberate one-line mutation of the emitted kernel. **Every gate — T1, T2, T3, T4 — is
-green.**
+**All four gates are green and the record is closed.** T1 (W1 GEMM), T2 (W3 wavefront, and
+W1-flip for free), T3 (W2 Jacobi halo at both parities of `T`) and T4 (the cascade) were reached
+on **2026-09-13** and re-run whole at **T5, 2026-09-13**; each is green under §7's three-part
+rule — the execution is **exact** against its own oracle under `np.array_equal`, a deliberate
+one-line mutation of the emitted kernel changes the answer, and the result equals
+`tests/helpers/plan_interp.py`'s numpy interpretation of the same plan element for element —
+so all four workloads execute on `ttsim` **from the same `MappingPlan` the AIR emitter
+consumes**: `spatial/m5tt_emit.py` turns a `MappingPlan` into a `TTProgram` (a core range, one
+data-movement kernel's C++, a circular-buffer table, a semaphore table, an io-tensor list and
+per-core runtime args) and `spatial/m6tt_run.py` executes it through `ttnn.generic_op`.
+
+| Variant | ttsim cycles, identical on every run | wall, one `run()` in its own process | the same `run()` inside T5's whole-suite session |
+|---|---|---|---|
+| W1 (GEMM) | **11 509 553** | 50.9 s cold JIT / 49.9 s warm | 53.7 s |
+| W1-flip (cascade) | **12 129 177** | 54.9 s | 58.3 s |
+| W3 (wavefront) | **24 426** | 2.2 s | 0.1 s |
+| W2 (Jacobi), `T = 4` | **183 914** | 1.1–2.9 s | 0.8 s |
+| W2, `T = 5` (the odd peel) | **229 133** | 1.3–1.5 s | 1.0 s |
+
+*Two different denominators, so both are given: the third column is a whole process — interpreter
+start, device open, JIT, the run — and the fourth is the `run()` call alone inside one session
+that has already opened the device and warmed the JIT cache. ttsim's own counter is the only
+figure that does not move between them, and the suite total is **47 577 057** cycles, identical
+at T3 and T5.*
+
+**Two virtualenvs, and they cannot be merged.** `.venv` is the project's own (numpy 2.5.3, the
+mlir-air pin): `.venv/bin/python -m pytest` → **662 passed, 1 skipped, 37 deselected in ~14 s**
+at T5, and the emitter's own unit tests are part of it. `.venv-tt` is the simulator's
+(numpy 1.26.4, `ttnn==0.78.0`): `source scripts/tt_env.sh; .venv-tt/bin/python -m pytest -rA -q
+-m requires_ttsim tests/tt` → **25 `PASSED` lines, 0 failures, exit status 0, 286 s** at T5. The
+`ttnn` wheel pins `numpy<2` and the project pins `numpy==2.5.3`; that is the whole reason for the
+second venv. **Judge that run by its exit status and its `-rA` `PASSED` lines, not by a summary
+line — there is none** (§T3.6).
+
+**What is `[not run]`, and none of it will be closed here:** real Tenstorrent **silicon** (no
+hardware was touched at any point); the Tensix **compute engine** (matrix/vector — everything
+runs as scalar C++ on one data-movement RISC-V); **double buffering** (`ping_pong_candidate` is
+read and ignored); **`f16`/`bf16`** plans (no scalar C++ type on a data-movement core); any
+**timing** claim (ttsim is functional, not a timing model); and any part but **Wormhole B0** —
+not **Blackhole**, not multi-chip. §5 is the table with the exact refusals.
 
 **T2's subject is the first core↔core protocol.** W1 has no core↔core channel at all, so its
 whole program is DRAM traffic on four independent cores. W3's `West` and the flip's `CascadeK`
@@ -550,6 +580,122 @@ command above; `-m 'requires_ttsim and not slow'` is the 210 s form.
 
 ---
 
+## T5 — close-out: traceability, the consolidated ledger, and what each suite skips
+
+*2026-09-13. No emitter or runner code changed at T5; what changed is the record, plus the
+markers and two tests the FR-TT group needed to be traceable.*
+
+### T5.1 The FR-TT group is traceable, and the TT error codes stay out of the catalogue
+
+`tests/integration/test_traceability.py` now parses **two** requirement documents —
+`design/01-requirements.md` §3 (the **70**) and `design/08-tt-backend.md` §6 (the **14**:
+FR-TT1…FR-TT13 plus FR-TT7a) — and group **TT** joins **M**, **E** and FR-K1…K4 in
+`_BUILT`, the groups every one of whose ids must have at least one
+`@pytest.mark.fr("FR-TT…")`. **14 of 14 are covered**; `tests/README.md`'s rendered inverse index
+carries the rows. The reverse direction is unchanged and still passes: no marker names an id
+neither document declares.
+
+Two details are load-bearing:
+
+* **The device tests count.** `tests/conftest.py`'s `pytest_collection_modifyitems` is
+  `tryfirst`, so it indexes every item *before* `addopts` deselects `requires_ttsim` — the
+  markers on `tests/tt/test_tt_*.py` are visible to the gate in the default `.venv` run, which
+  is the only run the gate asserts in (it skips on a partial collection). Confirmed under
+  `.venv-tt` too: `-m "requires_ttsim and fr"` collects flip 4 + w1 4 + w2 10 + w3 5 = 23 of the
+  25 device tests, the two unmarked being the Q-TT3 and A-TT1 probes, which accept no FR.
+* **No TT condition can reach `RAISED_CODES`.** `tests/helpers/diagnostics.py` only ever adds a
+  code inside `assert_diagnostic`, which reads `excinfo.value.diagnostic` and asserts membership
+  in the 43-code catalogue first. `spatial/m5tt_emit.py` raises `TTEmitError` /
+  `TTNotImplemented` / `TTAlignmentError` and `spatial/m6tt_run.py` raises `TTRunError`, none of
+  which subclasses `SpatialError` or carries a `Diagnostic` at all, so the proposed codes
+  (`TT-ALIGNMENT`, `EMIT-TT-*`) exist only in message text. `test_TT_ALIGNMENT_is_not_in_the_
+  frozen_error_catalogue` is the standing check, and no test in `tests/tt/` imports
+  `tests.helpers.diagnostics` (measured: 0 occurrences).
+
+Two tests were added, one per uncovered id, and nothing else:
+
+| Test | Accepts | What it does |
+|---|---|---|
+| `tests/tt/test_m5tt_emit.py::test_device_tests_skip_when_the_simulator_is_not_configured` | **FR-TT12** | runs `pytest -m requires_ttsim tests/tt/test_tt_w1.py` in a subprocess with `TT_METAL_SIMULATOR` removed from the environment, and asserts exit 0, `4 skipped`, the reason naming the variable, and no error or failure. It is a subprocess because the variable must be absent for a whole session, and this test may itself be running under `.venv-tt` where it is set |
+| `tests/tt/test_m5tt_emit.py::test_the_default_marks_deselect_every_device_test` | **FR-TT13** | asserts `not requires_ttsim` is in `pyproject.toml`'s `addopts` and that every `tests/tt/test_tt_*.py` module carries `pytestmark = pytest.mark.requires_ttsim`. The other half of FR-TT13 — that no `ttnn` import happens — is `test_emitter_imports_nothing_but_stdlib_and_spatial` and `test_runner_imports_ttnn_lazily` |
+
+### T5.2 The consolidated ledger — every Q-TT, C-TT and R-TT, and where it was measured
+
+| # | Resolution | Where it was measured |
+|---|---|---|
+| **Q-TT1 / A-TT1** | **CLOSED T2: holds.** One `CBDescriptor` list over one `CoreRangeSet` gives every core the *same* L1 addresses, so a producer can compute the consumer's buffer address as its own. CB bases `105696 … 106016`, semaphores 0..5 `35056 … 35136`; every CB base ≡ 0 mod 32 | `tests/tt/test_tt_w3.py::test_A_TT1_every_core_sees_the_same_addresses` (a probe kernel on W3's own CB table); §T2.3 |
+| **Q-TT2 / C-TT3** | **CLOSED T2: virtual coordinates, and this part cannot discriminate.** `worker_core_from_logical_core` returns `(18..21, 18)`; the descriptor's physical row is `1-1 … 4-1`; a 4-core chain delivers with **either** on an unharvested Wormhole B0, and an off-by-one mis-delivers (the negative control). The emitter passes the virtual value — the one that survives harvesting | `scripts/tt_probe_coords.py`, runs A/B/C; §T2.3 |
+| **Q-TT3** | **CLOSED T2 as a measurement, and it is a limit on the simulator, not on the design.** With `noc_semaphore_inc` moved *before* `noc_async_write_barrier()` at both `West` put sites the answer is **unchanged** and **no `UndefinedBehavior` is printed**: ttsim is **not an oracle for ordering hazards**. The emitter's order is unchanged; the reversal lives inside one test. Re-measured at T5: *"answer unchanged: True; ttsim reported UndefinedBehavior: False"* | `tests/tt/test_tt_w3.py::test_Q_TT3_reversing_the_barrier_and_the_increment`; §T2.3 |
+| **Q-TT4** | **CLOSED T3: bit for bit.** Soft-float scalar `f32` on a data-movement core reproduces numpy exactly — max abs error **0.0** at `T = 4` and `T = 5`. Two conditions carry it: §3.7's exact parenthesisation, and narrowing the `f32` literal at the point of use (`((float)(0.2))`). The bare `double` literal costs 358 of 896 elements one ulp and 38 % more cycles | `tests/tt/test_tt_w2.py`, `…::test_f32_constants_are_narrowed_before_they_are_used`; §T3.4 |
+| **Q-TT5** | **CLOSED T2: 16 per core**, ids 0..15. 8 accepted, 32 refused with `Semaphore id 16 exceeds max value 15`. Now `m5tt_emit.TT_SEM_LIMIT`, checked before a device is opened | a throwaway over-allocating program on the coordinate probe; §T2.3 |
+| **Q-TT6** | **CLOSED T3: ≈1.3 s a run, no `slow` marker.** W2 is 183 914 / 229 133 cycles against W1's 11.5 M. The one `slow` test in the module is the deadlock demonstration, which is *meant* to hang and is capped at 60 s | §T3.1, §T3.3 |
+| **Q-TT7** | **CLOSED T2, and the question's premise was wrong.** A 4-byte DRAM transfer is legal; what is illegal is a *mismatched* one. The NoC constrains the **difference** of the two byte offsets — mod 16 for a write, mod 32 for a read — and not the size | `scripts/tt_probe_align.py`, 23 cases, one process each; §T2.4 |
+| **Q-TT8** | **CLOSED T1: both run.** The row-major / one-page-is-one-row tensor path and the raw `noc_async_read` / `noc_async_write` pair | §4; `tests/tt/test_tt_w1.py` |
+| **C-TT1** | **CLOSED T1.** `(64, 64)` `f32` `ROW_MAJOR` reports `buffer_page_size() == 256`, `buffer_num_pages() == 64` — one page is one row — and `m6tt_run._upload` re-checks it on every run | §4 |
+| **C-TT2** | **CLOSED T1.** The raw NoC calls with `TensorAccessor::get_noc_addr` JIT-compile and execute; no `Noc`/`DataflowBuffer` wrapper appears in the emitted kernel | §4; `tests/tt/test_m5tt_emit.py` W1 kernel assertions |
+| **C-TT3** | = Q-TT2 above | §T2.3 |
+| **R-TT-A → R-TT-A′** | **Policy kept, derivation replaced by measurement.** DRAM layout stays a host-side policy of `m6tt_run` (per-tensor `pad_elems` / `row_stride_bytes`, pad on upload, strip on readback, `TT-ALIGNMENT` as the refusal); the rule it rests on is a **relative congruence**, so `p = 0` satisfies every tensor of all four workloads, W3's `S` included, and the scratch-buffer / read-modify-write / single-writer machinery the ruling's `p = 7` would have needed **does not exist** | §T2.4; `…::test_leading_pad_is_the_smallest_that_makes_every_transfer_congruent`, `…::test_the_measured_layout_is_no_leading_pad_and_a_padded_row`, `…::test_a_plan_no_leading_pad_can_satisfy_raises_TT_ALIGNMENT` |
+| **R-TT-B** | **Implemented as ruled**: a link's k-th put occurrence pairs with its k-th get occurrence, and the destination of a remote write is read off the paired get. It is what unblocks W2, whose one link lands in `cur` on one occurrence and `next` on the next. W1, W3 and the flip emit **byte-identical** kernels to T2's | §T3.2; `…::test_W2_put_occurrences_land_in_alternating_buffers`, `…::test_an_unpairable_link_is_refused_and_says_why` |
+| **R-TT-B, the credit** | **The ruling's one amendment, forced by a measured deadlock.** Depth 1 is correct for a chain and hangs on W2 (180 s against ≈1.3 s clean), because two PEs that each put before they get make the *wait-for* graph cyclic even though the channel graph is not. The credit is the smallest gap between two get-occurrence landing regions that alias, computed in **dynamic** order: 1 for W3 and the cascade, 2 for W2 | §T3.3; `…::test_W2_gives_each_link_two_credits_and_W3_the_flip_one`, `tests/tt/test_tt_w2.py::test_one_credit_per_link_deadlocks` (`slow`, 60 s cap) |
+
+### T5.3 What each suite skips and deselects, and why
+
+**The default suite**, `.venv/bin/python -m pytest` → **662 passed, 1 skipped, 37 deselected**
+(700 collected).
+
+| | Count | Why |
+|---|---|---|
+| skipped | **1** — `tests/integration/test_traceability.py::test_traceability_full_gate_reports_the_rest` | groups **S**, **L**, **T**, **D** and FR-K5 are A's and C's and are not built; the skip message lists the uncovered ids. It is not a passing gate, it is an unbuilt one, and C deletes the skip when those modules land |
+| deselected | **37** = 13 `slow` + 25 `requires_ttsim` − 1 counted twice | `addopts = -m 'not slow and not requires_device and not requires_ttsim'`. The 13 `slow` are the 12 `aircc` smoke tests plus W2's deadlock demonstration; the 25 are the device tests of `tests/tt/`. **`requires_device` selects 0 tests — there is not one in the suite** (it is C's device path) |
+
+**The TT suite**, `source scripts/tt_env.sh; .venv-tt/bin/python -m pytest -rA -q -m
+requires_ttsim tests/tt` → **25 `PASSED`, 0 failed, exit 0, 286 s**, 50 deselected of 75
+collected.
+
+| | Count | Why |
+|---|---|---|
+| skipped | **0** | the `runner` fixture skips only when `_check_environment()` fails or `ttnn` is not importable; with `tt_env.sh` sourced neither happens. A skip here is an environment fault, and its reason names the variable (FR-TT12) |
+| deselected | **50** | the emitter's own unit tests in `tests/tt/test_m5tt_emit.py`, which need no device and run in the default suite instead |
+| `slow` | **selected, deliberately** | `-m requires_ttsim` overrides `addopts`, so `test_one_credit_per_link_deadlocks` (60 s, expected to hang) **is** in the 25. `-m 'requires_ttsim and not slow'` is the ≈210 s form |
+
+### T5.4 Proposed text for Person C's honest-limits slide and Q&A
+
+*`design/05-work-breakdown.md` §5 (the honest-limits slide) and §6 (the Q&A drill) are **Person
+C's** and are **not edited here**. What follows is proposed text for them — three bullets, which
+are `design/08-tt-backend.md` §8's eight sentences condensed, and one Q&A row. C takes it or
+rewrites it; the full eight sentences and the paste-ready deck block stay in §8.*
+
+**Three bullets for the honest-limits slide:**
+
+* **A functional simulator, not silicon, and no timing claim.** No Tenstorrent hardware was
+  touched at any point; ttsim's "bit-exact numerical results relative to silicon" is
+  **Tenstorrent's claim, not our measurement**, and only the value of `TT_METAL_SIMULATOR`
+  separates the two paths — an *untested* equivalence. One generation, **Wormhole B0**: not
+  Blackhole, not multi-chip. The cycle counts are the simulator's own counter and are **not** a
+  performance number.
+* **The compute is scalar C++ on one data-movement RISC-V, and its `f32` is soft-float.** The
+  Tensix matrix and vector engines, tile layouts, double buffering (`ping_pong_candidate` is read
+  and ignored) and `f16`/`bf16` are all untouched — which is why W1 costs 11.5 M simulated cycles
+  against W3's 24 426. It came out **bit-exact against numpy anyway**, and that is a correctness
+  result, not a performance one. The simulator's own fidelity has a measured limit: it does
+  **not** flag a semaphore increment moved before the write barrier (Q-TT3), so the barrier rule
+  is held by argument, not by measurement.
+* **What it proves is narrow and real.** The same unchanged `MappingPlan` drives two unrelated
+  device models to the same numbers on **four** workloads — a GEMM, a wavefront with a real
+  core-to-core protocol, a cascade, and a bidirectional halo whose arithmetic is floating-point —
+  and each of the four has a **negative control**: a one-line mutation of the emitted kernel
+  changes the answer, so "it matched" is not a statement about a simulator that never ran our
+  kernel. The AIE path stays primary; **Tenstorrent is not an AIR target** and nothing here
+  claims it is.
+
+**One row for the Q&A drill:**
+
+| Question | The answer, in one breath |
+|---|---|
+| *"Why Tenstorrent and not Hexagon?"* | Hexagon is a single DSP core with HVX/HMX over a shared scratchpad — no PE array and no channel model, so `grid`, `place` and the put/get protocols have nothing to map onto; Qualcomm already ships Triton→Hexagon (`qualcomm/hexagon-mlir`, BSD-3, needs their proprietary SDK). Tensix is a grid of cores with private L1 and a NoC, which is the shape the plan already describes — so it is the honest second target, and it runs device-free on their Apache-2.0 functional simulator. |
+
+---
+
 ## 5. Not run / not done
 
 | Item | Why | The exact error |
@@ -583,6 +729,12 @@ now holds **no workload**. What remains is out of scope, unreachable here, or a 
    **R-TT-B** as written into `design/08-tt-backend.md` §3.5, and its **credit**, which is the
    amendment T3's measurement forced on the ruling as briefed. Both are implemented, both are
    measured, and the one-credit form's deadlock is reproducible in 180 s (§T3.3).
+5. **The record is closed at T5.** §T5 carries the FR-TT traceability result (14 of 14 covered),
+   the consolidated Q-TT / C-TT / R-TT ledger and both suites' skip and deselect lists. What is
+   left by owner: **B** — silicon and the compute engine, neither reachable here; **C** — the
+   slide text, which is written out in `design/08-tt-backend.md` §8 ready to paste and condensed
+   to three bullets plus one Q&A row in **§T5.4** above; the
+   **architect** — the two T3 rulings above, and the push.
 
 A further honest note for any pitch: what this demonstrates is that **the `MappingPlan` is
 backend-neutral for all four workloads** — a GEMM, a wavefront with a real core-to-core protocol,

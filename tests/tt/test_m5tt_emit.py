@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import os
 import re
 import subprocess
 import sys
@@ -36,6 +37,7 @@ def w1():
 
 # -- the program W1 produces -------------------------------------------------
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_grid_is_the_logical_herd(w1):
     """`HerdPlan.grid` is `(2, 2)`, and the core range is its 4 cores — not the AIE physical
     herd `(1, 2)` with `repeats`, which is strip-mining and has no meaning on a Tensix grid."""
@@ -44,6 +46,7 @@ def test_W1_grid_is_the_logical_herd(w1):
     assert [core for core, _ in w1.runtime_args] == [(0, 0), (0, 1), (1, 0), (1, 1)]
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_runtime_args_are_addresses_then_coordinates(w1):
     """The ABI: one base address per L3 tensor in `plan.tensors` order, then the herd
     coordinates in `HerdPlan.coords` order. Only the emitter states it."""
@@ -51,6 +54,7 @@ def test_W1_runtime_args_are_addresses_then_coordinates(w1):
         ("addr", "A"), ("addr", "B"), ("addr", "C"), ("const", 1), ("const", 0))
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_cbs_are_one_per_L1_buffer(w1):
     """`acc` 4096 B, `a` 2048 B, `b` 2048 B, one page each — `ping_pong_candidate` is ignored,
     so `a` and `b` are **not** doubled."""
@@ -58,6 +62,7 @@ def test_W1_cbs_are_one_per_L1_buffer(w1):
         (0, "acc", 4096, 4096), (1, "a", 2048, 2048), (2, "b", 2048, 2048)]
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_io_tensors_are_paged_by_the_row(w1):
     """One page is one row: `shape[-1] * dtype.sizeof`. `m6tt_run` checks the device agrees."""
     assert [(t.name, t.shape, t.page_bytes, t.cta_define) for t in w1.io_tensors] == [
@@ -65,11 +70,13 @@ def test_W1_io_tensors_are_paged_by_the_row(w1):
         ("C", (64, 64), 256, "TA_C")]
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_kernel_has_the_k0_loop_with_four_trips(w1):
     """W1's reduction is tiled `TK = 16` over `K = 64`: four trips, from the plan's `LoopPlan`."""
     assert "for (int32_t k0 = 0; k0 < 64; k0 += 16) {" in w1.source
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_kernel_reads_the_A_and_B_slabs_row_by_row(w1):
     """The herd side does the DRAM transfer itself.
 
@@ -88,6 +95,7 @@ def test_W1_kernel_reads_the_A_and_B_slabs_row_by_row(w1):
     assert w1.source.count("noc_async_read_barrier();") == 2
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_kernel_zeroes_the_accumulator_then_accumulates(w1):
     """Both nests come from the plan: the zeroing `LoopPlan` of `StoreNode(Const 0)`, and the
     `i1`/`j1`/`k1` nest carrying W1's one desugared `accumulate`."""
@@ -97,6 +105,7 @@ def test_W1_kernel_zeroes_the_accumulator_then_accumulates(w1):
             "(a[((i1 * 16) + k1)] * b[((k1 * 32) + j1)]));") in w1.source
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_kernel_writes_the_C_tile_back(w1):
     """`C2L3` is unbroadcast, so the segment get's `(i_drain, j_drain)` inverts to `(tx, ty)`
     and the tile lands at `C[tx * 32 : +32, ty * 32 : +32]`, row by row."""
@@ -106,6 +115,7 @@ def test_W1_kernel_writes_the_C_tile_back(w1):
     assert w1.source.count("noc_async_write_barrier();") == 1
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_kernel_declares_one_l1_pointer_per_cb(w1):
     for cb in w1.cbs:
         assert f"const uint32_t {cb.name}_l1 = get_write_ptr({cb.index});" in w1.source
@@ -113,6 +123,7 @@ def test_W1_kernel_declares_one_l1_pointer_per_cb(w1):
                 f"(volatile tt_l1_ptr float*){cb.name}_l1;") in w1.source
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W1_kernel_has_balanced_braces(w1):
     assert w1.source.count("{") == w1.source.count("}")
     assert w1.source.rstrip().endswith("}")
@@ -132,12 +143,14 @@ def w3():
     return m5tt.emit(m4.plan(w3_legal.legal("npu1")))
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W3_grid_is_the_four_pe_chain(w3):
     assert w3.grid == (4,)
     assert w3.core_range == ((0, 0), (3, 0))
     assert [core for core, _ in w3.runtime_args] == [(0, 0), (1, 0), (2, 0), (3, 0)]
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W3_has_two_semaphores_per_link_and_none_for_the_L3_edges(w3):
     """`West` is `size=(3,)`, three links over the chain, each with a `full` on its consumer and
     an `empty` on its producer. `WestIn` and `EastOut` have an L3 end, so they are DRAM
@@ -148,6 +161,7 @@ def test_W3_has_two_semaphores_per_link_and_none_for_the_L3_edges(w3):
         (4, "West.full[2]", 0), (5, "West.empty[2]", 0)]
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W3_runtime_args_carry_the_peer_of_each_channel_end(w3):
     """Block B (`design/08-tt-backend.md` §3.4): per core↔core channel, the peer this core puts
     to and the peer it gets from, as logical cores the runner converts. The head has no `West`
@@ -164,6 +178,7 @@ def test_W3_runtime_args_carry_the_peer_of_each_channel_end(w3):
                                  ("noc_x", (2, 0)), ("noc_y", (2, 0)))
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W3_cbs_are_rounded_to_the_circular_buffer_alignment(w3):
     """`prev`/`cur` are 36 B in the plan and `edge_in`/`edge_out` 4 B. Rounding each up to 32 B
     keeps every CB base 32 B aligned, which is what R-TT-A′'s L1 residues rest on; the flat index
@@ -173,6 +188,7 @@ def test_W3_cbs_are_rounded_to_the_circular_buffer_alignment(w3):
         (4, "edge_in", 32), (5, "edge_out", 32)]
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W3_put_site_is_the_depth_one_fifo(w3):
     """§3.5, the whole protocol in one site: wait for a free slot, write straight into the
     consumer's `edge_in`, make the payload visible, then advertise it."""
@@ -186,6 +202,7 @@ def test_W3_put_site_is_the_depth_one_fifo(w3):
             "            West_put_n += 1;") in w3.source
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W3_get_site_releases_the_previous_slot_before_it_waits(w3):
     """§3.5 point 5 in its operational form: the `empty` increment sits at the top of the *next*
     get on the link, never straight after the wait (which would let the producer overwrite a
@@ -200,6 +217,7 @@ def test_W3_get_site_releases_the_previous_slot_before_it_waits(w3):
             "            West_get_n += 1;") in w3.source
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W3_binds_the_twinless_segment_loops_to_occurrence_counters(w3):
     """§3.3 rule 5. W3's `i_source` and `i_drain` run `[1, 33)` step 1 at segment scope while the
     herd runs `i` over `[1, 33)` **step 2** with two row bodies inside, so there is no twin to
@@ -214,6 +232,7 @@ def test_W3_binds_the_twinless_segment_loops_to_occurrence_counters(w3):
             "(uint32_t)(0 * 4)), edge_in_l1, 4);") in w3.source
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W3_computes_the_recurrence_as_nested_ternaries(w3):
     """§3.7: `MaxMin` left-folds to nested ternaries and `Select` is an expression, never control
     flow, so the association is the interpreter's."""
@@ -222,6 +241,7 @@ def test_W3_computes_the_recurrence_as_nested_ternaries(w3):
     assert "edge_out[0] = cur[8];" in w3.source and "edge_out[0] = prev[8];" in w3.source
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W3_kernel_has_balanced_braces(w3):
     assert w3.source.count("{") == w3.source.count("}")
 
@@ -295,6 +315,7 @@ def test_TT_ALIGNMENT_is_not_in_the_frozen_error_catalogue():
 
 # -- TT-P3, the resource model -----------------------------------------------
 
+@pytest.mark.fr("FR-TT10", "FR-TT11")
 def test_semaphore_and_L1_budgets_are_measured_constants():
     """`design/08-tt-backend.md` §4. The semaphore limit is measured (the host refuses id 16 with
     'Semaphore id 16 exceeds max value 15'); the L1 figure is an estimate and says so."""
@@ -307,6 +328,7 @@ def test_semaphore_and_L1_budgets_are_measured_constants():
     (w2_legal, 1280, 4),
     (w3_legal, 352, 6),
 ))
+@pytest.mark.fr("FR-TT10", "FR-TT11")
 def test_TT_P3_budget_rows(fixture, cb_bytes, sems):
     """One row of §4's table each, against the constants rather than a comment."""
     program = m5tt.emit(m4.plan(fixture.legal("npu1")))
@@ -316,6 +338,7 @@ def test_TT_P3_budget_rows(fixture, cb_bytes, sems):
     assert cb_bytes + 16 * sems <= m5tt.TT_L1_USABLE
 
 
+@pytest.mark.fr("FR-TT10")
 def test_a_plan_over_the_semaphore_limit_is_refused():
     """Nine links would need 18 ids against the measured 16, and the refusal must name the
     number and where it came from."""
@@ -335,6 +358,7 @@ def w2():
     return m5tt.emit(m4.plan(w2_legal.legal("npu1", T=4)))
 
 
+@pytest.mark.fr("FR-TT1", "FR-TT7a")
 def test_W2_has_two_links_and_four_semaphores(w2):
     """`design/08-tt-backend.md` §4's W2 row: `ToNorth[0]` and `ToSouth[0]`, one `full` on each
     consumer and one `empty` on each producer. `UIn`/`UOut` have an L3 end and carry none."""
@@ -344,6 +368,7 @@ def test_W2_has_two_links_and_four_semaphores(w2):
     assert w2.grid == (2,) and [cb.name for cb in w2.cbs] == ["cur", "next"]
 
 
+@pytest.mark.fr("FR-TT7a")
 def test_W2_put_occurrences_land_in_alternating_buffers(w2):
     """**Ruling R-TT-B.** The blocker T2 hit was that `ToNorth` has gets landing in *both* `cur`
     and `next`, and a remote write has one destination. The pairing answers it: the producer's
@@ -362,6 +387,7 @@ def test_W2_put_occurrences_land_in_alternating_buffers(w2):
                     f"{buffer}_l1 + (uint32_t)(({row} * 16) * 4)), 64);") in writes[occurrence]
 
 
+@pytest.mark.fr("FR-TT7a")
 def test_W2_gives_each_link_two_credits_and_W3_the_flip_one(w2):
     """R-TT-B's credit: how many payloads may be in flight is the smallest gap between two
     landing regions that alias. W2's alternate between `cur` and `next`, which do not, so the
@@ -378,6 +404,7 @@ def test_W2_gives_each_link_two_credits_and_W3_the_flip_one(w2):
         assert f"), {counter});" in source and f"({counter} < " not in source
 
 
+@pytest.mark.fr("FR-TT1")
 def test_W2_seeds_next_and_drains_eight_rows_per_step(w2):
     """The rest of W2's shape, which is ordinary emitter machinery rather than R-TT-B: the seed
     copy is a plain `StoreNode` nest (`design/PROGRESS-B.md` §P5), the `UIn` stage reads all ten
@@ -393,6 +420,7 @@ def test_W2_seeds_next_and_drains_eight_rows_per_step(w2):
 
 
 @pytest.mark.parametrize("fixture", (w1_legal, w2_legal, w3_legal, w1flip_legal))
+@pytest.mark.fr("FR-TT7")
 def test_f32_constants_are_narrowed_before_they_are_used(fixture):
     """**Q-TT4's other half, measured.** In C++ an unsuffixed `0.2` is a `double`, so
     `0.2 * <float>` would be evaluated in `double` and narrowed only on the store — which is not
@@ -411,6 +439,7 @@ def test_f32_constants_are_narrowed_before_they_are_used(fixture):
                 f"the literal {token} is not narrowed to float where it is used: {line.strip()}")
 
 
+@pytest.mark.fr("FR-TT1")
 def test_the_cascade_plan_emits_three_links(w1flip):
     """W1-flip's `CascadeK` is the same core↔core shape as `West` — three links, six
     semaphores — and it reached the device at T2 with no emitter change (gate T4)."""
@@ -421,6 +450,7 @@ def test_the_cascade_plan_emits_three_links(w1flip):
 
 # -- what this emitter still does not do -------------------------------------
 
+@pytest.mark.fr("FR-TT7a")
 def test_an_unpairable_link_is_refused_and_says_why():
     """R-TT-B needs the two occurrence sequences to have the same length: a FIFO's n-th payload
     is consumed by its n-th get. Drop W2's second `ToNorth` get and the emitter must refuse
@@ -451,6 +481,7 @@ def _code_only(source: str) -> str:
     return ast.unparse(tree)
 
 
+@pytest.mark.fr("FR-TT2")
 def test_emitter_makes_no_decisions():
     """D-14, as for M5: the TT emitter reads no field of the legality or schedule contracts and
     no kernel size. Everything it emits it read out of the `MappingPlan`."""
@@ -461,6 +492,7 @@ def test_emitter_makes_no_decisions():
         assert forbidden not in code, f"M5-TT's code names {forbidden!r}"
 
 
+@pytest.mark.fr("FR-TT13")
 def test_emitter_imports_nothing_but_stdlib_and_spatial():
     """It has to run in the project's own `.venv`, which cannot hold `ttnn`: the wheel pins
     `numpy<2` against the project's `numpy==2.5.3`."""
@@ -476,6 +508,7 @@ def test_emitter_imports_nothing_but_stdlib_and_spatial():
             assert name.split(".")[0] in allowed, f"M5-TT imports {name!r}"
 
 
+@pytest.mark.fr("FR-TT13")
 def test_runner_imports_ttnn_lazily():
     """`spatial.m6tt_run` is importable without `ttnn`, so the default suite can collect it."""
     source = (ROOT / "spatial" / "m6tt_run.py").read_text(encoding="utf-8")
@@ -492,6 +525,7 @@ def _at_module_level(tree: ast.Module, target: ast.AST) -> bool:
 
 
 @pytest.mark.parametrize("fixture", ("w1_legal", "w2_legal", "w3_legal", "w1flip_legal"))
+@pytest.mark.fr("FR-TT3")
 def test_emission_is_deterministic_across_hash_seeds(fixture):
     """No set or dict iteration order reaches the text: two interpreters with different
     `PYTHONHASHSEED` must emit byte-identical C++ and an identical program. W3 and the flip are
@@ -517,3 +551,45 @@ def test_target_does_not_reach_the_tt_program():
     assert (m5tt.emit(m4.plan(w1_legal.legal("npu1")))
             == m5tt.emit(m4.plan(w1_legal.legal("npu2"))))
     assert "target" not in inspect.signature(m5tt.emit).parameters
+
+
+# -- the skip discipline, and the default suite ------------------------------
+
+@pytest.mark.fr("FR-TT12")
+def test_device_tests_skip_when_the_simulator_is_not_configured():
+    """**FR-TT12.** With `TT_METAL_SIMULATOR` cleared, every device test must **skip with a
+    reason naming what is missing** and must never error — the skip discipline of
+    `design/04-test-plan.md` §8 item 10.
+
+    The run is a subprocess, because the variable has to be missing for the whole session and
+    this one may be running under `.venv-tt` with the simulator configured. `-m requires_ttsim`
+    overrides the default deselect, so the four W1 device tests are selected, reach the `runner`
+    fixture, and skip there — before `ttnn` is imported, which is why this also passes in the
+    project's own `.venv`, where the wheel does not exist.
+    """
+    env = {name: value for name, value in os.environ.items()
+           if name != "TT_METAL_SIMULATOR"}
+    done = subprocess.run(
+        [sys.executable, "-m", "pytest", "-m", "requires_ttsim", "-rs",
+         "-p", "no:cacheprovider", "tests/tt/test_tt_w1.py"],
+        cwd=ROOT, capture_output=True, text=True, env=env, check=False)
+    printed = done.stdout + done.stderr
+    assert done.returncode == 0, printed[-2000:]
+    assert re.search(r"\b4 skipped", printed), printed[-2000:]
+    assert "TT_METAL_SIMULATOR is not set" in printed, printed[-2000:]
+    assert "error" not in printed.lower() and "failed" not in printed.lower(), printed[-2000:]
+
+
+@pytest.mark.fr("FR-TT13")
+def test_the_default_marks_deselect_every_device_test():
+    """**FR-TT13**, the half a test can check: the default suite is unaffected because
+    `requires_ttsim` is in `addopts`' deselect **and** every module that opens a device carries
+    the mark. The other half is that nothing here imports `ttnn`
+    (`test_emitter_imports_nothing_but_stdlib_and_spatial`, `test_runner_imports_ttnn_lazily`).
+    """
+    addopts = next(line for line in (ROOT / "pyproject.toml").read_text(
+        encoding="utf-8").splitlines() if line.startswith("addopts"))
+    assert "not requires_ttsim" in addopts, addopts
+    for module in sorted((ROOT / "tests" / "tt").glob("test_tt_*.py")):
+        assert "pytestmark = pytest.mark.requires_ttsim" in module.read_text(
+            encoding="utf-8"), f"{module.name} opens a device without the mark"

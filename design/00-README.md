@@ -2,7 +2,9 @@
 
 *Phase 1 (design) document set, 2026-09-12. **As of 2026-09-13, Person B's modules — M0, M4, M5
 and M6's off-device half — are built and verified on branch `role-b` (see
-[`PROGRESS-B.md`](PROGRESS-B.md) §P7), while Person A's M1/M2/M3 and Person C's M6 device path,
+[`PROGRESS-B.md`](PROGRESS-B.md) §P7), the stretch TT backend of
+[`08-tt-backend.md`](08-tt-backend.md) is built on branch `tt-backend` with gates T1–T4 green
+(see [`PROGRESS-TT.md`](PROGRESS-TT.md)), while Person A's M1/M2/M3 and Person C's M6 device path,
 M7 harness and M8 fixtures are still stubs.** Every AIR fact this set rests on was verified or
 measured in
 [`../hackathon/VERIFIED-AIR-FACTS.md`](../hackathon/VERIFIED-AIR-FACTS.md) and is cited
@@ -88,7 +90,7 @@ negotiable inside the week.
 | **W2 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G4** B-half: `test_golden_w2`, `test_W2_aircc_none` | B, C | **gate G4, D5** |
 | **W1 weight-stationary flip** (stretch) — 1-D `grid(PK=4)`, `place(px=ax.k0)`, `j` untiled, ascending cascade | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G5** B-half: `test_golden_w1_flip`, `test_W1_flip_aircc_none`, `cascade_channels == 3` | B | **gate G5, D6 midday**; the designated cut if the plan runs over |
 | Device run (stretch) | not started | C | D5 |
-| **TT backend (B, stretch)** — second emitter, `MappingPlan` → TT-Metalium on ttsim; spec [`08-tt-backend.md`](08-tt-backend.md) | **spec drafted 2026-09-13; T1 in progress** | B | **gates T1–T4**; abandoned if a gate is not green after two agent-days |
+| **TT backend (B, stretch)** — second emitter, `MappingPlan` → TT-Metalium on ttsim; spec [`08-tt-backend.md`](08-tt-backend.md) | **T1–T4 GREEN (2026-09-13), close-out T5; see [`PROGRESS-TT.md`](PROGRESS-TT.md)** | B | **gates T1–T4**; abandoned if a gate is not green after two agent-days |
 | W4 FFT | **out of scope** | — | — |
 | Freeze | — | all | **end of D6** |
 

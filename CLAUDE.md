@@ -38,7 +38,8 @@ Parent research repo: **amd-npus** (`/home/adi/Projects/Honours/amd-npus`). This
 ## Nearest neighbours (name these in any pitch)
 amd/Triton-XDNA (Triton SPMD → MLIR-AIR, AIE2/AIE2P) · Dato (Cornell, typed streams → MLIR-AIE) ·
 AIEHalide (the group's own accepted PACT 2026 paper; Halide → MLIR-AIE with ignorable directives) ·
-IRON/ObjectFIFO · ARIES.
+IRON/ObjectFIFO · ARIES · hexagon-mlir (Qualcomm, Triton→Hexagon) · TileLoom / tt-lang /
+triton-tenstorrent (Triton→Tenstorrent) · triton-ascend.
 
 ## Working rules
 - **Research integrity:** no fabricated citations; verify or mark `[UNVERIFIED]`; every count names
