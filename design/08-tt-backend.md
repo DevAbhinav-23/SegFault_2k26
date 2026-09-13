@@ -138,19 +138,27 @@ Nothing else. No compute kernel, no `CBFormatDescriptor` beyond one per buffer, 
 `socket_api.h`, no `DataflowBuffer`/`Noc` wrapper objects. `defines` carries exactly one entry per
 `TensorAccessorArgs` block offset, as the probe does.
 
-> **Conflict — C-TT1 (measurement vs design, kept as designed).** The only *measured-working*
-> path in `$TT` uses `ttnn.TILE_LAYOUT` + `bfloat16` + a 2048-byte page (`$TT/t3_generic_op.py`,
-> `PAGE = 2 * 1024`; `$TT/emitted_kernel.cpp` is its emitted form). The design here mandates
-> `ROW_MAJOR` + `f32`/`i32` + page = one row, which **no probe has run**. Design kept; the
-> row-major/one-row-page path is `[UNVERIFIED — settled at T1]` and is T1's first failure mode.
+> **C-TT1 — CLOSED at T1 (2026-09-13), design confirmed by measurement.** The row-major /
+> one-page-is-one-row path runs. A `(64, 64)` `float32` `ROW_MAJOR` DRAM tensor reports
+> `Tensor.buffer_page_size() == 256` and `Tensor.buffer_num_pages() == 64` on the device — one
+> page is exactly one row — and `Tensor.cpu().to_numpy()` reads it back without torch.
+> W1 executes and `C == A @ B` exactly. Evidence: `design/PROGRESS-TT.md` §4,
+> `tests/tt/test_tt_w1.py`, `spatial/m6tt_run.py::_upload` (which re-checks `buffer_page_size()`
+> against the emitter's page arithmetic on every run, so a device that disagreed would raise
+> rather than mis-address).
 
-> **Conflict — C-TT2 (measurement vs design, kept as designed).** The probe kernel reaches the
-> NoC through the wrapper objects `Noc` and `DataflowBuffer` (`$TT/t3_generic_op.py`,
-> `noc.async_read(...)`, `dfb.reserve_back(1)`), not the raw calls this document emits. Both
-> exist in the same wheel — `noc_async_read` at `$WHEEL/tt_metal/hw/inc/api/dataflow/dataflow_api.h:552`,
-> `noc_async_write` at `:828` — but *the raw pair has not been compiled by this wheel's JIT in
-> our hands*. Design kept (the raw calls take an explicit destination NoC address, which the
-> wrapper does not); `[UNVERIFIED — settled at T1]`.
+> **C-TT2 — CLOSED at T1 (2026-09-13), design confirmed by measurement.** The **raw**
+> `noc_async_read` / `noc_async_write` pair, with `TensorAccessor::get_noc_addr(page_id, offset)`
+> for the DRAM end, JIT-compiles under this wheel and executes correctly on ttsim. No
+> `Noc`/`DataflowBuffer` wrapper object appears in the emitted kernel. Evidence:
+> `design/PROGRESS-TT.md` §4 and the emitted text asserted in `tests/tt/test_m5tt_emit.py`
+> (`test_W1_kernel_reads_the_A_and_B_slabs_row_by_row`,
+> `test_W1_kernel_writes_the_C_tile_back`).
+
+> **Q-TT8 — CLOSED at T1** (it asked only whether C-TT1 and C-TT2 hold): both do. The remaining
+> `[UNVERIFIED]` in this area was **alignment**, which T1 sidestepped by demanding a 32 B absolute
+> alignment of every offset and length; T2 measured what the NoC actually requires — ruling
+> **R-TT-A** in §3.3.
 
 ### 3.3 L3 ↔ L1: the herd side does the DRAM transfer, row-wise
 
@@ -184,6 +192,101 @@ Four rules make this mechanical rather than a decision:
    herd loop must match — W1's `k0`, which appears at both scopes — is `assert`ed equal, and an
    inequality is an internal-consistency failure (§5's list in `03-lld-M5-emitter.md` applies
    verbatim: it is our bug, not the user's).**
+5. **A segment temporal loop with no herd twin is bound to the site's own occurrence counter**
+   (added at T2). W3's `i_source` (segment, `[1, 33)` step 1) has no herd loop of that name: the
+   herd runs `i` over `[1, 33)` **step 2** with two row bodies inside, so rule 4's name-and-bounds
+   match cannot fire. A channel is a FIFO and its `n`-th get consumes its `n`-th put, so the
+   binding is forced and needs no search: the emitter declares one `int32_t <channel>_<kind>_n`
+   per channel end, increments it where the site sits, and substitutes
+   `axis = lo + step · <channel>_<kind>_n`. **Both forms are then checked against each other**:
+   the emitter enumerates the herd body per concrete core, counts that site's occurrences
+   (guards evaluated, loop trips multiplied) and requires the count to equal the segment loop's
+   trip count for that core — 32 against 32 for each of W3's `WestIn`, `EastOut` and `SOut`.
+   A mismatch is an internal-consistency failure, as in rule 4. Rule 4 still runs first, so W1's
+   emitted kernel is byte-identical to T1's.
+
+> ### Ruling R-TT-A — DRAM layout is a host-side policy of `m6tt_run`
+>
+> *(architect, 2026-09-13; **amended by measurement the same day** — see R-TT-A′ below, which is
+> the form implemented. The policy is unchanged; the alignment rule it is built on is not what
+> the design assumed.)*
+>
+> **As ruled.** DRAM layout is a host-side policy of `m6tt_run`, derived mechanically from the
+> plan's regions and passed to the kernel (per-tensor `pad_elems` and `row_stride_bytes`): every
+> row is padded to a multiple of 32 B; a leading pad `p` (`0 ≤ p < 8` elements for 4-byte dtypes)
+> is chosen per tensor as the smallest value making every core's **write** region on that tensor
+> start 16-B aligned; the runner pads on upload and strips on readback. A misaligned read fetches
+> the enclosing 32-B-aligned chunk(s) into an L1 scratch buffer and copies the elements; a
+> misaligned write is realised as read-modify-write of the enclosing 16-B chunk(s) **only if** a
+> static check over all cores' write regions shows every writer of those chunks is the same core;
+> otherwise the emitter raises `TT-ALIGNMENT`. Consequence as ruled: W1/W2/flip `p = 0`; W3's `S`
+> gets `p = 7` (33 `i32` → 40 elements = 160 B), `SOut` lands at `32·(tx+1)` B, `WestIn` reads the
+> enclosing chunk `[0, 32)` and takes element 7, `EastOut` is an RMW of `[144, 160)` permitted
+> because only the tail PE writes that chunk.
+>
+> **Why it is amended.** The ruling's premise is that a transfer is legal when its *own* start is
+> aligned (32 B for a read, 16 B for a write) and its size is large enough. **Measured on ttsim,
+> 2026-09-13, that is not the rule the NoC enforces.** 23 single-transfer cases, one simulator
+> process each, `/tmp/…/probe_align.py` (the case table and every verdict are reproduced in
+> `design/PROGRESS-TT.md` §T2):
+>
+> | transfer | src offset | dst offset | size | verdict |
+> |---|---|---|---|---|
+> | L1 → L1 write | 4 | 4 | 4 B | **ok** |
+> | L1 → L1 write | 4 | 0 | 4 B | **UndefinedBehavior** |
+> | L1 → DRAM write | 4 | 36 | 32 B | **ok** (both ≡ 4 mod 16) |
+> | L1 → DRAM write | 0 | 156 | 4 B | **UndefinedBehavior** |
+> | L1 → DRAM write | 28 | 156 | 4 B | **ok** (both ≡ 12 mod 16) |
+> | DRAM → L1 read | 28 | 28 | 4 B | **ok** |
+> | DRAM → L1 read | 28 | 0 | 4 B | **UndefinedBehavior** |
+> | DRAM → L1 read | 16 | 0 | 16 B | **UndefinedBehavior** (≡ mod 16 but not mod 32) |
+> | DRAM → L1 read | 32 | 0 | 32 B | **ok** |
+>
+> ttsim's own diagnostic names it: `ERROR: UndefinedBehavior: noc_cmd_ctrl: write: alignment of
+> src_addr=0x19ce4 and dst_addr=0x19de0 does not match`, and `libttsim_wh.so` carries the matching
+> read form (`strings`: `read: alignment of src_addr=0x%llx and dst_addr=0x%llx does not match`).
+> **UB aborts the simulation** (exit 1, the program does not complete), so this class of bug
+> cannot produce a wrong number — it produces a named failure.
+>
+> **R-TT-A′ (implemented).** The rule is a **relative congruence**, and transfer size is
+> unconstrained:
+>
+> * a **write** (L1 → L1 or L1 → DRAM) requires `src_byte ≡ dst_byte (mod 16)`;
+> * a **read** (DRAM → L1) requires `src_byte ≡ dst_byte (mod 32)`;
+> * a 4-byte DRAM transfer is legal — **Q-TT7 answered**: what is illegal is a *mismatched*
+>   4-byte transfer, not a small one.
+>
+> The policy therefore keeps its shape and loses its machinery. Per L3 tensor the host lays out
+> `row_stride_bytes = round_up(shape[-1]·width, 32)` — so every row begins on a 32 B boundary and
+> the page index never perturbs the residue — and a leading pad `pad_elems = p`, chosen as the
+> **smallest `p` in `[0, 32/width)` such that every transfer the plan performs on that tensor has
+> its DRAM byte offset congruent to its L1 byte offset**, mod 32 for gets and mod 16 for puts, on
+> every core and every trip. Both residues are proved constant over trips by the same
+> arithmetic-progression argument T1 already used for absolute alignment. If no `p` works the
+> emitter raises **`TT-ALIGNMENT`** naming the transfer that cannot be satisfied — the error path
+> the ruling asks for, now the *only* fallback: **no L1 scratch buffer and no read-modify-write
+> are emitted, and the single-writer check they would have needed does not exist.** The runner
+> pads on upload and strips on readback, exactly as ruled.
+>
+> **Consequences, measured, for the four workloads: `p = 0` for every tensor, W3's `S` included.**
+> With `p = 0` and `row_stride_bytes = 160` (33 `i32` → 132 B → 160 B, seven *trailing* pad
+> elements), W3's three transfers on `S` are all direct:
+>
+> | site | L1 byte offset | DRAM byte offset | mod | congruent |
+> |---|---|---|---|---|
+> | `WestIn` get `S[i, 0:1]` | `edge_in + 0` → 0 | `160·i + 0` → 0 | 32 | yes |
+> | `SOut` put `cur[1:9]` | `cur + 4` → 4 | `160·i + 32·tx + 4` → 4 | 16 | yes |
+> | `EastOut` put `S[i, 32:33]` | `edge_out + 0` → 0 | `160·i + 128` → 0 | 16 | yes |
+>
+> `p = 7` would instead put `S[i, 0]` at byte 28 against an L1 offset of 0 — `28 ≢ 0 (mod 32)` —
+> and is refused by R-TT-A′. The ruling's `p = 7` follows from its stated premise; the premise is
+> what the measurement replaced.
+>
+> **One assumption R-TT-A′ rests on, measured:** a circular buffer's L1 base address is a multiple
+> of 32 B, so the L1 residue is the region's own byte offset. Measured on a 4-core program with
+> CBs of 32/16/16 B: bases `0x19ce0`, `0x19d00`, `0x19d20` — 32 B apart and each ≡ 0 mod 32, on
+> every core. The emitter additionally rounds every CB's `total_size` up to a multiple of **32**
+> (T1 rounded to 16), so consecutive CB bases keep that property.
 
 ### 3.4 Runtime arguments
 
@@ -192,9 +295,20 @@ loop). Each core's vector is three blocks, in this order:
 
 | Block | Contents | Fixed by |
 |---|---|---|
-| A | this core's herd coordinates, in `HerdPlan.coords` order (`("tx","ty")`, or `("tx",)` at rank 1) | the design |
-| B | per **link**, in program order: the neighbour endpoint's NoC `x` then `y` | the design |
 | C | one DRAM base address per `io_order` entry | forced: `TensorAccessor(args, base_addr)` needs it, and the probe passes `src.buffer_address()` / `dst.buffer_address()` as args 0 and 1 (`$TT/t3_generic_op.py`) |
+| A | this core's herd coordinates, in `HerdPlan.coords` order (`("tx","ty")`, or `("tx",)` at rank 1) | the design |
+| B | per core↔core **channel**, in `plan.channels` order: the peer's NoC `x`,`y` for this core's puts, then the peer's NoC `x`,`y` for this core's gets | the design |
+
+*The block order is **C, A, B** — T1 fixed C first and T2 appends B, rather than renumbering a
+verified artifact for an ordering that carries no meaning. The design's original order was A, B,
+C; nothing reads the blocks but the emitter, which writes the literal indices into the kernel.*
+
+**B is per channel, not per link** (T2). A core is the producer on at most one link of a given
+channel and the consumer on at most one — W3's `West`, W2's `ToNorth`/`ToSouth` and the flip's
+cascade are all of that shape — and the emitter **checks** it, refusing a channel on which one
+core holds two link ends of the same kind. A core with no put (W3's tail) or no get (W3's head)
+on a channel gets its own coordinates as a placeholder in that slot; the site is guarded off, so
+the value is never used.
 
 Block B's values are computed **on the host**: for each link endpoint,
 `device.worker_core_from_logical_core(ttnn.CoreCoord(x, y))`, whose result's `.x`/`.y` go into the
@@ -220,6 +334,18 @@ vector. The kernel never converts coordinates; it only substitutes them into
 > names exactly that result `noc_core` and packs it into kernel args at `:93-95`. The *space* is
 > `[UNVERIFIED — settled at T2]`; on a non-harvested Wormhole the two may coincide, which is
 > precisely why T2 must check it rather than infer it.
+>
+> **CLOSED at T2 (2026-09-13), measured — and the anticipated "they may coincide" is what
+> happened.** `device.worker_core_from_logical_core(CoreCoord(x, 0))` returns `(18,18) (19,18)
+> (20,18) (21,18)` for `x = 0..3` — the **virtual** space (the soc descriptor's *physical*
+> `functional_workers` row 1 is `1-1 2-1 3-1 4-1`). A 4-core chain in which core `k` writes a tag
+> into core `k+1`'s L1 through `get_noc_addr(nx, ny, …)` and raises its semaphore delivers
+> correctly **with either set of coordinates** on ttsim's unharvested Wormhole B0; an off-by-one
+> in the virtual space mis-delivers (core 1's semaphore never fires, cores 2 and 3 receive the
+> wrong tag), which is the negative control that keeps the positive result from being vacuous.
+> **Design kept and now measured working**: `worker_core_from_logical_core` is what the emitter
+> passes, and it is the value that stays correct when harvesting makes the two spaces differ.
+> Probe: `/tmp/…/probe_t2b.py`, verdicts in `design/PROGRESS-TT.md` §T2.
 >
 > *(Citation erratum against the brief: `worker_core_from_logical_core` does **not** appear in
 > `strings $WHEEL/build/lib/_ttnncpp.so` — 0 occurrences, measured. It appears 3× in
@@ -303,6 +429,22 @@ Six things this fixes, each of which is otherwise a decision:
    `STEP`, W3's `ROW`, the cascade's middle-PE block — i.e. **after** the compute that reads the
    received region, never immediately after the wait. Incrementing early would let the producer
    overwrite a region still being read, which at depth 1 is the only race there is.
+
+   > **Operational form, forced at T2: "immediately before the *next* get on the same link".**
+   > The plan has no `ROW` node — W3's herd body is one `LoopPlan` over `i` with **step 2** whose
+   > body is the two row bodies concatenated (the `prev`/`cur` peel, `03-lld-M4-mapping.md`
+   > §3.6.1 lines 7-9), so "the enclosing body" of a get is the whole two-row loop body and
+   > taking that literally **deadlocks**: with both increments at the end of the body, the
+   > consumer's iteration `m` needs `full ≥ 2m+2` while the producer's put `2m+1` waits on
+   > `empty ≥ 2m+1`, which only the end of that same iteration raises. Placing the increment at
+   > the *top of the next get on the same link, before its `wait_min`* is the same rule wherever
+   > the body is unambiguous (one get per body) and is deadlock-free in general: every read of
+   > payload `n−1` lies between get `n−1` and get `n` in plan order, so the slot is released
+   > exactly when it stops being read, and the producer's put `n` is unblocked by a consumer
+   > action that is itself unblocked. The final payload needs no release — no put waits on it —
+   > so none is emitted; `empty` therefore ends one short of `full`, which is correct and not a
+   > leak. **Neither W2 nor the flip can tell the two forms apart**; only W3 can, and it is what
+   > the rule was measured against.
 6. **`get_semaphore(id)` resolves an id to a local L1 address**
    (`:1501-1503`, `sem_l1_base[type] + id * L1_ALIGNMENT`); the *remote* address is that local
    address wrapped by `get_noc_addr(x, y, …)`. The object-oriented spelling of the same thing is
@@ -423,12 +565,20 @@ What the TT target does check, per core:
 | L1 per worker core | **1 499 136 B** | `$TT/ttsim-bin/soc_descriptor.yaml:132-133` (`worker_l1_size: 1499136`), byte-identical to `$WHEEL/tt_metal/soc_descriptors/wormhole_b0_80_arch.yaml` (measured `diff`). Equals `MEM_L1_SIZE (1464 * 1024)` in `$WHEEL/tt_metal/hw/inc/internal/tt-1xx/wormhole/dev_mem_map.h:33` |
 | reserved | **32 768 B** (32 KB) | `dev_mem_map.h:71-72`: *"1432 KB = 1464 KB (L1 total) − 32 KB (MEM_MAP_END system reserved)"*, `#define MEM_MAX_KERNEL_SIZE (1432 * 1024)`. **`[UNVERIFIED]` as the actual CB-arena bound** — it is the *kernel binary* limit in that header, and the kernel binary itself also occupies L1; the effective CB ceiling is measured at T2 |
 | usable, as designed | **1 466 368 B** | `1 499 136 − 32 768`. An estimate until T2 |
-| semaphores per core | **`[UNVERIFIED — measured at T2]`** | not derivable statically from the wheel: no `NUM_SEMAPHORES`/`MAX_SEMAPHORE` constant exists anywhere under `$WHEEL/tt_metal/hw/inc/` (grep, 0 hits), and the bound surfaces only as a host message, `Semaphore id {} exceeds max value {}` (`strings $WHEEL/build/lib/libtt_metal.so`). The allocator-side spelling is `desc.find_available_semaphore_id(core, CoreType::WORKER)` (`$WHEEL/ttnn/cpp/ttnn/operations/ccl/ccl_common.cpp:2073`) |
-| alignment | `L1_ALIGNMENT = 16` B; DRAM read 32 B, write 16 B | `$WHEEL/tt_metal/hw/inc/internal/tt-1xx/wormhole/noc/noc_parameters.h:291-292` (`NOC_L1_{READ,WRITE}_ALIGNMENT_BYTES 16`), `:295-296`, `:299-302` |
+| semaphores per core | **16** (ids `0..15`) — **measured at T2** | over-allocated deliberately: a program with 32 `SemaphoreDescriptor`s is refused by the host with `TT_FATAL @ tt_metal/impl/program/program.cpp:2001: semaphore_id < NUM_SEMAPHORES — Semaphore id 16 exceeds max value 15`, while 8 is accepted (`/tmp/…/probe_t2.py`, `design/PROGRESS-TT.md` §T2). Confirmed device-side: `get_semaphore(0)` and `get_semaphore(1)` read back `0x88f0` and `0x8900` — 16 B apart, as `dataflow_api.h:1501-1503` says |
+| alignment | **relative**: a write needs `src ≡ dst (mod 16)`, a read `src ≡ dst (mod 32)`; size unconstrained | **measured at T2** — ruling **R-TT-A′** in §3.3 and its 23-case table. The header constants it replaces are `$WHEEL/tt_metal/hw/inc/internal/tt-1xx/wormhole/noc/noc_parameters.h:291-292` (`NOC_L1_{READ,WRITE}_ALIGNMENT_BYTES 16`), `:295-296`, `:299-302` (`NOC_DRAM_READ_ALIGNMENT_BYTES 32`, `NOC_DRAM_WRITE_ALIGNMENT_BYTES 16`): the moduli are those numbers, but they bound a *difference*, not an address |
+| CB base address | a multiple of **32 B** | measured at T2 (§3.3, R-TT-A′'s closing paragraph). The emitter rounds every CB's `total_size` up to 32 B to keep it so |
 
-**The check**: `Σ CB bytes + Σ semaphore words ≤ usable`, raised before `m6tt_run.run` opens a
-device. Semaphore words are 4 B each but are spaced `L1_ALIGNMENT` apart by `get_semaphore`
-(`dataflow_api.h:1501-1503`), so the figure counted is `16 · len(semaphores)`.
+**The check**: `Σ CB bytes + Σ semaphore words ≤ usable` **and** `len(semaphores) ≤ 16`, raised by
+`m5tt_emit.emit` — before `m6tt_run.run` can open a device. Semaphore words are 4 B each but are
+spaced `L1_ALIGNMENT` apart by `get_semaphore` (`dataflow_api.h:1501-1503`), so the figure counted
+is `16 · len(semaphores)`. Three checks, one row each:
+
+| # | Check | Bound | On failure |
+|---|---|---|---|
+| TT-P3.1 | `Σ CB bytes + 16·len(semaphores) ≤ usable L1` | 1 466 368 B (estimate, §4 row 3) | `TTEmitError`, proposed code `EMIT-TT-L1` |
+| TT-P3.2 | `len(semaphores) ≤ NUM_SEMAPHORES` | **16**, measured | `TTEmitError`, proposed code `EMIT-TT-SEMAPHORES` |
+| TT-P3.3 | **alignment (R-TT-A′)**: every transfer's DRAM and L1 byte offsets are congruent — mod 32 for a get, mod 16 for a put — on every core and every trip, for the tensor's chosen `pad_elems`; every core↔core transfer's two L1 offsets congruent mod 16 | R-TT-A′ | `TTAlignmentError`, proposed code **`TT-ALIGNMENT`**, naming the site, the two residues and the modulus |
 
 **The four workloads.** Note the denominator shift against the AIE figures: the plan's L1 totals
 double every `ping_pong_candidate` buffer (`06-interfaces.md` §5.6 invariant 5); the TT emitter
@@ -439,7 +589,12 @@ double every `ping_pong_candidate` buffer (`06-interfaces.md` §5.6 invariant 5)
 | W1 | `4096 + 2048 + 2048` = **8 192** | 12 288 | 0 | **0** | 0 | 0.56 % |
 | W1-flip | `8192 + 2048 + 4096 + 8192` = **22 528** | 24 576 | `PK−1 = 3` | 6 | **2** | 1.54 % |
 | W2 | `640 + 640` = **1 280** | 1 280 | 2 (`ToNorth[0]`, `ToSouth[0]`) | **4** | 2 | 0.09 % |
-| W3 | `128 + 32 + 36 + 36 + 4 + 4` = **240** | 240 | `PJ−1 = 3` | 6 | **2** | 0.02 % |
+| W3 | `128 + 32 + 64 + 64 + 32 + 32` = **352** | 240 | `PJ−1 = 3` | **6** (measured, `3 links × 2`) | **2** | 0.02 % |
+
+*W3's CB row is the T2 **measured** figure and is larger than the design's 240: the emitter rounds
+each CB up to 32 B (R-TT-A′'s closing paragraph), so `prev`/`cur` are 36 → 64 and
+`edge_in`/`edge_out` are 4 → 32. The plan's own L1 total is unchanged; this is CB padding, not a
+layout change, and §3.7's flat index arithmetic never sees it.*
 
 *Denominators, stated because the design's figures use two different ones.* **Semaphore ids** is
 the program-wide count, `2 × links` (one `full`, one `empty` per link); under A-TT1 every id is
@@ -448,12 +603,13 @@ how many an interior core actually blocks on: its inbound link's `full` and its 
 `empty` = 2. The design's headline figures — *W2 needs 4, W3 2 per interior PE, flip 2* — are the
 first and second columns respectively. Percentages are against 1 466 368 B, itself an estimate.
 
-**One concrete alignment risk, from the table above.** W3's buffers are not multiples of
-`L1_ALIGNMENT = 16`: `prev`/`cur` are 36 B and `edge_in`/`edge_out` are 4 B, and W3's L3 edge
-transfers are single `i32` columns — `S[i, 0:1]` = **4 B**, below the 32 B DRAM read alignment.
-CB `page_size`/`total_size` are therefore rounded **up** to the next multiple of 16 by the
-emitter (a padding, not a layout change — the flat index arithmetic of §3.7 is unchanged), and
-whether a 4-byte DRAM transfer is accepted at all is `[UNVERIFIED — settled at T2]`, Q-TT7.
+**One concrete alignment risk, from the table above — SETTLED at T2, Q-TT7 answered.** W3's
+buffers are not multiples of `L1_ALIGNMENT = 16` (`prev`/`cur` 36 B, `edge_in`/`edge_out` 4 B) and
+its L3 edge transfers are single `i32` columns — `S[i, 0:1]` = **4 B**. CB `page_size`/`total_size`
+are rounded up by the emitter, to **32** B rather than 16 (R-TT-A′). **A 4-byte DRAM transfer is
+accepted**: measured `DRAM → L1, src offset 0, dst offset 0, size 4 B` **ok** and
+`src 28, dst 28, size 4 B` **ok**; what fails is a *mismatched* transfer, e.g. `src 28, dst 0,
+size 4 B` → `UndefinedBehavior`. Size is not the variable; the residue difference is.
 
 ---
 
@@ -493,6 +649,15 @@ increment, writing past a CB, an unaligned transfer — into a printed diagnosti
 plausible wrong number. Every gate in §7 records the UB output, and a clean numeric result with UB
 lines printed is **not** a pass.
 
+> **Measured at T2: UB is fatal, so "a clean number with UB printed" cannot happen.** A single
+> mismatched-alignment transfer prints
+> `ERROR: UndefinedBehavior: noc_cmd_ctrl: write: alignment of src_addr=0x19ce4 and
+> dst_addr=0x19de0 does not match` and **aborts the simulation**: the host process exits 1 and
+> the remaining program launches in that session never run (observed while sweeping the 23
+> alignment cases in one process — the sweep had to be re-run one case per process). The rule in
+> the paragraph above is therefore enforced by the simulator, not only by our reading of its
+> output.
+
 ---
 
 ## 6. Requirements and acceptance tests
@@ -514,7 +679,7 @@ requires_ttsim' …"`), so the default suite is unchanged (FR-TT13).
 | **FR-TT7** | W2 executes and matches the two-loop numpy Jacobi **exactly**, at `T = 4` and `T = 5` | `test_TT_exec_w2[4\|5]` — `np.array_equal`, **not** a tolerance. The interpreter already matches at max abs error **0.0** (`design/PROGRESS-B.md`, the `default_rng(0)` run over both targets and both parities), so exact is the right bar; if soft-float moves it, **record the measured deviation in `design/PROGRESS-TT.md` and do not silently widen the test** |
 | **FR-TT8** | A **negative control** per variant: one deliberate perturbation of the emitted kernel produces a *wrong* result, proving the test could fail | `test_TT_neg[w1\|w2\|w3\|flip]` — the shape of `$TT/t6_neg.py`, which perturbs one page index (`{.page_id = i}` → `{.page_id = i + 1}`) and asserts `MATCH=False`. Per variant: W1 an offset row, W2 a dropped `full` increment, W3 a shifted edge column, flip a skipped accumulate |
 | **FR-TT9** | For each variant, the ttsim result equals `tests/helpers/plan_interp.run(plan, tensors)` on the same inputs | `test_TT_matches_interp[w1\|w2\|w3\|flip]` — `np.array_equal` between the two. **This is the backend-neutrality claim**: one plan, two executions, same numbers |
-| **FR-TT10** | The emitted program's semaphore count is within the measured per-core limit, and the check names the limit and where it came from | `test_TT_semaphore_budget` — asserts `len(program.semaphores) <= TT_SEM_LIMIT`, with `TT_SEM_LIMIT` a module constant carrying its provenance comment. **Until T2 measures it the constant is `None` and the test `xfail`s with the reason**, rather than asserting a guessed number |
+| **FR-TT10** | The emitted program's semaphore count is within the measured per-core limit, and the check names the limit and where it came from | `test_TT_semaphore_budget` — asserts `len(program.semaphores) <= TT_SEM_LIMIT`, with `TT_SEM_LIMIT` a module constant carrying its provenance comment. T2 measured it: `TT_SEM_LIMIT = 16` |
 | **FR-TT11** | `Σ CB bytes + 16·len(semaphores) ≤ usable L1` (§4), checked before a device is opened | `test_TT_l1_budget[w1\|w2\|w3\|flip]` — the four rows of §4's table, asserted against the constants and their citations |
 | **FR-TT12** | With `ttnn` uninstalled or `TT_METAL_SIMULATOR` unset, every device test **skips with a reason naming what is missing**, and never errors | `test_TT_skips_without_ttsim` — runs the collection with the variables cleared and asserts skip, not error. Mirrors `03-lld-M7-tests.md`'s skip discipline |
 | **FR-TT13** | The default suite is unaffected: same selected count, same outcomes, no `ttnn` import | `test_TT_default_suite_unaffected` — collection-only comparison of the default `-q` selection before and after the branch, plus an assertion that `sys.modules` has no `ttnn` after the default run |
@@ -530,12 +695,19 @@ that is not herd-private; a segment/herd temporal-loop trip-count mismatch (§3.
 resource failure from §4. `m6tt_run.run` raises `EmissionError` carrying `ttnn`'s **original**
 message verbatim in `details`, exactly as `EMIT-AIR-API` does for `air.api`.
 
-**Four new error codes would be needed** — `EMIT-TT-DTYPE`, `EMIT-TT-L1`, `EMIT-TT-SEMAPHORES`,
-`EMIT-TT-RUNTIME`. `06-interfaces.md` is **frozen at 43 codes**, so they are **proposed, not
-adopted**: they go through `00-README.md` §4 (one-paragraph proposal, all three owners agree,
-`CONTRACT_VERSION` bump, change-log row, same commit). Until then the TT emitter raises
-`EmissionError` with the code field carrying the nearest adopted code and the specific condition
-in `reason`, and `test_D3_catalogue_complete` must **not** see a TT code.
+**Five new error codes would be needed** — `EMIT-TT-DTYPE`, `EMIT-TT-L1`, `EMIT-TT-SEMAPHORES`,
+`EMIT-TT-RUNTIME` and, added at T2, **`TT-ALIGNMENT`** (R-TT-A′: no leading pad makes a tensor's
+transfers congruent, or a core↔core transfer's two L1 offsets are not congruent mod 16).
+`06-interfaces.md` is **frozen at 43 codes**, so they are **proposed, not adopted**: they go
+through `00-README.md` §4 (one-paragraph proposal, all three owners agree, `CONTRACT_VERSION`
+bump, change-log row, same commit). Until then the TT emitter raises `EmissionError` with the code
+field carrying the nearest adopted code and the specific condition in `reason`, and
+`test_D3_catalogue_complete` must **not** see a TT code.
+
+*Implementation note (T1, unchanged at T2): `spatial/m5tt_emit.py` raises its own
+`TTEmitError`/`TTNotImplemented`, not `EmissionError`, precisely so that no TT condition can leak
+into the frozen catalogue. `TT-ALIGNMENT` is `TTAlignmentError(TTEmitError)` and its message
+begins with that string.*
 
 ---
 
@@ -546,8 +718,8 @@ fails as designed, and the result equals `plan_interp.run`. UB lines from ttsim 
 
 | Gate | Workload | What it first exercises | Status |
 |---|---|---|---|
-| **T1** | **W1** (GEMM output-stationary) | DRAM row-wise transfer, `TensorAccessor`, CBs, per-core runtime args, the scalar compute walk, `BranchNode`-free path. **Zero semaphores.** Also settles C-TT1 (row-major/one-row pages) and C-TT2 (the raw NoC calls) | **in progress** |
-| **T2** | **W3** (wavefront) | **the first semaphores**: a 3-link chain, `full`/`empty`, `wait_min`, remote `inc`. Settles A-TT1, the `get_noc_addr` coordinate space (C-TT3), the semaphore limit, the `-march` string, the 4-byte-transfer alignment question | not started |
+| **T1** | **W1** (GEMM output-stationary) | DRAM row-wise transfer, `TensorAccessor`, CBs, per-core runtime args, the scalar compute walk, `BranchNode`-free path. **Zero semaphores.** Also settles C-TT1 (row-major/one-row pages) and C-TT2 (the raw NoC calls) | **GREEN** (2026-09-13; `design/PROGRESS-TT.md` §4) |
+| **T2** | **W3** (wavefront) | **the first semaphores**: a 3-link chain, `full`/`empty`, `wait_min`, remote `inc`. Settles A-TT1, the `get_noc_addr` coordinate space (C-TT3), the semaphore limit, the `-march` string, the 4-byte-transfer alignment question | see `design/PROGRESS-TT.md` §T2 |
 | **T3** | **W2** (Jacobi halo) | **bidirectional** exchange, two links per interior PE, the `cur`/`next` swap with the odd-`T` peel, and f32 exactness under soft-float | not started |
 | **T4** | **W1-flip** (cascade) | `chain_direction` read rather than derived; a 1-D grid; the accumulate-in-the-middle block | not started |
 
@@ -584,14 +756,14 @@ All owned by **B**; each names the gate that closes it.
 
 | # | Question | Due |
 |---|---|---|
-| **Q-TT1** | **A-TT1** — is a buffer's L1 address identical on every core when one `CBDescriptor` list covers one `CoreRangeSet`? If not, consumer buffer addresses become a fourth runtime-arg block | **T2** |
-| **Q-TT2** | Which coordinate space does `get_noc_addr(noc_x, noc_y, addr)` expect — the header says *physical*, the Python helper's docstring says it returns *virtual* (C-TT3). The design passes `worker_core_from_logical_core`; confirm | **T2** |
-| **Q-TT3** | Is `noc_async_write_barrier()` before `noc_semaphore_inc` sufficient ordering, or does the increment need a stronger fence? And does ttsim report the reversed order as UB? | **T2** |
+| **Q-TT1** | **A-TT1** — is a buffer's L1 address identical on every core when one `CBDescriptor` list covers one `CoreRangeSet`? If not, consumer buffer addresses become a fourth runtime-arg block | **T2 — CLOSED: yes.** Measured on a 4-core program: CB bases `0x19ce0 / 0x19d00 / 0x19d20` and `get_semaphore(0) / (1)` = `0x88f0 / 0x8900`, byte-identical on all four cores. No fourth block |
+| **Q-TT2** | Which coordinate space does `get_noc_addr(noc_x, noc_y, addr)` expect — the header says *physical*, the Python helper's docstring says it returns *virtual* (C-TT3). The design passes `worker_core_from_logical_core`; confirm | **T2 — CLOSED, with the caveat the design predicted.** `worker_core_from_logical_core` returns the **virtual** coordinates `(18..21, 18)`; those deliver. So do the soc descriptor's physical `(1..4, 1)` — on ttsim's *unharvested* part the NoC accepts both, so this run cannot discriminate between them, only confirm the design's choice works. An off-by-one mis-delivers (negative control). See C-TT3 in §3.4 |
+| **Q-TT3** | Is `noc_async_write_barrier()` before `noc_semaphore_inc` sufficient ordering, or does the increment need a stronger fence? And does ttsim report the reversed order as UB? | **T2 — see `design/PROGRESS-TT.md` §T2** (the barrier/increment order is reversed in one deliberate run and the outcome recorded) |
 | **Q-TT4** | Does soft-float scalar f32 reproduce numpy bit-for-bit on W2's 5-point stencil, given §3.7's exact parenthesisation? If not, by how much — recorded, not tolerated away | **T3** |
-| **Q-TT5** | The per-core semaphore limit. Not derivable from the wheel (§4); read it from the host error by over-allocating deliberately | **T2** |
-| **Q-TT6** | ttsim wall time for W2 at `T = 4` on a 2-core grid. The 8×8 probe ran in seconds (`$TT/mc8.log`), but W2 has 4 timesteps × 2 halo exchanges per step. If it exceeds the suite budget, W2 becomes `slow` | **T3** |
-| **Q-TT7** | Alignment: are 36-byte and 4-byte CB pages accepted after rounding to `L1_ALIGNMENT = 16`, and is W3's 4-byte DRAM edge-column transfer legal against a 32-byte DRAM read alignment? | **T2** |
-| **Q-TT8** | The row-major / one-row-page tensor path and the raw `noc_async_read`/`noc_async_write` calls — neither has been run (C-TT1, C-TT2) | **T1** |
+| **Q-TT5** | The per-core semaphore limit. Not derivable from the wheel (§4); read it from the host error by over-allocating deliberately | **T2 — CLOSED: 16** (ids `0..15`). 8 accepted, 32 refused with `Semaphore id 16 exceeds max value 15` (`tt_metal/impl/program/program.cpp:2001`, `semaphore_id < NUM_SEMAPHORES`). W3 uses 6 |
+| **Q-TT6** | ttsim wall time for W2 at `T = 4` on a 2-core grid. The 8×8 probe ran in seconds (`$TT/mc8.log`), but W2 has 4 timesteps × 2 halo exchanges per step. If it exceeds the suite budget, W2 becomes `slow` | **T3** (W3's measured wall time and cycle count are in `design/PROGRESS-TT.md` §T2 as the nearest data point) |
+| **Q-TT7** | Alignment: are 36-byte and 4-byte CB pages accepted after rounding to `L1_ALIGNMENT = 16`, and is W3's 4-byte DRAM edge-column transfer legal against a 32-byte DRAM read alignment? | **T2 — CLOSED, and the question's premise was wrong.** 4-byte DRAM transfers are legal; the NoC constrains the *difference* of the source and destination offsets (mod 16 for a write, mod 32 for a read), not either address on its own, and not the size. CB sizes are rounded to 32 B, not 16. Ruling **R-TT-A′**, §3.3 |
+| **Q-TT8** | The row-major / one-row-page tensor path and the raw `noc_async_read`/`noc_async_write` calls — neither has been run (C-TT1, C-TT2) | **T1 — CLOSED: both run.** See C-TT1 and C-TT2 in §3.2 |
 
 ---
 

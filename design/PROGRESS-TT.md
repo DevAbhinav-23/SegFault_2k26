@@ -96,12 +96,26 @@ emitter's (`("addr", <tensor>)` / `("const", <int>)`) and `m6tt_run` only substi
 
 Two things the emitter refuses rather than guesses, because both fail silently on a NoC:
 
-* **Alignment.** Every DRAM offset, L1 offset and transfer length must be a multiple of 32 B
-  (Wormhole's DRAM alignment; L1's is 16). Proved statically for *all* trips: each free name
-  ranges over a known arithmetic progression, so `width·(const + Σ cᵢ·loᵢ)` and each
-  `width·cᵢ·stepᵢ` being a multiple is necessary and sufficient.
+* **Alignment.** *(T1's rule; **superseded at T2** — see §T2 and ruling R-TT-A′ in
+  `design/08-tt-backend.md` §3.3.)* T1 required every DRAM offset, L1 offset and transfer length
+  to be a multiple of 32 B. That is stricter than the device: what the NoC enforces is a
+  **relative congruence** between the two ends of a transfer. The arithmetic-progression proof
+  survives unchanged; only what it proves changed.
 * **Names.** Every buffer, tensor, coordinate and axis must be a C++ identifier that does not
-  start with `_`, is not a keyword, and does not collide across the four sets.
+  start with `_`, is not a keyword, and does not collide across the four sets. *(T2 adds channel
+  names to that set: a core↔core channel's name becomes C++ identifiers.)*
+
+### 3.1 Reconciliation with `design/08-tt-backend.md` (done at T2)
+
+The spec governs. One line per difference between the table above (written at T1) and the spec:
+
+| # | Difference | Resolution |
+|---|---|---|
+| 1 | T1's runtime-arg vector is **addresses, then coordinates**; the spec §3.4 lists blocks **A** (coordinates), **B** (neighbour NoC coordinates), **C** (DRAM base addresses) in that order | T1's third block *is* the spec's block C — it was never an extra invention. The **order** differs, and the spec was amended to C, A, B rather than renumbering a verified T1 artifact for an ordering that carries no meaning; T2 appends block B. Flagged for the architect |
+| 2 | T1's table says "a core↔core `ChannelPlan` → `TTNotImplemented`" | T2 implements it, exactly as spec §3.5: depth-1 FIFO, `full`/`empty` counting semaphores, `wait_min`, remote `noc_async_write` + barrier + `noc_semaphore_inc` |
+| 3 | T1's table says a segment loop that is not a bundle-index loop "must be matched by an enclosing herd loop of the same axis and the same `(lo, hi, step)`" | Still the first rule. T2 adds the fallback the spec now carries as §3.3 rule 5: no twin ⇒ bind the axis to the site's own occurrence counter, and check the occurrence count against the segment trip count |
+| 4 | T1 rounds CB sizes to 16 B (spec §4's original wording) | T2 rounds to **32 B**: measured, CB bases are 32 B aligned and R-TT-A′'s L1 residues depend on it |
+| 5 | T1's alignment rule (absolute, 32 B) | Superseded by R-TT-A′ (relative congruence), measured. The T1 rule is strictly stronger, so every W1 transfer still passes and W1's emitted kernel is byte-identical |
 
 ## 4. T1 result
 
