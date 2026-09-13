@@ -10,3 +10,11 @@ __pycache__/
 air_project/
 vendor/wheels/*.whl
 vendor/probes/
+# The Tenstorrent backend (design/PROGRESS-TT.md §2). vendor/tt/SHA256SUMS is committed; the
+# artefacts it pins are not, and `generated/` is what a ttnn run drops in the working directory.
+.venv-tt/
+vendor/tt/*.whl
+vendor/tt/*.txz
+vendor/tt/*.so
+vendor/tt/soc_descriptor.yaml
+generated/

@@ -22,6 +22,7 @@ _MARKERS = (
     ("requires_aircc", "needs aircc + aiecc + Peano"),
     ("requires_air_opt", "needs air-opt"),
     ("requires_device", "needs XRT and /dev/accel*"),
+    ("requires_ttsim", "needs .venv-tt and the ttsim simulator: source scripts/tt_env.sh"),
     ("fr", "fr('FR-...', ...): the requirement(s) this test accepts"),
 )
 

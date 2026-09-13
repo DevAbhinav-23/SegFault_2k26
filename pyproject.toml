@@ -20,5 +20,5 @@ dev = ["pytest"]
 packages = ["spatial", "kernels"]
 
 [tool.pytest.ini_options]
-addopts = "-m 'not slow and not requires_device' --strict-markers -q"
+addopts = "-m 'not slow and not requires_device and not requires_ttsim' --strict-markers -q"
 testpaths = ["tests"]

@@ -40,12 +40,32 @@ Read `aircc`/`air-opt` **stderr**, not the exit code: `air-opt` prints `error:` 
 
 ## Tests
 
-`.venv/bin/python -m pytest` — the default marks exclude `slow` and `requires_device`.
+`.venv/bin/python -m pytest` — the default marks exclude `slow`, `requires_device` and
+`requires_ttsim`.
+
+## The Tenstorrent backend
+
+A second emitter, `spatial/m5tt_emit.py`, turns the same backend-neutral `MappingPlan` into a
+TT-Metalium program that `spatial/m6tt_run.py` executes on Tenstorrent's **functional** simulator
+`ttsim` — no hardware, and nothing to do with MLIR-AIR. It needs its own venv, because the `ttnn`
+wheel pins `numpy<2` against the project's `numpy==2.5.3`. Sourcing the script builds `.venv-tt`
+from the checksummed cache in `vendor/tt/` on first use (git-ignored, like `vendor/wheels/`; get
+the four artefacts from Person C or the shared drive and check them with `sha256sum -c
+vendor/tt/SHA256SUMS`), then exports the simulator environment:
+
+```bash
+source scripts/tt_env.sh
+.venv-tt/bin/python -m pytest -m requires_ttsim tests/tt     # ~100 s: two simulator runs
+```
+
+The emitter's own unit tests need none of that and run in the default suite. What the simulator
+run establishes, what it does not, and what T2–T4 would need is
+[`design/PROGRESS-TT.md`](design/PROGRESS-TT.md).
 
 ## Layout
 
-`spatial/` the package (M0–M6) · `kernels/` W1/W2/W3 sources · `tests/` the suite and its
-fixtures · `demo/` the pitch script · `design/` the frozen design set · `hackathon/` context and
-the adversarial review trail · `scripts/` the `aircc` env · `vendor/` wheel cache and probe
-reference · `spatial-dsl/`, `reading-group/`, `papers/`, `proposals/`, `notes/`, `docs/` prior
-research.
+`spatial/` the package (M0–M6, plus `m5tt_emit`/`m6tt_run` for Tenstorrent) · `kernels/` W1/W2/W3
+sources · `tests/` the suite and its fixtures · `demo/` the pitch script · `design/` the frozen
+design set · `hackathon/` context and the adversarial review trail · `scripts/` the `aircc` and
+`ttsim` envs · `vendor/` wheel caches and probe reference · `spatial-dsl/`, `reading-group/`,
+`papers/`, `proposals/`, `notes/`, `docs/` prior research.
