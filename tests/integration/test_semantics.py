@@ -27,7 +27,7 @@ import pytest
 
 from spatial import m4_mapping as m4
 from spatial.model import Expr
-from tests.fixtures.mappings import w1_legal
+from tests.fixtures.mappings import w1_legal, w3_legal
 from tests.helpers import plan_interp
 
 TARGETS = ("npu1", "npu2")
@@ -165,3 +165,131 @@ def test_sem_coverage(target):
     write = mapping.kernel.statements[0].target
     domain = {axis.name: range(axis.extent) for axis in mapping.kernel.axes}
     assert union == image(mapping, write, domain)                         # (b) the whole domain
+
+
+# --------------------------------------------------------------------------------------------
+# W3 — the wavefront. Spec: design/04-test-plan.md §3.4, §4. Added by B at P4.
+# --------------------------------------------------------------------------------------------
+
+MQ = NR = 32
+PJ, CW = 4, 8
+MATCH, MISMATCH, GAP = 2, -1, 1
+
+
+def w3_inputs(seed: int = 0) -> dict[str, np.ndarray]:
+    """W3's fixture data: two `i32` sequences over a four-letter alphabet, and a zeroed `S`."""
+    rng = np.random.default_rng(seed)
+    return {"q": rng.integers(0, 4, MQ).astype(np.int32),
+            "r": rng.integers(0, 4, NR).astype(np.int32),
+            "S": np.zeros((MQ + 1, NR + 1), dtype=np.int32)}
+
+
+def smith_waterman(q: np.ndarray, r: np.ndarray) -> np.ndarray:
+    """The oracle of `04-test-plan.md` §4: a textbook two-loop DP, written here and nowhere else.
+
+    It is deliberately **not** the kernel, not the plan and not derived from either: it is the
+    definition of the recurrence FR-K4 names, in plain numpy, so "the plan computes
+    Smith-Waterman" is a claim about two independent programs agreeing.
+    """
+    S = np.zeros((len(q) + 1, len(r) + 1), dtype=np.int32)
+    for i in range(1, len(q) + 1):
+        for j in range(1, len(r) + 1):
+            S[i, j] = max(0, S[i - 1, j - 1] + (MATCH if q[i - 1] == r[j - 1] else MISMATCH),
+                          S[i - 1, j] - GAP, S[i, j - 1] - GAP)
+    return S
+
+
+@pytest.mark.fr("FR-K4", "FR-M5")
+@pytest.mark.parametrize("target", TARGETS)
+def test_sem_compute_nodes_w3(target):
+    """Interpreting W3's plan reproduces the textbook DP **exactly**, on both targets.
+
+    Exactly, not to a tolerance: the scores are `i32` and every intermediate is an integer, so
+    `tol = 0.0` is the right comparison (`04-test-plan.md` §4). The boundary row and column stay
+    zero, which is what makes the source and the drain of ruling **R-W3-1** legitimate: `WestIn`
+    puts column 0 and nothing ever writes it.
+    """
+    tensors = w3_inputs()
+    expected = smith_waterman(tensors["q"], tensors["r"])
+    out = plan_interp.run(m4.plan(w3_legal.legal(target)), tensors)
+    assert np.array_equal(out["S"], expected)
+    assert out["S"].dtype == np.int32
+    assert not out["S"][0].any() and not out["S"][:, 0].any()
+    assert out["S"][1:, 1:].any(), "an all-zero score matrix would pass vacuously"
+    # the inputs are untouched: the plan reads `q` and `r` and writes only `S`
+    fresh = w3_inputs()
+    assert np.array_equal(out["q"], fresh["q"]) and np.array_equal(out["r"], fresh["r"])
+
+
+@pytest.mark.fr("FR-K4")
+def test_sem_compute_nodes_w3_is_the_plan_not_the_kernel():
+    """A corrupted `StoreNode` changes the answer — the test above is not vacuous."""
+    from dataclasses import replace
+
+    from spatial.model import Const, Dtype
+
+    plan = m4.plan(w3_legal.legal())
+    row, compute = plan.herd_body[9], plan.herd_body[9].body[2]
+    broken = replace(compute, body=(replace(compute.body[0],
+                                            expr=Const(value=0, text="0", dtype=Dtype.i32)),))
+    corrupted = replace(plan, herd_body=plan.herd_body[:9] + (
+        replace(row, body=row.body[:2] + (broken,) + row.body[3:]),))
+    tensors = w3_inputs()
+    assert not np.array_equal(plan_interp.run(corrupted, tensors)["S"],
+                              smith_waterman(*(w3_inputs()[k] for k in ("q", "r"))))
+
+
+@pytest.mark.fr("FR-K1", "FR-M8")
+@pytest.mark.parametrize("target", TARGETS)
+def test_sem_access_regions_w3(target):
+    """Every W3 L3 region is the `AccessMap` image of the subdomain it claims (§3.4 item 1).
+
+    The four L3-attached channels: `QIn` stages the whole of `q` (it is indexed by `i` alone, so
+    the image over any PE's subdomain is the whole vector), `RIn` stages PE `p`'s own slice of
+    `r`, and `WestIn`/`EastOut` name single boundary cells of `S` that no PE writes through
+    them.
+    """
+    mapping = w3_legal.legal(target)
+    plan = m4.plan(mapping)
+    sites = {(c.name, s.kind): s for c in plan.channels for s in c.sites}
+    reads = {access.operand: access for access in mapping.kernel.statements[0].reads}
+    for p in range(PJ):
+        subdomain = {"i": range(1, MQ + 1), "j": range(1 + p * CW, 1 + (p + 1) * CW)}
+        got = plan_interp.region_indices(sites[("QIn", "put")].region, {"pj_bundle": p})
+        assert got == image(mapping, reads["q"], subdomain), ("QIn", p)
+        got = plan_interp.region_indices(sites[("RIn", "put")].region, {"pj_bundle": p})
+        assert got == image(mapping, reads["r"], subdomain), ("RIn", p)
+    for i in range(1, MQ + 1):
+        assert plan_interp.region_indices(sites[("WestIn", "put")].region,
+                                          {"i_source": i}) == {(i, 0)}
+        assert plan_interp.region_indices(sites[("EastOut", "get")].region,
+                                          {"i_drain": i}) == {(i, NR)}
+    # the L1 end of a whole-buffer transfer is the empty region; `SOut`'s is the owned band
+    assert sites[("QIn", "get")].region.offsets == ()
+    assert (sites[("SOut", "put")].region.sizes, sites[("SOut", "put")].region.strides) == (
+        (CW,), (1,))
+
+
+@pytest.mark.fr("FR-K4", "FR-M8")
+@pytest.mark.parametrize("target", TARGETS)
+def test_sem_coverage_w3(target):
+    """`SOut` drains rows `1..MQ` × cols `1..NR` exactly: no gap, no overlap (§3.4 item 3).
+
+    Draining only the last row of each PE — which is what the upstream-API probe of this shape
+    does — would make (b) false by construction, and FR-K4 would have to be restated to compare
+    one row against the oracle.
+    """
+    mapping = w3_legal.legal(target)
+    plan = m4.plan(mapping)
+    get = next(s for c in plan.channels if c.name == "SOut" for s in c.sites if s.kind == "get")
+    drained = [plan_interp.region_indices(get.region, {"i_drain": i, "pj_bundle": p})
+               for i, p in product(range(1, MQ + 1), range(PJ))]
+    union: set[tuple[int, ...]] = set().union(*drained)
+    assert sum(len(part) for part in drained) == len(union) == MQ * NR      # (a) no overlap
+    write = mapping.kernel.statements[0].target
+    domain = {"i": range(1, MQ + 1), "j": range(1, NR + 1)}
+    assert union == image(mapping, write, domain)                           # (b) the whole domain
+    # ...and the rows the drain covers are exactly the rows the interpreter writes
+    tensors = w3_inputs()
+    out = plan_interp.run(plan, tensors)
+    assert set(map(tuple, np.argwhere(out["S"] != 0))) <= union

@@ -229,7 +229,15 @@ the kernel**:
 The fold in lines 14-15 is why W3's 4-ary `max` needs no special case: `MaxMin("maximum", (a,b,c,d))`
 becomes `maximum(a, maximum(b, maximum(c, d)))`, the element-level form measured in finding N-9.
 `Select` is the only `ExprNode` that carries a comparison, and it is a value, not control flow
-(`01-requirements.md` FR-D9).
+(`01-requirements.md` FR-D9). *(Erratum, 2026-09-13, measured at P4: line 17's `<cmp>` holds
+for `<`, `<=`, `>`, `>=` and **not** for `==`/`!=`. `BufferExpr` and `BufferSlice` deliberately
+leave `__eq__`/`__ne__` undefined (`_value.py:795-805`), so `x == y` is Python's identity
+comparison and evaluates to a `bool`, which `ops.select` rejects by name (`ops.py:809-816`);
+`ops.equal` / `ops.not_equal` (`ops.py:779-792`) are the spelling and build the same
+`arith.cmpi`/`cmpf`. §3.2's row 12 therefore also covers those two names. Separately, the
+`Load` arm passes its `BufferSlice` through `BufferExpr.coerce` (`_value.py:1046-1049`) before
+handing it to `ops.maximum`/`minimum`, whose `_elementwise` guard admits `BufferSlice` nowhere
+(`ops.py:384-391`) — the closure of **B-P16**.)*
 
 The tree's own test is the shape to imitate — `python/test/api/partial_assign.py:85-92` writes
 `dst[i, j, 0] = src[i + 3, j, 1] + 1` under two `air.sequential` loops, with FileCheck expecting
@@ -613,7 +621,7 @@ rejects it first (`03-lld-M4-mapping.md` §3.8).
 14          for p in range(4):                                   # PYTHON loop
 15            rin.put(r[p*8 : p*8+8], indices=[p])
 16          for i in air.sequential(1, 33):                      # segment-scope SOURCE
-17            win.put(ZERO_COL[i : i+1], indices=[0])            # S[i, 0] == 0, the boundary
+17            win.put(S[i, 0:1], indices=[0])                    # S[i, 0] == 0, the boundary
 18          with air.herd([range(4)], name="sw_herd", shape=(4,)) as h:
 19            @h.body def _(tx):
 20              qb   := air.alloc([32], i32, scope=h.private())
@@ -628,10 +636,10 @@ rejects it first (`03-lld-M4-mapping.md` §3.8).
 29                ROW(p=prev, c=cur,  i_off=0)
 30                ROW(p=cur,  c=prev, i_off=1)
 31          for i in air.sequential(1, 33):                      # segment-scope DRAIN
-32            eout.get(SINK[i : i+1], indices=[0])
-33          for i in range(1, 33):                               # PYTHON loop over rows
-34            for p in range(4):
-35              sout.get(S[i, p*8+1 : p*8+9], indices=[p])
+32            eout.get(S[i, 32:33], indices=[0])
+33          for p in range(4):                                   # PYTHON loop: the bundle index
+34            for i in air.sequential(1, 33):                    # air.sequential: a row is not
+35              sout.get(S[i, p*8+1 : p*8+9], indices=[p])       #   a bundle index (R-W3-3)
 36  module := launch.build("npu1")
 
 ROW(p, c, i_off) =
@@ -647,6 +655,13 @@ ROW(p, c, i_off) =
  r10 with tl.otherwise():                  wmid.put(eob, indices=[tx])
  r11 sout.put(c[1:9], indices=[tx])        # DRAIN, every row
 ```
+
+*(Erratum, 2026-09-13.* Line 1 keeps `S` as the only rank-2 tensor and rulings **R-W3-1** and
+**R-W3-3** rewrite lines 17, 32 and 33-35: there is no `ZERO_COL` and no `SINK` — the source
+puts `S[i, 0:1]`, the kernel's own read-only zero boundary column, and the drain gets
+`S[i, NR:NR+1]`, the column the tail PE's `SOut` put also writes — and the two row loops are
+`air.sequential`, not Python loops, because §3.5's `LOOP_KIND` unrolls a loop only when its
+value **is** a channel bundle index, which a row index is not. Only the `p` loop is unrolled.)*
 
 Lines 1-2 are B-13's fix: the kernel's own three parameters, **reads before writes**. The measured
 failure of the other order is verbatim `RuntimeError: output tensors must be declared after all

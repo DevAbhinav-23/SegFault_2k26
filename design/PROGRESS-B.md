@@ -891,3 +891,178 @@ reaches it); that W2's and W3's **real** plans pass the checks (neither is built
 halo and the `BranchNode` plan are hand-written stand-ins with the right shape, not the protocols
 of §3.6.1/§3.6.2); that the interpreter agrees with the device (it interprets the plan, never the
 emitted IR — D-9); anything on hardware.
+
+---
+
+# Phase P4 — W3, the anti-diagonal wavefront, end to end (gate G3)
+
+*Person B, 2026-09-13. Branch `role-b`. M4's `FORWARD` protocol builder (§3.6.2), the `q`/`r`
+staging, the segment-scope source and drain, M5's `BranchNode`/`Select`/`MaxMin` rows exercised
+for real, goldens on both targets, `aircc`, and the interpreter against a textbook DP.
+**Not pushed** — the architect verifies and pushes.*
+
+## Landed
+
+| # | What | Where |
+|---|---|---|
+| 1 | **`_origins` gained the axis's own `lo`** — the one edit P2b asked P4 to make. W1's axes all start at 0 so the term was invisible; W3's `i` and `j` start at 1, and without it `8·tx` does not cancel in the band rewrite | `spatial/m4_mapping.py` |
+| 2 | **`band_geometry`** — the `Band` a wavefront needs, derived rather than tabulated: which array dim is the row and which the PE column band, the owned column count `CW`, the west overhang from the operand's own access offsets, the row span (which must be 2 — the row being computed and the one before it) and the row axis's bounds. Every shape it cannot build raises `NotImplementedError` naming the phase | same |
+| 3 | **`wavefront_buffers`** — `qb`, `rb` (the staged read operands through the ordinary `TILE_SHAPE`), then `prev`/`cur` at `[CW + ghost]` carrying `operand` and `edge_in`/`edge_out` carrying none. `240 == 232 + 8` by construction | same |
+| 4 | **`swap_loop(axis, lo, hi, kind, depth, trip, base)`** — the unroll-by-two-and-peel of §3.6.1 lines 1-11 as a **reusable function**, not a branch of the builder: `trip(index, phase, order)` builds one trip, an odd count is peeled at the loop's own depth, and the returned phase is what tells a caller which buffer is live (W2 reuses it at P5) | same |
+| 5 | **`wavefront(...)`** — the six channels, the segment body (`QIn` put, the `pj_bundle` `RIn` puts, the `i_source` row loop, the herd marker, the `i_drain` `EastOut` loop, the `pj_bundle`×`i_drain` `SOut` drains) and the herd body (six allocs, the two staging gets, the `prev` zeroing, the row swap loop). The compute store is `Statement.expr` rewritten load by load: `_in_band` for the forwarded operand, `_in_l1` for everything else | same |
+| 6 | **`classify` maps a declared `along` to its PE axis** and rejects an `along` no `place()` carries — **B-P24** closed | same |
+| 7 | **A read operand named by `stream`/`forward` is `PROTOCOL-UNSUPPORTED`** naming the clause (ruling R-W3-4) | same |
+| 8 | **`buffer_name` avoids colliding with a tensor name**: `q` stages into `qb`, `r` into `rb` (§5.6 forbids one name covering a tensor and its tile) | same |
+| 9 | **The P3 warnings reach the summary**: `plan()` builds the summary, runs `self_check`, then `dataclasses.replace`s one `warning: …` line per warning after the channel lines | same |
+| 10 | **M5's `Select` predicate** uses `ops.equal`/`ops.not_equal` for `==`/`!=`, and the `Load` arm coerces through `BufferExpr.coerce` — **B-P16** closed | `spatial/m5_emit.py` |
+| 11 | **`PIPELINES["aie"]` places herds before `air-to-aie`**, so `lock_init_histogram` is readable at all | `spatial/m6_tools.py` |
+| 12 | **`w3_legal.legal(target, MQ=…)`** — the fixture takes a row count, so the peel has a test | `tests/fixtures/mappings/w3_legal.py` |
+| 13 | **32 new tests** and seven new goldens (below) | `tests/` |
+
+## R-W3-1 — the verdict is **kept**, with both measurements
+
+The brief allowed a fallback that drops `EastOut` and the tail PE's put. It is **not** taken:
+the source puts `S[i, 0:1]` and the drain gets `S[i, NR:NR+1]` on the kernel's own `S`, and
+`MappingPlan.tensors` is exactly `(q, r, S)`.
+
+| # | Measurement | Result |
+|---|---|---|
+| (a) | `aircc --device npu1 --output-format=none` on the emitted module, `--tmpdir`/cwd in scratch | **exit 0**, **0** `error:` lines, **0.3 s**, all 22 stages, four `.elf`s written |
+| (a) | the same with `--device npu2` | **exit 0**, **0** `error:` lines, **0.31 s** |
+| (b) | `air-opt … -pass-pipeline='builtin.module(air-verify-hierarchy-locality)'` | exit 0, **stderr empty** |
+| (b) | the same with `{strict=true}` | exit 0, **stderr empty** |
+
+(a) is a real verdict rather than an exit code, because `aircc` runs
+`air-verify-hierarchy-locality{strict=…}` on the **placed** IR by default —
+`tools/aircc/aircc.cpp:1213-1218` builds the pipeline and `:264` is `cl::init(PIV_error)`, which
+is `strict=true`. So the two ends of the same `S` row, one of them an address `SOut` also
+writes, are not a race the strict verifier can see. FR-M5's "closed at both ends by a source and
+a drain" is therefore true as written, and `test_M5_wavefront_balance` keeps its **five**
+indices.
+
+## The P2b table, reproduced on the real plan
+
+`S[i-1,j-1] → prev[j1]`, `S[i-1,j] → prev[j1+1]`, `S[i,j-1] → cur[j1]`, `q[i-1] → qb[i-1]`,
+`r[j-1] → rb[j1]`, and the write `S[i,j] → cur[j1+1]` — exactly what P2b derived by hand, now
+asserted by `test_M4_wavefront_l1_subscripts`. The band is rank 1 where the access is rank 2:
+the **row** offset does not index a buffer, it picks which of the two swapped buffers holds that
+row, and the column is the access's column minus the band's L3 origin, so `8·tx` cancels the way
+W1's tile origin does. The `i_off` of §6.4's `ROW` cancels out of the row offset by construction
+(it is in both terms), which is why phase 1 needs no separate rule.
+
+## The DMA warning line, verbatim (PE 0; PEs 1-3 differ only in the channel list)
+
+```text
+warning: PE [0] names 3 inbound channels (QIn, RIn, WestIn) against 2 S2MM, but QIn, RIn, WestIn
+lower to packet flows and multiplex onto one shim DMA channel; the circuit-switched count is 0,
+within the budget of 2 — measured, not contractual (design/03-lld-M4-mapping.md §3.8, risks
+R-19/R-21)
+```
+
+(One physical line in the file; wrapped here.) PEs 1-3 name `(QIn, RIn, West)` with a
+circuit-switched count of **1** — `West` is core-to-core and binds a real DMA channel, the two
+west gets being on exclusive branches. Four warnings, one per PE, inbound only; the outbound
+count is 2 on every PE and is within budget.
+
+## `aircc`, `air-opt` and `ir_facts` results
+
+| target | command | exit | `error:` lines | wall |
+|---|---|---|---|---|
+| npu1 | `aircc --device npu1 --output-format=none` | 0 | 0 | 0.30 s |
+| npu2 | `aircc --device npu2 --output-format=none` | 0 | 0 | 0.31 s |
+| npu1 | `air-opt -pass-pipeline='builtin.module(air-verify-hierarchy-locality)'` | 0 | 0 | < 0.1 s |
+| npu1 | the same, `{strict=true}` | 0 | 0 | < 0.1 s |
+
+`ir_facts` for W3/npu1: `broadcast_pattern_count = 0` (declaring `broadcast_shape` bypasses the
+detector — R-04's tripwire, the same 0 W1 gives), `cascade_channels = 0`, and
+**`lock_init_histogram = {"0": 20, "1": 16, "2": 4}`** — 40 locks over four cores.
+
+**`PIPELINES["aie"]` had to be fixed to produce that number at all.** `air-to-aie` alone, on an
+unplaced module, gives `'aie.tile' op column index (4) must be less than the number of columns in
+the device (4)`: a 1-D `grid(4)` herd keeps its logical origin and asks for columns 1..4. `aircc`
+places first (`aircc.cpp:1158-1162`), so §3.7's pipeline now prepends
+`air-place-herds{num-rows=6 num-cols=<4|8> row-anchor=2 col-anchor=0}` with the geometry `aircc`
+itself resolves (`aircc.cpp:1003-1022`). Cross-checked once: this pipeline and `aircc`'s own
+`air_project/aie.w3.base.npu1.air.mlir` give the **identical** histogram.
+
+## The probe comparison (`vendor/probes/review/w3c.py`)
+
+| fact | ours | probe `w3c` | why |
+|---|---|---|---|
+| channels | `EastOut[1]`, `QIn[1] bcast[4]`, `RIn[4]`, `SOut[4]`, `West[3]`, `WestIn[1]` | same names and sizes except `QIn[4]` | ours is FR-M2's multicast geometry — one put, `broadcast_shape=[4]`; the probe replicates the put four times |
+| `tensors` | 3 — `q`, `r`, `S` | 5 — `Zrow`, `Q`, `Rr`, `Sink`, `Out` | ruling R-W3-1: the source and the drain use `S`'s own boundary columns, so no synthetic tensor exists |
+| `scf.if` | 4 | 4 | identical: head and tail guard, once per unrolled row |
+| `arith.select` | **2** | **0** | the probe computes a literal `+2`; ours is the `Select` on `qb[i-1] == rb[j-1]` — G-8, and the difference between Smith-Waterman and something else |
+| `arith.maxsi` | 6 | 4 | ours is the 4-ary `max(0, …)`; the probe's is 3-ary with no zero floor |
+| `scf.for` | 10 | 7 | ours drains **every row** (four `i_drain` loops) and zeroes `prev` with a loop rather than `ops.fill` |
+| `air.channel.put` / `get` | 12 / 11 | 14 / 11 | the `QIn` fan-out again: one put against four |
+| `memref.alloc` | 6 | 6 | identical |
+| `aie.flow` (circuit) | **8** | **8** | **byte-identical**: four `SOut` drains `tile_x_2 DMA:0 → shim_x_0 DMA:0`, one `EastOut` `tile_3_2 DMA:1 → shim_3_0 DMA:1`, three `West` links `tile_k_2 DMA:1 → tile_{k+1}_2 DMA:1`. The wavefront's physical realisation is exactly the shape the probe measured |
+| `aie.packet_flow` | **6** | **9** | the probe's nine are 4 PEs × (`QIn`, `RIn`) + `WestIn`. Ours are six because `QIn`'s `broadcast_shape` makes one flow with **two** `packet_dest`s (`tile_0_2` and `tile_1_2`) where the probe needs four separate flows. The brief expected 9; 6 is the same design with the multicast declared |
+| `aie.core` / `aie.lock` | 4 / 40 | 4 / 40 | identical |
+
+## Readings taken, where the documents disagree
+
+| # | Reading | Why |
+|---|---|---|
+| 1 | **The wavefront's staging channels are `QIn`/`RIn`/`SOut`, not §3.5's `{a}2L1`/`{a}2L3`** | §3.5's rule names W1's channels `A2L1`/`C2L3`; §6.4's table, `02-hld.md` §7.3, FR-M5's acceptance and §7's rows all name the wavefront's six `<Name>In`/`<Name>Out`, which is the family `WestIn`/`West`/`EastOut` already belongs to. `q2L1` would also read badly in the judge-facing summary. The fill/compute/drain protocol keeps §3.5's spelling; only the wavefront uses `wavefront_channel_name`. |
+| 2 | **The summary's `warning:` lines are appended after `self_check`**, by `dataclasses.replace` on the finished plan | §3.8 says a warning "is recorded in the summary and printed", and `warnings(plan)` enumerates every herd coordinate of the **finished** plan, so it cannot run inside §3.1's pass 9. Restructuring §3.1 to compute the P3 report twice would be the alternative. `summary(...)` called on its own therefore carries no warning line; `plan()`'s result always does. |
+| 3 | **A site inside a `BranchNode` arm carries the order of the `BranchNode`**, not 0 | §5.2 says `order` is "the index in its enclosing body", which for a one-site arm is 0 — and then W3's two unrolled rows give two `WestIn.get.0@herd` ids for two different sites, which collapses two distinct nodes into one in the P2b graph. Using the branch's own index keeps every id distinct (`WestIn.get.0@herd` and `WestIn.get.6@herd`) and keeps `_check_orders`' top-level rule exact. |
+| 4 | **W3's npu1 and npu2 AIR texts are byte-identical** | `physical_herd` is `(4,)` on both (the cap is 4 and 8, and 4 divides both), and `build(target=)` stamps nothing into `str(module)`, so there is no strip-mine loop to differ over the way W1's does. Both goldens are kept: two identical files record the fact, and a future wheel that starts stamping the device shows up as a diff. The two `plan.json` goldens **do** differ, by `schedule.target`. |
+| 5 | **`W3_FACTS` is `broadcast_pattern_count`, `cascade_channels`, `lock_init_histogram`** — not W1's five | `pingpong_unroll`, `hoist_alloc_count` and `pingpong_iter_args` are ping-pong facts and W3 has no ping-pong candidate (no operand is re-fetched per trip, so `DEPTH` is 0 everywhere and `double_buffer` is empty). Asserting 0 for them would freeze a number with no content. |
+
+## Verified (command → result)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `.venv/bin/python -m pytest` | **515 passed** (was 483), 7 deselected, 5.4 s |
+| 2 | the same at `PYTHONHASHSEED=1` and `=12345` | 515 passed each; `test_M4_plan_stable[w1|w3]` and `test_E10_byte_identical_w3` also run a fresh process under another seed |
+| 3 | `.venv/bin/python -m pytest -m slow` | **7 passed** (was 4: `test_W3_aircc_none[npu1]`, `[npu2]` and `test_W3_hierarchy_locality` are new) |
+| 4 | `pytest --update-goldens` | 7 new goldens; `git diff --stat tests/golden` is **empty**, so every W1 golden is byte-identical before and after |
+| 5 | the interpreter against a textbook two-loop numpy DP, `numpy.random.default_rng(0)`, both targets | **exactly equal**; row 0 and column 0 stay zero; `q` and `r` are untouched; `dtype == int32` |
+| 6 | the same at `MQ = 31` (the peeled odd trip count) | exactly equal; every wavefront index shows 31 puts against 31 gets |
+| 7 | `m4.plan(w3_legal.legal(t))` with the real `self_check` | accepted on both targets, four warnings, no error |
+
+## Blockers closed
+
+| # | Resolution |
+|---|---|
+| **B-P16** | **Closed.** `ops.maximum`/`minimum`'s `_elementwise` guard admits `(Buffer, BufferExpr, int, float)` and not `BufferSlice` (`python/air/api/ops.py:384-391`), so M5's `EMIT_EXPR` `Load` arm now returns `BufferExpr.coerce(buf[subs])` (`python/air/api/_value.py:1046-1049`) — the API's own entry point, not `load + 0`, which would put an `arith.addi` in the IR the plan never asked for. It is a no-op for every other consumer: `BufferSlice.__add__` and friends call `_as_leaf()` first (`_value.py:749-751`), which is what `coerce` calls, and **W1's goldens are byte-identical**. `BufferExpr` is not re-exported by `air.api.__init__`, so the import is `from air.api._value import BufferExpr`, lazy inside `emit()`. |
+| **B-P24** | **Closed as R-W3-2.** `classify` maps a declared `along` through `mapping.schedule.place.index(...)` to `PE_AXIS_NAME`, so W3 renders `S: forward along px (declared)` and one column of `MappingPlan.delivery` means one thing. An `along` no `place()` carries raises `PROTOCOL-UNSUPPORTED` naming the clause. `test_M3_stream_override`'s classify half now expects `("A", "FORWARD", "py", True)`. |
+| **A second finding, not previously logged** | `==`/`!=` are **not** operators on a buffer value: `BufferExpr` and `BufferSlice` deliberately leave `__eq__`/`__ne__` undefined, because defining `__eq__` sets `__hash__` to `None` (`_value.py:795-805`), so `x == y` is Python's identity comparison and `ops.select` rejects the `bool` it produces by name (`ops.py:809-816`). `ops.equal`/`ops.not_equal` (`ops.py:779-792`) are the spelling and build the same `arith.cmpi`. M5 §3.6 line 17's `<cmp>` therefore holds for `<`, `<=`, `>`, `>=` only; the erratum is in the LLD and the two names are in §3.2's closure test. |
+
+## Naming rule, extended
+
+`06-interfaces.md` §5.5 gained one bullet: a **source** loop is `<axis>_source`, the mirror of
+`<axis>_drain`, naming the axis whose trips it enumerates — W3's `i_source`. §6.1's protocol has
+no source loop, so the rule had no spelling for one. Both W3 row loops (`i_source`, `i_drain`)
+are `air.sequential` per ruling **R-W3-3**: a row index is not a channel bundle index, so
+`LOOP_KIND` takes its default, and only the `pj_bundle` loop around the `SOut` drains is
+`unrolled`. `03-lld-M5-emitter.md` §6.4 lines 31-35, which draw both as Python loops, carry the
+erratum.
+
+## Documents edited
+
+| file | edit |
+|---|---|
+| `design/03-lld-M4-mapping.md` §6.4 | the `EastOut` row is `S[i, NR:NR+1]` under a sequential `i_drain` loop, not `Sink[r:r+1]`, with R-W3-1's two measurements; the delivery line carries R-W3-2's erratum |
+| `design/03-lld-M5-emitter.md` §6.4 | lines 17, 32 and 33-35 rewritten (`ZERO_COL`/`SINK` → `S`; the drain loops sequential, only `p` unrolled), with one erratum paragraph; §3.6's `Select` paragraph gains the `ops.equal` and `BufferExpr.coerce` errata |
+| `design/02-hld.md` §7.3 | the `EastOut` row names `S[i, NR:NR+1]` and R-W3-1's measurements |
+| `design/06-interfaces.md` §5.5 | the `<axis>_source` bullet |
+
+## Open / blockers
+
+| # | Item | Detail |
+|---|---|---|
+| **M4 §7 rows still waiting** | `test_M4_balanced`, `test_M4_drains_every_plane`, `test_M4_odd_T_peel`, `test_M4_even_T_no_peel`, `test_M10_w2_acyclic`, `test_M4_halo_indices`, `test_M4_stencil_is_five_point`, `test_M4_halo_protocol` — **P5** (W2's halo); `test_M6_cascade_chain`, `test_M6_cascade_orientation`, `test_M11_residency_line`'s flip half, `test_E8_cascade_text` — **P6**. W3's own rows are all live now. |
+| **`PIPELINES["aie"]` is Person C's module** | The placement prefix was added by B because `lock_init_histogram` is unreadable without it. The geometry table `AIE_GEOMETRY` is two rows transcribed from `aircc.cpp:1003-1022`; a third target would need a third row. For C to confirm. |
+| **`swap_loop`'s `phase` return is unused** | W3 drains inside `ROW`, so there is no "which buffer is live" question (§6.4 says so). W2's drain at P5 is the first caller that needs it, and it is returned now so the signature does not change then. |
+| **B-P10**, **B-P12**, **B-P13**, **B-P15**, **B-P20**, **B-O8** | unchanged | — |
+
+**Not verified in this phase**: that the emitted module **computes** Smith-Waterman on hardware —
+the interpreter interprets the **plan**, never the emitted IR (D-9), and only a device run closes
+that (the honest-limits slide is unchanged); that `aircc`'s 0.3 s holds on another machine or
+another wheel; that the packet/circuit split holds off the pin (R-19/R-21); that a wavefront with
+a herd rank of 2, more than one `FORWARD` row, a non-unit row step, an east-side overhang or a
+row span other than 2 works — each raises `NotImplementedError` naming the phase rather than
+guessing; W2's and W1-flip's real plans (neither builder exists yet).

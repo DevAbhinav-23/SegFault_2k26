@@ -381,11 +381,28 @@ PIPELINES: dict[str, str] = {
                      "air-label-scf-for-to-ping-pong{{device={target}}})",
     "broadcast": "builtin.module(air-dependency,air-broadcast-detection)",
     "pairs": "builtin.module(air-dependency,air-dependency-canonicalize)",
-    "aie": "builtin.module(air-to-aie{{device={target}}})",
+    "aie": "builtin.module(air-place-herds{{num-rows={rows} num-cols={cols} "
+           "row-anchor={row_anchor} col-anchor=0}},air-to-aie{{device={target}}})",
 }
 """Pass pipeline per named inspection, so "which pipeline produced this number" is never a
-question (design/03-lld-M6-toolchain.md §3.7). `{target}` is filled by `str.format`; `{{`/`}}`
-are the literal braces of a pass option. `pingpong_full` is the **unused recorded fallback**."""
+question (design/03-lld-M6-toolchain.md §3.7). `{target}`, `{cols}`, `{rows}` and
+`{row_anchor}` are filled by `str.format`; `{{`/`}}` are the literal braces of a pass option.
+`pingpong_full` is the **unused recorded fallback**.
+
+`air-to-aie` alone is **not** enough: on an unplaced module every herd keeps its logical origin,
+so a 1-D `grid(4)` herd asks for columns 1..4 and the pass fails with `'aie.tile' op column index
+(4) must be less than the number of columns in the device (4)` (measured on W3). `aircc` places
+first (`tools/aircc/aircc.cpp:1158-1162`), and §3.7's pipeline now does the same with that call's
+own geometry, so the number `ir_facts` reads is the number `aircc` compiled. Cross-checked on
+W3/npu1: this pipeline and `aircc`'s own `air_project/aie.*.mlir` give the identical
+`lock_init_histogram` `{{"0": 20, "1": 16, "2": 4}}` (design/PROGRESS-B.md, phase P4)."""
+
+AIE_GEOMETRY: dict[str, dict[str, int]] = {
+    "npu1": {"cols": 4, "rows": 6, "row_anchor": 2},
+    "npu2": {"cols": 8, "rows": 6, "row_anchor": 2},
+}
+"""`air-place-herds`' geometry per target, as `aircc` resolves it when no flag overrides it
+(`tools/aircc/aircc.cpp:1003-1022`: npu1 → 4 columns, npu2 → 8, both 6 rows anchored at row 2)."""
 
 PIPELINES["transform"] = (PIPELINES["pingpong_full"][:-1]
                           + ",air-ping-pong-transform,canonicalize,cse)")
@@ -444,12 +461,13 @@ def ir_facts(mlir_path: str, target: Target, facts: Iterable[str],
         raise ValueError(f"unknown ir fact(s) {unknown}; known: {sorted(PIPELINE_OF)}")
     work = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="m6-"))
     air_opt = tool("air-opt")
+    geometry = AIE_GEOMETRY.get(target, AIE_GEOMETRY["npu1"])
     out: dict[str, object] = {}
     for name, template in PIPELINES.items():                # a fixed order, so runs compare
         group = [f for f in wanted if PIPELINE_OF[f] == name]
         if not group:
             continue
-        pipeline = template.format(target=target)
+        pipeline = template.format(target=target, **geometry)
         destination = work / f"{name}.mlir"
         verdict(invoke([air_opt, mlir_path, f"-pass-pipeline={pipeline}", "-o", destination],
                        cwd=work))                           # FR-T5 applies here too

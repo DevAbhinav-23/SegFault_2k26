@@ -66,6 +66,20 @@ _BUG_FIX = ("this is a defect in the compiler, not in your program: please repor
 _BINOPS = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": operator.truediv}
 _RELATIONS = {"==": operator.eq, "!=": operator.ne, "<": operator.lt,
               "<=": operator.le, ">": operator.gt, ">=": operator.ge}
+"""`Guard.relation` → the Python operator on an `IndexExpr`, which builds a `Condition`."""
+
+_ORDERINGS = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
+"""The four `Select.cmp_op`s that **are** operators on a buffer value.
+
+`==` and `!=` are not, and this is a measured asymmetry rather than an oversight: `BufferExpr`
+and `BufferSlice` deliberately leave `__eq__`/`__ne__` undefined, because defining `__eq__` sets
+`__hash__` to `None` and changes what `slice == slice` means for ordinary Python
+(`python/air/api/_value.py:795-805`). `x == y` on two buffer values is therefore Python's
+identity comparison and evaluates to a `bool` before `ops.select` ever sees it, which
+`ops.select` detects and rejects by name (`ops.py:809-816`). `ops.equal` / `ops.not_equal`
+(`ops.py:779-792`) are the spelling, and they build the same `arith.cmpi`/`cmpf` the operators
+build. W3's substitution score is the first `Select` in the project and the first to need them.
+"""
 
 
 def _fail(code: str, reason: str, fix: str, details: dict[str, Any]) -> EmissionError:
@@ -85,10 +99,11 @@ def _row_major(shape: tuple[int, ...]) -> tuple[int, ...]:
 class _Emitter:
     """One emission of one plan: the `air.api` handles, the name environment, the tokens."""
 
-    def __init__(self, plan: MappingPlan, target: Target, air: Any) -> None:
+    def __init__(self, plan: MappingPlan, target: Target, air: Any, coerce: Any) -> None:
         self.plan = plan
         self.target = target
         self.air = air
+        self.coerce = coerce                       # BufferExpr.coerce, see `_expr`'s Load arm
         self.node: Any = plan                      # the node being emitted, for diagnostics
         self.values: dict[str, Any] = {}           # buffer / tensor name -> air.api value
         self.shapes: dict[str, tuple[int, ...]] = {}   # the same names -> declared shape
@@ -369,7 +384,18 @@ class _Emitter:
     def _expr(self, node: Any) -> Any:
         """`EMIT_EXPR`: one branch per `ExprNode` case, and no case reads the kernel."""
         if isinstance(node, Load):
-            return self._value_of(node.buffer_id)[tuple(self._index(i) for i in node.subscripts)]
+            # `buf[subs]` is a `BufferSlice`, and `ops.maximum`/`minimum` refuse one: their
+            # `_elementwise` guard admits `(Buffer, BufferExpr, int, float)` only
+            # (`python/air/api/ops.py:384-391`), although `BufferExpr.coerce` on the next line
+            # handles a `BufferSlice` (`python/air/api/_value.py:1046-1049`) and `_comparison`
+            # and `select` both list it. So the coercion is applied here, through the API's own
+            # entry point, rather than by wrapping the load in arithmetic — `load + 0` would put
+            # an `arith.addi` in the IR that the plan does not ask for. It is a no-op for every
+            # other consumer: `BufferSlice.__add__` and friends call `_as_leaf()` first
+            # (`_value.py:749-751`), which is what `coerce` calls, so W1's text is unchanged.
+            # Recorded as the closure of **B-P16**.
+            return self.coerce(
+                self._value_of(node.buffer_id)[tuple(self._index(i) for i in node.subscripts)])
         if isinstance(node, Const):
             return float(node.text) if node.dtype in _FLOAT_DTYPES else int(node.text)
         if isinstance(node, BinOp):
@@ -383,11 +409,19 @@ class _Emitter:
                 value = fold(self._expr(operand), value)
             return value
         if isinstance(node, Select):
-            return self.air.ops.select(
-                _RELATIONS[node.cmp_op](self._expr(node.lhs), self._expr(node.rhs)),
-                self._expr(node.then), self._expr(node.otherwise))
+            return self.air.ops.select(self._compare(node), self._expr(node.then),
+                                       self._expr(node.otherwise))
         raise self._bug(f"{type(node).__name__} is not an ExprNode "
                         f"(design/06-interfaces.md §5.5)")
+
+    def _compare(self, node: Select) -> Any:
+        """A `Select`'s predicate: an `arith.cmpi`/`cmpf` over two buffer values (`_ORDERINGS`)."""
+        lhs, rhs = self._expr(node.lhs), self._expr(node.rhs)
+        if node.cmp_op == "==":
+            return self.air.ops.equal(lhs, rhs)
+        if node.cmp_op == "!=":
+            return self.air.ops.not_equal(lhs, rhs)
+        return _ORDERINGS[node.cmp_op](lhs, rhs)
 
     # -- the whole of it (LLD §3.1) -----------------------------------------
 
@@ -446,5 +480,9 @@ def emit(plan: MappingPlan, target: Target) -> EmitResult:
              "why": "M5 never resolves \"auto\": it shells out to xrt-smi "
                     "(python/air/api/_trace.py:164-183), and decision D-13 keeps that in M6"})
     from air import api as air                                  # noqa: PLC0415 — lazy, FR-S20
+    # `BufferExpr` is not re-exported by `air.api.__init__` (it exports `Buffer`, `BufferSlice`,
+    # `Tensor`, `TensorSlice`, `Token`), so its own module is the only route to the coercion
+    # `ops.maximum` needs — §3.2's table lists the constructs M5 *emits*, and this emits none.
+    from air.api._value import BufferExpr                        # noqa: PLC0415 — lazy, FR-S20
 
-    return _Emitter(plan, target, air).run()
+    return _Emitter(plan, target, air, BufferExpr.coerce).run()

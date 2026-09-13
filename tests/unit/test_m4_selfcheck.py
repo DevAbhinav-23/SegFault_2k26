@@ -25,7 +25,7 @@ from tests.fixtures.corrupt import (branch_gets, broadcast_underconsumed, dma_pa
                                     dma_three_inbound, dropped_get, extra_put_in_loop, halo,
                                     halo_guard_dropped, halo_reversed, iv_bundle_index,
                                     pingpong_hoisted, tensor_order)
-from tests.fixtures.mappings import w1_legal
+from tests.fixtures.mappings import w1_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers.diagnostics import assert_diagnostic
 
@@ -54,6 +54,26 @@ def test_M9_selfcheck_accepts(target):
     # the synthetic hand plans the negatives are cut from are themselves legal
     assert sc.self_check(halo.plan(2)) is None
     assert sc.self_check(branch_gets.plan()) is None
+
+
+@pytest.mark.fr("FR-M9", "FR-M10", "FR-M5")
+@pytest.mark.parametrize("target", TARGETS)
+def test_M9_selfcheck_accepts_w3(target):
+    """W3's real plan passes every check, with **exactly one** warning per PE and no error.
+
+    The wavefront is the first plan with guarded branches, a peelable swap loop, a source and a
+    drain on the same L3 tensor, and a per-core inbound count over the nominal budget — so it is
+    the case each of §3.7's three checks and §3.8's split was written for.
+    """
+    plan = m4.plan(w3_legal.legal(target))
+    assert sc.self_check(plan) is None
+    messages = sc.warnings(plan)
+    assert len(messages) == plan.herd.grid[0]                 # one per PE, inbound only
+    assert all("packet" in message and "2 S2MM" in message for message in messages)
+    assert all(len(row.hard) <= row.budget for row in sc.dma_report(plan))
+    # and the warning reaches the summary, which is what §3.8 asks for
+    assert [line for line in plan.summary.lines if line.startswith("warning: ")] == [
+        f"warning: {message}" for message in messages]
 
 
 @pytest.mark.fr("FR-M9")
@@ -179,6 +199,21 @@ def test_M10_branches_not_joined():
     assert {node.coord for node in nodes if node.site == branch_gets.WEST_IN_GET.id} == {(0,)}
     assert {node.coord for node in nodes if node.site == branch_gets.WEST_GET.id} == {(1,)}
 
+    # ...and the same on W3's real plan, whose four branch arms are the shape the rule is for
+    nodes, edges = sc.graph(m4.plan(w3_legal.legal()))
+    heads = {node.site for node in nodes if node.site.startswith("WestIn.get")}
+    bodies = {node.site for node in nodes if node.site.startswith("West.get")}
+    tails = {node.site for node in nodes if node.site.startswith("EastOut.put")}
+    middles = {node.site for node in nodes if node.site.startswith("West.put")}
+    assert heads and bodies and tails and middles
+    for one, other in ((heads, bodies), (tails, middles)):
+        assert not [edge for edge in edges
+                    if edge.src.site in one and edge.dst.site in other
+                    and edge.src.coord == edge.dst.coord]
+    assert {node.coord for node in nodes if node.site in heads} == {(0,)}
+    assert {node.coord for node in nodes if node.site in bodies} == {(1,), (2,), (3,)}
+    assert {node.coord for node in nodes if node.site in tails} == {(3,)}
+
 
 # --------------------------------------------------------------------------------------------
 # The structural checks (§3.7.3, `06-interfaces.md` §5.6 invariants 3-8)
@@ -298,6 +333,15 @@ def test_P3_dma_exclusive_branches():
     assert all(len(row.hard) <= row.budget for row in report.values())
     assert sc.self_check(branch_gets.plan()) is None
 
+    # W3's real plan: PE 0 names WestIn and never West, so its west inbound count is 1, not 2
+    plan = m4.plan(w3_legal.legal())
+    report = {(row.coord, row.kind): row for row in sc.dma_report(plan)}
+    west = {coord: [name for name in report[((coord,), "get")].all_
+                    if name in ("WestIn", "West")] for coord in range(4)}
+    assert west == {0: ["WestIn"], 1: ["West"], 2: ["West"], 3: ["West"]}
+    assert report[((0,), "get")].all_ == ("QIn", "RIn", "WestIn")
+    assert report[((0,), "put")].all_ == ("SOut", "West")
+
 
 @pytest.mark.fr("FR-M4")
 def test_P3_dma_packet_warns():
@@ -310,6 +354,17 @@ def test_P3_dma_packet_warns():
         assert "packet flows" in message and "not contractual" in message
         assert all(name in message for name in ("QIn", "RIn", "UIn"))
     assert sc.warnings(w1_plan.plan("npu1")) == ()
+
+    # W3's real plan is the measured case the split exists for: three inbound channels per core,
+    # and `aircc --device npu1 --output-format=none` exits 0 with zero `error:` lines (P-R4).
+    plan = m4.plan(w3_legal.legal())
+    assert sc.self_check(plan) is None
+    messages = sc.warnings(plan)
+    assert len(messages) == 4                                 # one per PE, inbound only
+    for coord, message in enumerate(messages):
+        assert message.startswith(f"PE [{coord}] names 3 inbound channels")
+        assert "QIn" in message and "RIn" in message and "packet flows" in message
+        assert "2 S2MM" in message
 
 
 def test_may_packet_evidence():

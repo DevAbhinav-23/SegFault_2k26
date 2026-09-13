@@ -17,8 +17,8 @@ from tests.fixtures.mappings import ONE, ZERO, const, lin, resolve_physical, til
 MQ = NR = 32
 """The two sequence lengths. `S` is `[MQ + 1, NR + 1]`: row 0 and column 0 are the boundary."""
 
-SOURCE = '''\
-MQ = NR = 32; MATCH = 2; MISMATCH = -1; GAP = 1
+SOURCE_TEMPLATE = '''\
+MQ = {MQ}; NR = 32; MATCH = 2; MISMATCH = -1; GAP = 1
 
 @sp.kernel
 def sw(q: sp.i32[MQ], r: sp.i32[NR], S: sp.i32[MQ + 1, NR + 1]):
@@ -28,7 +28,15 @@ def sw(q: sp.i32[MQ], r: sp.i32[NR], S: sp.i32[MQ + 1, NR + 1]):
             S[i, j] = max(0, S[i - 1, j - 1] + sub,
                           S[i - 1, j] - GAP, S[i, j - 1] - GAP)
 '''
-"""The kernel text of `03-lld-M1-frontend.md` §6.3, verbatim. The store is line 8."""
+"""The kernel text of `03-lld-M1-frontend.md` §6.3. The store is line 8.
+
+`MQ` is a parameter so the odd-trip-count peel of `03-lld-M4-mapping.md` §3.6.1 lines 7-9 — the
+machinery W3's row swap shares with W2's timestep swap — has a fixture that exercises it.
+`MQ = 32` reproduces `03-lld-M3-checker.md` §6.4 unchanged.
+"""
+
+SOURCE = SOURCE_TEMPLATE.format(MQ=MQ).replace("MQ = 32; NR = 32", "MQ = NR = 32")
+"""§6.3's own text, at the fixture's `MQ = NR = 32`."""
 
 _I2 = ((1, 0), (0, 1))
 """`M_S` — every access to `S` shares it (§6.3)."""
@@ -63,11 +71,11 @@ def _expr() -> MaxMin:
     ))
 
 
-def kernel() -> KernelModel:
+def kernel(MQ: int = MQ) -> KernelModel:
     """W3's `KernelModel`, field for field from `03-lld-M1-frontend.md` §6.3."""
     return KernelModel(
         name="sw",
-        source=SOURCE,
+        source=SOURCE if MQ == 32 else SOURCE_TEMPLATE.format(MQ=MQ),
         # read-only params FIRST, which MappingPlan.tensors must preserve (§5.6 invariant 6).
         # `MQ + 1` is not a shape-parameter NAME, so it is resolved to 33; the bare NAMEs
         # `MQ` and `NR` stay symbolic. See design/PROGRESS-B.md, phase P0c.
@@ -135,11 +143,11 @@ def schedule(target: str = "npu1") -> ScheduleModel:
     )
 
 
-def legal(target: str = "npu1") -> LegalMapping:
+def legal(target: str = "npu1", MQ: int = MQ) -> LegalMapping:
     """W3's `LegalMapping`, field for field from `03-lld-M3-checker.md` §6.4."""
     physical, repeats = resolve_physical((4,), target)
     return LegalMapping(
-        kernel=kernel(),
+        kernel=kernel(MQ),
         schedule=schedule(target),
         # Coord = (i, j0, j1), extents (32, 4, 8); i is untiled and keeps the kernel's bounds.
         axes=(
@@ -165,9 +173,10 @@ def legal(target: str = "npu1") -> LegalMapping:
         stationary_ops=("S", "r"),             # q is NOT stationary: ker M_q = span{e_j} ⊄
         physical_herd=physical,
         repeats=repeats,
-        l1_bytes=232,     # q 128 + r 32 + S 72, at M3's scope: edge_in/edge_out are M4's
+        # q MQ*4 + r 32 + S 72, at M3's scope: edge_in/edge_out are M4's (232 at MQ = 32)
+        l1_bytes=MQ * 4 + 32 + 72,
         halo_footprint=(),
     )
 
 
-__all__ = ["MQ", "NR", "SOURCE", "kernel", "schedule", "legal"]
+__all__ = ["MQ", "NR", "SOURCE", "SOURCE_TEMPLATE", "kernel", "schedule", "legal"]

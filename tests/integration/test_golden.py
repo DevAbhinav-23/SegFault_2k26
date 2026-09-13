@@ -1,7 +1,7 @@
 """Level G — the golden pipeline. Spec: design/04-test-plan.md §3.1, design/06-interfaces.md §8.
 
-W1 only: the other three variants need the protocol builders of M4 §3.6, which land in
-P4/P5/P6 (`design/PROGRESS-B.md`).
+W1 and W3. The W1-flip and W2 variants need the cascade and halo builders of M4 §3.6.3/§3.6.1,
+which land in P5/P6 (`design/PROGRESS-B.md`).
 
 A golden is valid **only for the pinned wheel** (FR-T6), so a pin mismatch **skips** every test
 here with the reason rather than failing it (§8 rule 2).
@@ -17,7 +17,7 @@ import pytest
 
 from spatial import m4_mapping as m4, m5_emit, m6_tools as m6
 from spatial.model import ToolchainError, to_json
-from tests.fixtures.mappings import w1_legal
+from tests.fixtures.mappings import w1_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers.golden import assert_golden
 
@@ -80,3 +80,38 @@ def test_golden_skips_on_pin_mismatch(monkeypatch):
         require_pin()
     assert "mlir_air" in str(excinfo.value)
     assert "not-the-pinned-wheel" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------------------------
+# W3 — the wavefront, derived by M4 and emitted by M5. Added by B at P4.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-E7", "FR-M5", "FR-K4", "FR-T6")
+def test_golden_w3(target):
+    """Gate G3's B half: `LegalMapping` → M4 → M5 → the AIR text, byte for byte, per target.
+
+    There is no hand-written W3 plan literal to cross-check against — W1's existed because M5
+    was built before M4 — so the golden is the whole of the contract, and the `aircc` and
+    interpreter tests beside it are what say the text means what it should.
+    """
+    require_pin()
+    plan = m4.plan(w3_legal.legal(target))
+    result = m5_emit.emit(plan, target)
+    assert_golden(f"w3.base.{target}.air.mlir", result.mlir, kind="text")
+    assert_golden(f"w3.base.{target}.plan.json", json.loads(to_json(plan)), kind="json")
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-M11")
+def test_golden_w3_summary(target):
+    """W3's summary, including the delivery block of **B-P22** and the §3.8 DMA warnings."""
+    require_pin()
+    summary = m4.plan(w3_legal.legal(target)).summary
+    assert_golden(f"w3.base.{target}.summary.txt", "\n".join(summary.lines) + "\n", kind="text")
+    for line in ("S: forward along px (declared)", "q: multicast along px (derived)",
+                 "r: stationary (derived)", "L1: 240 of 65536 bytes"):
+        assert line in summary.lines
+    warnings = [line for line in summary.lines if line.startswith("warning: ")]
+    assert len(warnings) == 4 and all("packet" in line for line in warnings)

@@ -1197,7 +1197,7 @@ claim is this sentence.
 
 `MQ=NR=32`, `PJ=4`, `CW=8`, `i32`. `physical_herd=(4,)`, `repeats=(1,)`.
 
-**Delivery**: `S: forward along px (declared)`, `q: multicast along px (derived)`, `r: stationary (derived)` — three mechanical lines, in `MappingPlan.delivery` order (sorted by operand: `S`, `q`, `r`). *(Erratum, 2026-09-13, the ruling on **B-P22**: the delivery block carries one `f"{a}: {HOW} ({declared})"` line per operand and nothing else. `forward("S", …)` both names `S`'s delivery — R2, "`declared` is a fact about the schedule: a clause names this operand's delivery" — and replaces its derived row (FR-M3, §3.2 line 21a).)*
+**Delivery**: `S: forward along px (declared)`, `q: multicast along px (derived)`, `r: stationary (derived)` — three mechanical lines, in `MappingPlan.delivery` order (sorted by operand: `S`, `q`, `r`). *(Erratum, 2026-09-13, the ruling on **B-P22**: the delivery block carries one `f"{a}: {HOW} ({declared})"` line per operand and nothing else. `forward("S", …)` both names `S`'s delivery — R2, "`declared` is a fact about the schedule: a clause names this operand's delivery" — and replaces its derived row (FR-M3, §3.2 line 21a).)* *(Erratum, 2026-09-13, ruling **R-W3-2**, closing **B-P24**: `along` in a delivery row is always a PE axis, so §3.2 line 21a maps the clause's `ax.j0` through `mapping.schedule.place.index(...)` to `px`, and an `along` no `place()` carries is a `PROTOCOL-UNSUPPORTED` naming the clause.)*
 
 **Tensors**: `(q, r, S)` — `q [32] i32` and `r [32] i32` are read-only and **must** precede the
 written `S [33,33] i32` (§3.3 note 6; `_check_interface` raises otherwise, measured).
@@ -1212,7 +1212,7 @@ L1 = `128 + 32 + 2·36 + 2·4` = **240** bytes (`02-hld.md` §7).
 |---|---|---|
 | `WestIn` | `(1,)` | segment: `LoopPlan(i, 1..MQ+1, "sequential")` → `put(S[i, 0:1], (0,))` — the zero column-0 boundary of `S` itself, not a synthetic `Zrow` tensor; herd: `get(edge_in, (0,))` guard `tx == 0` |
 | `West` | `(3,)` | herd: `put(edge_out, (tx,))` guard `tx < 3`; `get(edge_in, (tx-1,))` guard `tx > 0` |
-| `EastOut` | `(1,)` | herd: `put(edge_out, (0,))` guard `tx == 3`; segment: `LoopPlan(r, 1..MQ+1)` → `get(Sink[r:r+1], (0,))` |
+| `EastOut` | `(1,)` | herd: `put(edge_out, (0,))` guard `tx == 3`; segment: `LoopPlan(i_drain, 1..MQ+1, "sequential")` → `get(S[i, NR:NR+1], (0,))` — *(Erratum, 2026-09-13, ruling **R-W3-1**: the drain gets into the tail PE's own east edge column of `S`, not a synthetic `Sink` tensor; `MappingPlan.tensors` is exactly `(q, r, S)`. `S[i, NR]` is the same value the tail PE's `SOut` put also writes, and the shape is measured: `aircc --device npu1|npu2 --output-format=none` exits 0 with zero `error:` lines and `air-opt -pass-pipeline='builtin.module(air-verify-hierarchy-locality{strict=true})'` prints nothing.)* |
 | `QIn` | `(1,)`, `broadcast_shape=(4,)` | segment: 1 put at `(0,)`; herd: `get(qb, (tx,))` once, before the row loop |
 | `RIn` | `(4,)` | segment: 4 puts at `(k,)` under a Python loop; herd: `get(rb, (tx,))` once, before the row loop |
 | `SOut` | `(4,)` | herd: `put(c[1:CW+1], (tx,))` **once per row**, L3 region `S[i, tx*CW+1 : (tx+1)*CW+1]`; segment: `MQ` gets per PE |

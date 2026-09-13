@@ -12,11 +12,14 @@ six columns), so `numpy` is not imported either.
 **What this cut builds.** The ten passes of LLD §3.1 in their fixed order, general in the
 machinery (`TILE_SHAPE` from the `AccessMap` and the tile factors, `CLASSIFY` in `UCoord`,
 `MULTICAST_GEOMETRY`, `L3_REGION`, `LOOP_KIND`, `TENSOR_PLAN`, `RESIDENCY`, `SUMMARY`), with
-**one protocol builder**: the multicast / stationary fill-compute-drain shape of LLD §6.1. The
-halo (§3.6.1), wavefront (§3.6.2) and cascade (§3.6.3) builders raise `NotImplementedError`
-naming the phase; §3.1's `PLAN` wrapper re-raises any non-`SpatialError` as a `MappingError`
-carrying it in `details["internal_exception"]` (§5), so an input that needs one of them fails
-loudly and legibly instead of silently producing a wrong plan.
+**two protocol builders**: the multicast / stationary fill-compute-drain shape of LLD §6.1, and
+the wavefront of §3.6.2 — one scalar get per row, one scalar put per row, three homogeneous
+channels closed by a segment-scope source and drain, and the `prev`/`cur` swap as an
+unroll-by-two-and-peel (`swap_loop`, which W2's timestep swap reuses). The halo (§3.6.1) and
+cascade (§3.6.3) builders raise `NotImplementedError` naming the phase; §3.1's `PLAN` wrapper
+re-raises any non-`SpatialError` as a `MappingError` carrying it in
+`details["internal_exception"]` (§5), so an input that needs one of them fails loudly and
+legibly instead of silently producing a wrong plan.
 
 **Determinism** (HLD §5, invariant I-7): every traversal that affects a name, an order or a
 text is `sorted(...)` on an explicit key; no `id()`, no clock, no RNG.
@@ -27,12 +30,13 @@ from __future__ import annotations
 from dataclasses import fields, replace
 from fractions import Fraction
 from math import lcm, prod
-from typing import Any, get_args
+from typing import Any, Callable, NamedTuple, get_args
 
-from spatial.m4_selfcheck import self_check
-from spatial.model import (Axis, BufferPlan, ChannelPlan, ChannelSite, Const, Diagnostic, Dtype,
-                           Expr, ExprNode, HerdPlan, LegalMapping, Load, LoopPlan, MappingError,
-                           MappingPlan, MappingSummary, Param, Region, SpatialError, StoreNode)
+from spatial.m4_selfcheck import self_check, warnings
+from spatial.model import (Axis, BranchNode, BufferPlan, ChannelPlan, ChannelSite, Const,
+                           Diagnostic, Dtype, Expr, ExprNode, Guard, HerdPlan, LegalMapping, Load,
+                           LoopPlan, MappingError, MappingPlan, MappingSummary, Param, Region,
+                           SpatialError, StoreNode)
 
 # --------------------------------------------------------------------------------------------
 # Constants
@@ -69,7 +73,8 @@ _PHYSICAL_CAP = {("npu1", 1): (4,), ("npu1", 2): (1, 4),
 _CLAUSE = "plan()"
 """The surface call every mapping diagnostic without a user clause of its own points at."""
 
-_LATER = "lands in P4/P5/P6: this cut builds the LLD §6.1 fill/compute/drain protocol only"
+_LATER = ("lands in P4/P5/P6: this cut builds the LLD §6.1 fill/compute/drain and §3.6.2 "
+          "wavefront protocols only")
 """Every unbuilt path carries this phrase, so an unsupported input says which phase owns it."""
 
 _BUG_FIX = ("this is a defect in the compiler, not in your program: please report it with the "
@@ -449,8 +454,38 @@ def classify(mapping: LegalMapping) -> tuple[tuple[str, str, str | None, bool], 
     # does not: `Delivery` has no halo member, and §6.3 keeps W2's derived `U: STATIONARY`
     # beside its declared halo sentence (design/PROGRESS-B.md, phase P2).
     override = {clause.operand: clause for clause in schedule.streams}
-    return tuple((row[0], _PATTERN[override[row[0]].pattern], override[row[0]].along, True)
+    return tuple((row[0], _PATTERN[override[row[0]].pattern],
+                  pe_axis(mapping, override[row[0]]), True)
                  if row[0] in override else row for row in rows)
+
+
+def clause_text(clause) -> str:
+    """A `StreamClause` as the user wrote it, for a diagnostic's `clause` field (HLD §4.2)."""
+    if clause.pattern == "forward" and clause.direction is not None:
+        return (f'forward("{clause.operand}", along=ax.{clause.along}, '
+                f'dir="{clause.direction}")')
+    return f'stream("{clause.operand}", pattern="{clause.pattern}", along=ax.{clause.along})'
+
+
+def pe_axis(mapping: LegalMapping, clause) -> str:
+    """A declared `along` mapped to the PE axis carrying it (the ruling on **B-P24**).
+
+    `along` in a `MappingPlan.delivery` row is always `px`/`py`: the derived rows are built from
+    `PE_AXIS_NAME` (LLD §3.2 lines 14, 18), so an overridden row spelling the *schedule* axis
+    (`j0`) would make one column of the table mean two different things, and the summary would
+    print `forward along j0` where §6.4 and `02-hld.md` §7.3 print `along px`. The clause axis
+    must therefore be a placed axis, and naming an unplaced one is a `PROTOCOL-UNSUPPORTED`.
+    """
+    place = tuple(mapping.schedule.place)
+    if clause.along not in place:
+        raise _fail(
+            f"{clause.along!r} is not a placed axis, so no PE axis carries the declared "
+            f"delivery of {clause.operand!r}; placed here: {list(place)}",
+            f"name a placed axis in the clause, or place {clause.along!r} with "
+            f"place(px={clause.along})",
+            clause=clause_text(clause), operand=clause.operand, along=clause.along,
+            place=list(place))
+    return PE_AXIS_NAME[place.index(clause.along)]
 
 
 def _cascade_axis(mapping: LegalMapping) -> int:
@@ -541,8 +576,16 @@ def residency(mapping: LegalMapping, operand: str) -> str:
 
 
 def buffer_name(mapping: LegalMapping, operand: str) -> str:
-    """The L1 staging buffer's name (LLD §3.1's table): `acc` for the accumulator, else lower."""
-    return "acc" if _is_accumulator_operand(mapping, operand) else operand.lower()
+    """The L1 staging buffer's name (LLD §3.1's table): `acc` for the accumulator, else lower.
+
+    A tensor and its L1 tile are two different `BufferPlan`s and `06-interfaces.md` §5.6 forbids
+    one name covering both, so an already-lower-case parameter gets a `b` suffix: W1's `A` stages
+    into `a`, W3's `q` into `qb` (LLD §6.4's buffer table).
+    """
+    if _is_accumulator_operand(mapping, operand):
+        return "acc"
+    lowered = operand.lower()
+    return f"{lowered}b" if any(p.name == lowered for p in mapping.kernel.params) else lowered
 
 
 def _is_accumulator_operand(mapping: LegalMapping, operand: str) -> bool:
@@ -580,6 +623,19 @@ def ping_pong(mapping: LegalMapping, operand: str) -> bool:
     return operand in mapping.schedule.double_buffer and depth(mapping, operand) >= 1
 
 
+def _level(mapping: LegalMapping, operand: str) -> str:
+    """`reside(a=...)` for one operand, with L2 rejected by name (LLD §3.3 note 5, FR-S12)."""
+    level = dict(mapping.schedule.residency).get(operand, "L1")
+    if level not in ("L1", "L3"):
+        raise _fail(
+            f"no segment-private staging protocol is synthesised in this cut, so "
+            f"{operand!r} cannot reside in {level}",
+            f'drop the clause or write reside({operand}="L1"): an L2 staging protocol is '
+            f"future work (design/03-lld-M4-mapping.md §3.3 note 5)",
+            clause=f'reside({operand}="{level}")', operand=operand, level=level)
+    return level
+
+
 def buffer_plan(mapping: LegalMapping,
                 delivery: tuple[tuple[str, str, str | None, bool], ...],
                 herd: HerdPlan) -> tuple[BufferPlan, ...]:
@@ -589,18 +645,12 @@ def buffer_plan(mapping: LegalMapping,
     (`loop_depth 0`), then the streamed ones (`loop_depth 1`), each group in operand order.
     `plan()` asserts that the body it then builds allocates them in exactly this order.
     """
-    residency_levels = dict(mapping.schedule.residency)
+    levels = {operand: _level(mapping, operand) for operand, *_rest in delivery}
+    if _forwarded(delivery) is not None:
+        return wavefront_buffers(mapping, delivery, herd, levels)
     out = []
     for operand, _kind, _along, _declared in delivery:
-        level = residency_levels.get(operand, "L1")
-        if level not in ("L1", "L3"):
-            raise _fail(
-                f"no segment-private staging protocol is synthesised in this cut, so "
-                f"{operand!r} cannot reside in {level}",
-                f'drop the clause or write reside({operand}="L1"): an L2 staging protocol is '
-                f"future work (design/03-lld-M4-mapping.md §3.3 note 5)",
-                clause=f'reside({operand}="{level}")', operand=operand, level=level)
-        if level != "L1":
+        if levels[operand] != "L1":
             continue                       # L3 is TENSOR_PLAN's, never BUFFER_PLAN's
         param = _param(mapping, operand)
         shape = tile_shape(mapping, operand)
@@ -670,6 +720,35 @@ def drain_name(mapping: LegalMapping, pe_dim: int) -> str:
     return f"{_root(mapping, mapping.schedule.place[pe_dim])}_drain"
 
 
+def source_name(axis: str) -> str:
+    """The segment-scope source loop for the wavefront: `i_source` (R-W3-3, `06-interfaces` §5.5).
+
+    §5.5's v5 rule names a loop by the axis whose trips it enumerates; `<axis>_source` is the
+    one spelling the rule did not yet have, because §6.1 has no source loop at all. The addition
+    is recorded in `design/PROGRESS-B.md`, phase P4.
+    """
+    return f"{axis}_source"
+
+
+def row_drain_name(axis: str) -> str:
+    """The segment-scope row drain: `i_drain`, the same `<axis>_drain` rule as §6.1's."""
+    return f"{axis}_drain"
+
+
+def row_axis(mapping: LegalMapping, operand: str) -> str:
+    """The unplaced kernel axis `operand`'s rows run along — the wavefront's time (LLD §3.6.2)."""
+    matrix = _access_matrix(mapping, operand)
+    placed = {_root(mapping, name) for name in mapping.schedule.place}
+    axes = [axis.name for axis in mapping.kernel.axes
+            if axis.name not in placed and any(_column(matrix, _ucol(mapping, axis.name)))]
+    if len(axes) != 1:
+        raise NotImplementedError(
+            f"the forwarded operand {operand!r} is indexed by {len(axes)} unplaced axes "
+            f"{axes}; a wavefront needs exactly one, which is the row it advances along; "
+            f"{_LATER}")
+    return axes[0]
+
+
 def streaming_axis(mapping: LegalMapping, operand: str) -> str | None:
     """The outer tile axis the operand is re-fetched per, or `None` when it is resident."""
     moved = moved_axes(mapping, operand)
@@ -713,20 +792,32 @@ def loop_kind(axis: str, *, bundle_index: bool) -> str:
     return "unrolled" if bundle_index else "sequential"
 
 
-def loop_plan(mapping: LegalMapping, buffers: tuple[BufferPlan, ...]) -> tuple[tuple[str, str],
-                                                                              ...]:
+def loop_plan(mapping: LegalMapping,
+              delivery: tuple[tuple[str, str, str | None, bool], ...],
+              buffers: tuple[BufferPlan, ...]) -> tuple[tuple[str, str], ...]:
     """`LOOP_KIND` applied to every loop axis the plan realises: `(axis, kind)`, sorted by axis.
 
-    The bundle and drain loops carry a channel index and are unrolled; the streaming, compute
-    and zeroing loops are `air.sequential`. `PROTOCOL` reads the kind from here and never
-    decides it itself.
+    The bundle loops carry a channel index and are unrolled; the streaming, compute and zeroing
+    loops are `air.sequential`. `PROTOCOL` reads the kind from here and never decides it itself.
+
+    The wavefront's source and drain loops walk **rows**, not the PE grid: the row index is not
+    a bundle index, so `<row>_source` and `<row>_drain` are `air.sequential` and the PE grid is
+    walked by the `p<root>_bundle` loop above (ruling **R-W3-3**; `03-lld-M5-emitter.md` §6.4
+    lines 31-35 draw them as Python loops, which contradicts §3.5's `LOOP_KIND`). §6.1's
+    `<root>_drain` is the PE-grid drain and does not exist on a wavefront plan.
     """
     kinds: dict[str, str] = {}
+    forwarded = _forwarded(delivery)
     for pe_dim in range(len(mapping.schedule.place)):
         kinds[bundle_name(mapping, pe_dim)] = loop_kind(bundle_name(mapping, pe_dim),
                                                         bundle_index=True)
-        kinds[drain_name(mapping, pe_dim)] = loop_kind(drain_name(mapping, pe_dim),
-                                                       bundle_index=True)
+        if forwarded is None:
+            kinds[drain_name(mapping, pe_dim)] = loop_kind(drain_name(mapping, pe_dim),
+                                                           bundle_index=True)
+    if forwarded is not None:
+        axis = row_axis(mapping, forwarded[0])
+        for name in (source_name(axis), row_drain_name(axis)):
+            kinds[name] = loop_kind(name, bundle_index=False)
     for buffer in buffers:
         axis = streaming_axis(mapping, buffer.operand) if buffer.operand else None
         if axis is not None:
@@ -757,10 +848,24 @@ def _fills_and_drains(mapping: LegalMapping,
     return tuple(fills), tuple(drains)
 
 
+def _forwarded(delivery: tuple[tuple[str, str, str | None, bool], ...]
+               ) -> tuple[str, str, str | None, bool] | None:
+    """The one `FORWARD` delivery row, or `None` — the wavefront dispatch of LLD §3.1 line 7."""
+    rows = [row for row in delivery if row[1] == "FORWARD"]
+    if len(rows) > 1:
+        raise NotImplementedError(
+            f"{len(rows)} operands are delivered FORWARD ({[row[0] for row in rows]}); this cut "
+            f"synthesises one wavefront per plan; {_LATER}")
+    return rows[0] if rows else None
+
+
 def channel_plan(mapping: LegalMapping,
                  delivery: tuple[tuple[str, str, str | None, bool], ...],
-                 herd: HerdPlan, buffers: tuple[BufferPlan, ...]) -> tuple[ChannelPlan, ...]:
+                 herd: HerdPlan, buffers: tuple[BufferPlan, ...],
+                 loops: tuple[tuple[str, str], ...]) -> tuple[ChannelPlan, ...]:
     """Every `air.channel` with its geometry and its ordered sites, sorted by name (FR-M8)."""
+    if _forwarded(delivery) is not None:
+        return wavefront(mapping, delivery, herd, buffers, loops)[0]
     for operand, kind, _along, _declared in delivery:
         if kind not in ("MULTICAST", "STATIONARY"):
             raise NotImplementedError(
@@ -862,18 +967,23 @@ def _origins(mapping: LegalMapping, pe_var) -> dict[str, Expr]:
     """Per untiled kernel axis, the element coordinate this slab starts at (LLD §3.4).
 
     `pe_var(pe_dim)` names the segment-scope loop standing in for PE coordinate `pe_dim`.
+
+    The axis's own `lo` is part of every origin, placed or not: PE `p` owns
+    `[lo + p·factor, lo + (p+1)·factor)`, not `[p·factor, …)`. W1's axes all start at 0, so the
+    term was invisible until W2's `i` and W3's `i`/`j`, which start at 1 (the P2b caveat in
+    `design/PROGRESS-B.md`, phase P2b — the one edit that phase asked P4 to make).
     """
     bindings = dict(mapping.kernel.bindings)
     placed = {_root(mapping, name): d for d, name in enumerate(mapping.schedule.place)}
     out: dict[str, Expr] = {}
     for axis in mapping.kernel.axes:
-        factor = _tile_factor(mapping, axis.name)
-        if axis.name in placed and factor is not None:
-            out[axis.name] = _var(pe_var(placed[axis.name]), factor)
-        elif axis.name in placed:
-            out[axis.name] = _var(pe_var(placed[axis.name]))
+        lo = _resolve(axis.lo, bindings)
+        if axis.name in placed:
+            factor = _tile_factor(mapping, axis.name)
+            out[axis.name] = _add(lo, _var(pe_var(placed[axis.name]),
+                                           1 if factor is None else factor))
         else:
-            out[axis.name] = _resolve(axis.lo, bindings)
+            out[axis.name] = lo
     return out
 
 
@@ -914,10 +1024,11 @@ def protocol(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, 
         raise NotImplementedError(
             f"exchange({mapping.schedule.exchanges[0].operand}, ...) selects the halo protocol "
             f"of design/03-lld-M4-mapping.md §3.6.1, which {_LATER}")
-    if any(row[1] == "FORWARD" for row in delivery):
-        raise NotImplementedError(
-            f"a forward delivery selects the wavefront protocol of "
-            f"design/03-lld-M4-mapping.md §3.6.2, which {_LATER}")
+    if _forwarded(delivery) is not None:
+        _channels, segment_body, herd_body = wavefront(mapping, delivery, herd, buffers, loops)
+        _check_orders(segment_body)
+        _check_orders(herd_body)
+        return segment_body, herd_body
     if mapping.r_space:
         raise NotImplementedError(
             f"a non-empty r_space selects the cascade protocol of "
@@ -1124,6 +1235,13 @@ def _rewrite_loads(node: Any, rewrite) -> Any:
     return replace(node, **changed) if changed else node
 
 
+def _zero(dtype: Dtype) -> Const:
+    """The zero literal of `dtype`, carrying the token M5 prints (LLD §3.3 rule 4)."""
+    if dtype in (Dtype.f32, Dtype.f16, Dtype.bf16):
+        return Const(value=0.0, text="0.0", dtype=dtype)
+    return Const(value=0, text="0", dtype=dtype)
+
+
 def _zero_nest(mapping: LegalMapping, accumulator: BufferPlan, names: dict[str, str],
                loops: tuple[tuple[str, str], ...], depth_: int,
                subscripts: tuple[Expr, ...]) -> LoopPlan:
@@ -1135,11 +1253,8 @@ def _zero_nest(mapping: LegalMapping, accumulator: BufferPlan, names: dict[str, 
     into — hence the shared `subscripts`.
     """
     statement = _statement(mapping)
-    zero = (Const(value=0.0, text="0.0", dtype=accumulator.dtype)
-            if accumulator.dtype in (Dtype.f32, Dtype.f16, Dtype.bf16)
-            else Const(value=0, text="0", dtype=accumulator.dtype))
     body: tuple[Any, ...] = (StoreNode(buffer_id=accumulator.name, subscripts=subscripts,
-                                       expr=zero),)
+                                       expr=_zero(accumulator.dtype)),)
     axes = [mapping.kernel.axes[j].name
             for row in statement.target.matrix for j, value in enumerate(row) if value]
     if len(axes) != len(accumulator.shape):
@@ -1183,6 +1298,362 @@ def _compute_nest(mapping: LegalMapping, by_operand: dict[str | None, BufferPlan
                          step=_resolve(_kernel_axis(mapping, axis).step, bindings),
                          kind=_kind(loops, name), depth=depth_ + position, body=body),)
     return body[0]
+
+
+# --------------------------------------------------------------------------------------------
+# §3.6.2 — the wavefront forward protocol (FR-M5) — W3
+# --------------------------------------------------------------------------------------------
+
+WEST_IN, WEST, EAST_OUT = "WestIn", "West", "EastOut"
+"""FR-M5's three homogeneous channels: L3→L1 source, L1→L1 links, L1→L3 drain (finding N-2).
+
+A single `size=[PJ+1]` bundle carrying both the L3 ends and the core-to-core links is what
+`AIRLoweringPass.cpp:798` rejects with `failed to specialize channel bundle indices` (measured),
+which is why the property FR-M5 asks for is spread across three channels instead.
+"""
+
+PREV, CUR, EDGE_IN, EDGE_OUT = "prev", "cur", "edge_in", "edge_out"
+"""The protocol buffers §6.4 names: the row swap pair and the two edge scalars."""
+
+
+def wavefront_channel_name(operand: str, suffix: str) -> str:
+    """`QIn`, `RIn`, `SOut` — LLD §6.4's own channel table, **not** §3.5's `{a}2L1`/`{a}2L3`.
+
+    §3.5's rule names W1's channels `A2L1`/`C2L3`; §6.4 and `02-hld.md` §7.3 name every one of
+    the wavefront's six `<Name>In` / `<Name>Out`, which is the family `WestIn`/`West`/`EastOut`
+    already belongs to and is what the acceptance rows of FR-M5 and §7 name. The wavefront
+    therefore keeps §6.4's spelling; the fill/compute/drain protocol keeps §3.5's. Recorded in
+    `design/PROGRESS-B.md`, phase P4.
+    """
+    return f"{operand[:1].upper()}{operand[1:]}{suffix}"
+
+
+class Band(NamedTuple):
+    """The geometry of the forwarded operand's per-PE row band (LLD §3.6.2, §6.4)."""
+
+    operand: str
+    dtype: Dtype
+    row_axis: str
+    col_axis: str
+    row_dim: int
+    col_dim: int
+    columns: int
+    ghost: int
+    width: int
+    lo: int
+    hi: int
+    col_lo: int
+
+
+def band_geometry(mapping: LegalMapping,
+                  delivery: tuple[tuple[str, str, str | None, bool], ...],
+                  herd: HerdPlan) -> Band:
+    """The `Band` of the one `FORWARD` row — the whole of what §3.6.2 needs to be general.
+
+    The forwarded operand is written, its rows advance along the unplaced axis and its columns
+    along the placed one. The band is the PE's `CW` owned columns plus the **west overhang** its
+    own accesses reach (`S[i, j-1]` → one ghost cell), and the row span is exactly 2 — the row
+    being computed and the one before it — which is what makes the swap pair a pair.
+    """
+    operand = _forwarded(delivery)[0]
+    param = _param(mapping, operand)
+    clause = next((c for c in mapping.schedule.streams if c.operand == operand), None)
+    if not param.is_written:
+        raise _fail(
+            f"{operand!r} is read-only, and the wavefront of "
+            f"design/03-lld-M4-mapping.md §3.6.2 forwards the **written** operand's edge scalar "
+            f"along the PE line; forwarding a read operand's tile has no synthesis rule in this "
+            f"cut",
+            f"drop the clause and let the derivation choose the delivery of {operand!r}, or "
+            f"forward the operand the kernel writes",
+            clause=_CLAUSE if clause is None else clause_text(clause), operand=operand)
+    if _level(mapping, operand) != "L1":
+        raise _fail(
+            f"the forwarded operand {operand!r} does not reside in L1, so there is no band to "
+            f"forward",
+            f'write reside({operand}="L1")', operand=operand)
+    if len(herd.grid) != 1:
+        raise NotImplementedError(
+            f"the herd is rank {len(herd.grid)}; a wavefront forwards along one PE line and "
+            f"this cut synthesises the 1-D case only; {_LATER}")
+    if herd.grid[0] < 2:
+        raise NotImplementedError(
+            f"the herd has {herd.grid[0]} PE(s); a wavefront needs at least one link, so "
+            f"West would have extent 0; {_LATER}")
+    matrix = _access_matrix(mapping, operand)
+    col_axis = _root(mapping, mapping.schedule.place[0])
+    column = _ucol(mapping, col_axis)
+    col_dims = [d for d, row in enumerate(matrix) if row[column]]
+    if len(matrix) != 2 or len(col_dims) != 1:
+        raise NotImplementedError(
+            f"{operand!r} has rank {len(matrix)} and is indexed by the placed axis "
+            f"{col_axis!r} in {len(col_dims)} of its dims; a row band needs a rank-2 operand "
+            f"with one row dim and one column dim; {_LATER}")
+    col_dim = col_dims[0]
+    row_dim = 1 - col_dim
+    row = row_axis(mapping, operand)
+    if matrix[row_dim] != tuple(1 if j == _ucol(mapping, row) else 0
+                                for j in range(len(matrix[row_dim]))):
+        raise NotImplementedError(
+            f"dim {row_dim} of {operand!r} is not the bare axis {row!r}; a row band needs one "
+            f"unit-coefficient row axis per operand; {_LATER}")
+    bindings = dict(mapping.kernel.bindings)
+    spans = []
+    for dim in (0, 1):
+        offsets = []
+        for access in (a for statement in mapping.kernel.statements
+                       for a in (statement.target,) + statement.reads if a.operand == operand):
+            offset = _resolve(access.offsets[dim], bindings)
+            if not offset.is_constant:
+                raise NotImplementedError(
+                    f"an access to {operand!r} has the non-constant offset {offset} in dim "
+                    f"{dim}; a band's extent must be a compile-time constant; {_LATER}")
+            offsets.append(offset.const)
+        spans.append((min(offsets), max(offsets)))
+    if spans[row_dim] != (-1, 0):
+        raise NotImplementedError(
+            f"{operand!r} is read at row offsets {spans[row_dim]}; the swap pair holds the row "
+            f"being computed and the one before it, and nothing else; {_LATER}")
+    if spans[col_dim][1] != 0 or spans[col_dim][0] > 0:
+        raise NotImplementedError(
+            f"{operand!r} is read at column offsets {spans[col_dim]}; a west-to-east wavefront "
+            f"reaches west of its own band and never east of it; {_LATER}")
+    columns = _tile_extent(mapping, col_axis)
+    if columns * herd.grid[0] != _kernel_axis(mapping, col_axis).extent:
+        raise NotImplementedError(
+            f"{herd.grid[0]} PEs of {columns} columns do not cover the {col_axis!r} extent "
+            f"{_kernel_axis(mapping, col_axis).extent} exactly; {_LATER}")
+    axis = _kernel_axis(mapping, row)
+    lo, hi, step = (_resolve(bound, bindings) for bound in (axis.lo, axis.hi, axis.step))
+    if not (lo.is_constant and hi.is_constant and step.is_constant and step.const == 1):
+        raise NotImplementedError(
+            f"the row axis {row!r} runs {lo}..{hi} step {step}; a wavefront advances one row at "
+            f"a time between compile-time constants; {_LATER}")
+    return Band(operand=operand, dtype=param.dtype, row_axis=row, col_axis=col_axis,
+                row_dim=row_dim, col_dim=col_dim, columns=columns, ghost=-spans[col_dim][0],
+                width=columns - spans[col_dim][0], lo=lo.const, hi=hi.const,
+                col_lo=_resolve(_kernel_axis(mapping, col_axis).lo, bindings).const)
+
+
+def wavefront_buffers(mapping: LegalMapping,
+                      delivery: tuple[tuple[str, str, str | None, bool], ...],
+                      herd: HerdPlan, levels: dict[str, str]) -> tuple[BufferPlan, ...]:
+    """The wavefront's L1 plan, in allocation order (LLD §6.4's buffer table).
+
+    The staged read operands first — `q` whole, `r`'s own column slice — then the row swap pair
+    and the two edge scalars. `prev`/`cur` carry `operand`, so `06-interfaces.md` §5.6
+    invariant 5 charges them against `LegalMapping.l1_bytes`; the edges carry none, and are the
+    8 bytes by which the plan's 240 exceeds M3's 232 (`02-hld.md` §7).
+    """
+    band = band_geometry(mapping, delivery, herd)
+    out = []
+    for operand, _how, _along, _declared in delivery:
+        if operand == band.operand or levels[operand] != "L1":
+            continue
+        param = _param(mapping, operand)
+        shape = tile_shape(mapping, operand)
+        out.append(BufferPlan(name=buffer_name(mapping, operand), operand=operand, level="L1",
+                              scope="herd.private", shape=shape, dtype=param.dtype,
+                              bytes=prod(shape) * param.dtype.sizeof,
+                              loop_depth=depth(mapping, operand),
+                              ping_pong_candidate=ping_pong(mapping, operand)))
+    for name, shape in ((PREV, (band.width,)), (CUR, (band.width,)),
+                        (EDGE_IN, (1,)), (EDGE_OUT, (1,))):
+        out.append(BufferPlan(name=name, operand=band.operand if name in (PREV, CUR) else None,
+                              level="L1", scope="herd.private", shape=shape, dtype=band.dtype,
+                              bytes=prod(shape) * band.dtype.sizeof, loop_depth=0,
+                              ping_pong_candidate=False))
+    return tuple(out)
+
+
+def swap_loop(axis: str, lo: int, hi: int, kind: str, depth_: int,
+              trip: Callable[[Expr, int, int], tuple[Any, ...]],
+              base: int = 0) -> tuple[tuple[Any, ...], int]:
+    """Unroll a two-phase temporal loop by two, peeling an odd trip (LLD §3.6.1 lines 1-11).
+
+    `air.sequential` has no `iter_args` anywhere in `air.api` (`_loop.py:180`), so a `prev`/`cur`
+    role swap cannot be loop-carried, and a plain Python loop would unroll the whole protocol and
+    strand the acquire/release pairs (`_loop.py:14-19`). The loop is therefore emitted at
+    `step=2` with **both** phases in its body, and an odd trip count is **peeled** rather than
+    rejected — the architect's override of D-4. W3's row swap is the first user; W2's timestep
+    swap (P5) is the second, which is why this is a function and not a branch of the builder.
+
+    `trip(index, phase, order)` builds one trip's nodes, given the row index as an `Expr`, the
+    phase (0 or 1) and the `ChannelSite.order` its first node carries; `base` is the index of the
+    returned `LoopPlan` in its enclosing body, so a peeled trip's sites are ordered after it.
+    Returns `(nodes, phase)` — the phase the next trip *would* have run, which is what says which
+    buffer is live after the loop (line 9).
+    """
+    count = max(0, hi - lo)
+    first = trip(_var(axis), 0, 0)
+    loop = LoopPlan(axis=axis, lo=_const(lo), hi=_const(lo + count - count % 2), step=_const(2),
+                    kind=kind, depth=depth_,
+                    body=first + trip(_add(_var(axis), ONE), 1, len(first)))
+    if count % 2 == 0:
+        return (loop,), 0
+    return (loop,) + trip(_const(lo + count - 1), 0, base + 1), 1
+
+
+def _in_band(band: Band, elements: dict[str, Expr], origin: Expr,
+             subscripts: tuple[Expr, ...], bindings: dict[str, int],
+             previous: str, current: str) -> tuple[str, tuple[Expr, ...]]:
+    """`(buffer, subscripts)` for one access to the forwarded operand (the P2b table, §6.4).
+
+    The band is rank 1 where the access is rank 2, because the **row** offset does not index a
+    buffer — it picks which of the two swapped buffers holds that row: `−1` is the previous row,
+    `0` the one being computed. The column is the access's own column minus the band's L3 origin,
+    so the PE's `tx·CW` cancels exactly, the way `l1_subscripts` cancels W1's tile origin.
+    """
+    row = _add(_substitute(_resolve(subscripts[band.row_dim], bindings), elements),
+               _scale(elements[band.row_axis], -1))
+    if not row.is_constant or row.const not in (-1, 0):
+        raise NotImplementedError(
+            f"an access to {band.operand!r} sits {row} rows from the one being computed; the "
+            f"swap pair holds two rows; {_LATER}")
+    column = _add(_substitute(_resolve(subscripts[band.col_dim], bindings), elements),
+                  _scale(origin, -1))
+    return (previous if row.const else current), (column,)
+
+
+def wavefront(mapping: LegalMapping,
+              delivery: tuple[tuple[str, str, str | None, bool], ...], herd: HerdPlan,
+              buffers: tuple[BufferPlan, ...], loops: tuple[tuple[str, str], ...]
+              ) -> tuple[tuple[ChannelPlan, ...], tuple[Any, ...], tuple[Any, ...]]:
+    """`(channels, segment_body, herd_body)` — the wavefront of LLD §3.6.2 and §6.4.
+
+    Six channels: the staged read operands through §3.5's ordinary `MULTICAST`/`STATIONARY`
+    geometry, FR-M5's three homogeneous wavefront channels, and one per-PE drain so **every row**
+    reaches L3 and `test_sem_coverage`'s (b) holds. The source puts the operand's own read-only
+    boundary column and the drain gets its last written column, so the plan needs no synthetic
+    `Zrow`/`Sink` tensor and `MappingPlan.tensors` stays the kernel's three parameters
+    (ruling **R-W3-1**).
+    """
+    band = band_geometry(mapping, delivery, herd)
+    tensor = next(t for t in tensor_plan(mapping) if t.name == band.operand)
+    strides = _row_major(tensor.shape)
+    coord, pes = herd.coords[0], herd.grid[0]
+    bundle = bundle_name(mapping, 0)
+    source, drain = source_name(band.row_axis), row_drain_name(band.row_axis)
+    out_name = wavefront_channel_name(band.operand, "Out")
+    names = compute_names(mapping)
+    inner = names[band.col_axis]
+    bindings = dict(mapping.kernel.bindings)
+    staged = tuple(row for row in delivery if row[0] != band.operand)
+    by_operand = {b.operand: b for b in buffers if b.operand not in (None, band.operand)}
+    slab = _origins(mapping, lambda d: herd.coords[d])
+    origin = _add(slab[band.col_axis], _const(-band.ghost))
+    statement = _statement(mapping)
+
+    def l3(row: Expr, column: Expr, width: int) -> Region:
+        """One row-band region over the L3 tensor, in the operand's own dim order."""
+        offsets: list[Any] = [None, None]
+        sizes: list[int] = [0, 0]
+        offsets[band.row_dim], sizes[band.row_dim] = row, 1
+        offsets[band.col_dim], sizes[band.col_dim] = column, width
+        return Region(offsets=tuple(offsets), sizes=tuple(sizes), strides=strides)
+
+    def row_loop(axis: str, depth_: int, body: tuple[Any, ...]) -> LoopPlan:
+        return LoopPlan(axis=axis, lo=_const(band.lo), hi=_const(band.hi), step=ONE,
+                        kind=_kind(loops, axis), depth=depth_, body=body)
+
+    def trip(index: Expr, phase: int, order: int) -> tuple[Any, ...]:
+        """One row: get the west edge, compute the band, put the east edge, drain the row."""
+        previous, current = (PREV, CUR) if phase == 0 else (CUR, PREV)
+        elements = {axis: (_add(slab[axis], _var(name))
+                           if _tile_factor(mapping, axis) is not None else _var(name))
+                    for axis, name in names.items()}
+        elements[band.row_axis] = index
+
+        def rewrite(load: Load) -> Load:
+            if load.buffer_id == band.operand:
+                return Load(*_in_band(band, elements, origin, load.subscripts, bindings,
+                                      previous, current))
+            return Load(*_in_l1(mapping, by_operand, elements, slab, load.buffer_id,
+                                load.subscripts))
+
+        target, subscripts = _in_band(band, elements, origin,
+                                      kernel_subscripts(mapping, statement.target), bindings,
+                                      previous, current)
+        return (
+            BranchNode(
+                predicate=Guard(coord=coord, relation="==", value=ZERO),
+                then=(_site(WEST_IN, "get", order, "herd", indices=(ZERO,), buffer=EDGE_IN,
+                            region=EMPTY_REGION),),
+                otherwise=(_site(WEST, "get", order, "herd", indices=(_var(coord, 1, -1),),
+                                 buffer=EDGE_IN, region=EMPTY_REGION),)),
+            StoreNode(buffer_id=current, subscripts=(ZERO,), expr=Load(EDGE_IN, (ZERO,))),
+            LoopPlan(axis=inner, lo=ZERO, hi=_const(band.columns), step=ONE,
+                     kind=_kind(loops, inner), depth=1,
+                     body=(StoreNode(buffer_id=target, subscripts=subscripts,
+                                     expr=_rewrite_loads(statement.expr, rewrite)),)),
+            StoreNode(buffer_id=EDGE_OUT, subscripts=(ZERO,),
+                      expr=Load(current, (_const(band.width - 1),))),
+            BranchNode(
+                predicate=Guard(coord=coord, relation="==", value=_const(pes - 1)),
+                then=(_site(EAST_OUT, "put", order + 4, "herd", indices=(ZERO,),
+                            buffer=EDGE_OUT, region=EMPTY_REGION),),
+                otherwise=(_site(WEST, "put", order + 4, "herd", indices=(_var(coord),),
+                                 buffer=EDGE_OUT, region=EMPTY_REGION),)),
+            _site(out_name, "put", order + 5, "herd", indices=(_var(coord),), buffer=current,
+                  region=Region(offsets=(_const(band.ghost),), sizes=(band.columns,),
+                                strides=(1,))),
+        )
+
+    geometry: dict[str, tuple[tuple[int, ...], tuple[int, ...] | None, Dtype]] = {}
+    segment: list[Any] = []
+    for operand, how, along, _declared in staged:                    # §3.5's CHANNEL_PLAN rows
+        size, broadcast = (multicast_geometry(herd.grid, PE_AXIS_NAME.index(along))
+                           if how == "MULTICAST" else (herd.grid, None))
+        fill = wavefront_channel_name(operand, "In")
+        geometry[fill] = (size, broadcast, _param(mapping, operand).dtype)
+        top = all(extent == 1 for extent in size)
+        put = _site(fill, "put", len(segment) if top else 0, "segment",
+                    indices=tuple(_var(bundle_name(mapping, d)) if extent > 1 else ZERO
+                                  for d, extent in enumerate(size)),
+                    buffer=operand,
+                    region=l3_region(mapping, operand, _fill_origins(mapping, operand)))
+        segment.append(_bundle_nest(mapping, size, lambda d: bundle_name(mapping, d), loops, 0,
+                                    (put,))[0])
+    segment.append(row_loop(source, 0, (
+        _site(WEST_IN, "put", 0, "segment", indices=(ZERO,), buffer=band.operand,
+              region=l3(_var(source), _const(band.col_lo - band.ghost), 1)),)))
+    segment.append(herd)
+    segment.append(row_loop(drain, 0, (
+        _site(EAST_OUT, "get", 0, "segment", indices=(ZERO,), buffer=band.operand,
+              region=l3(_var(drain), _const(band.col_lo + band.columns * pes - 1), 1)),)))
+    segment.append(_bundle_nest(
+        mapping, herd.grid, lambda d: bundle_name(mapping, d), loops, 0,
+        (row_loop(drain, 1, (
+            _site(out_name, "get", 0, "segment", indices=(_var(bundle),), buffer=band.operand,
+                  region=l3(_var(drain), _add(_const(band.col_lo), _var(bundle, band.columns)),
+                            band.columns)),)),))[0])
+
+    herd_body: list[Any] = list(buffers)
+    for operand, _how, _along, _declared in staged:
+        herd_body.append(_site(wavefront_channel_name(operand, "In"), "get", len(herd_body),
+                               "herd",
+                               indices=tuple(_var(name) for name in herd.coords),
+                               buffer=by_operand[operand].name, region=EMPTY_REGION))
+    herd_body.append(LoopPlan(                       # the row-0 boundary of the forwarded band
+        axis=inner, lo=ZERO, hi=_const(band.width), step=ONE, kind=_kind(loops, inner), depth=0,
+        body=(StoreNode(buffer_id=PREV, subscripts=(_var(inner),), expr=_zero(band.dtype)),)))
+    rows, _phase = swap_loop(band.row_axis, band.lo, band.hi, _kind(loops, band.row_axis), 0,
+                             trip, base=len(herd_body))
+    herd_body += list(rows)
+
+    geometry[WEST_IN] = ((1,), None, band.dtype)
+    geometry[WEST] = ((pes - 1,), None, band.dtype)
+    geometry[EAST_OUT] = ((1,), None, band.dtype)
+    geometry[out_name] = ((pes,), None, band.dtype)
+    by_channel: dict[str, list[ChannelSite]] = {}
+    for node in list(_flatten(tuple(segment))) + list(_flatten(tuple(herd_body))):
+        if isinstance(node, ChannelSite):
+            by_channel.setdefault(node.channel, []).append(node)
+    channels = tuple(sorted(
+        (ChannelPlan(name=name, size=size, broadcast_shape=broadcast, channel_type=None,
+                     chain_direction=None, dtype=dtype, sites=tuple(by_channel[name]))
+         for name, (size, broadcast, dtype) in geometry.items()), key=lambda c: c.name))
+    return channels, tuple(segment), tuple(herd_body)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1280,8 +1751,8 @@ def plan(mapping: LegalMapping) -> MappingPlan:
         tensors = tensor_plan(mapping)
         delivery = classify(mapping)
         buffers = buffer_plan(mapping, delivery, herd)
-        channels = channel_plan(mapping, delivery, herd, buffers)
-        loops = loop_plan(mapping, buffers)
+        loops = loop_plan(mapping, delivery, buffers)
+        channels = channel_plan(mapping, delivery, herd, buffers, loops)
         segment_body, herd_body = protocol(mapping, delivery, herd, buffers, channels, loops)
         _check_l1(mapping, buffers)
         _check_allocation_order(buffers, herd_body)
@@ -1291,6 +1762,11 @@ def plan(mapping: LegalMapping) -> MappingPlan:
                           delivery=delivery,
                           summary=summary(mapping, delivery, herd, buffers, channels))
         self_check(out)
+        # §3.8: "a DMA warning is recorded in the summary and printed". It is a property of the
+        # finished plan — `warnings` enumerates every herd coordinate — so the summary is built
+        # first and the lines appended here, rather than §3.1's pass order being changed to
+        # compute the P3 report twice (recorded in design/PROGRESS-B.md, phase P4).
+        out = _with_warnings(out)
     except SpatialError:
         raise
     except Exception as exc:                                  # noqa: BLE001 — NFR-7, LLD §5
@@ -1300,6 +1776,14 @@ def plan(mapping: LegalMapping) -> MappingPlan:
             _BUG_FIX, internal_exception=f"{type(exc).__name__}: {exc}",
             workload=mapping.kernel.name) from None
     return out
+
+
+def _with_warnings(out: MappingPlan) -> MappingPlan:
+    """Append one `warning:` line per P3 warning to the summary (LLD §3.8, §3.9)."""
+    lines = tuple(f"warning: {text}" for text in warnings(out))
+    if not lines:
+        return out
+    return replace(out, summary=replace(out.summary, lines=out.summary.lines + lines))
 
 
 def _check_l1(mapping: LegalMapping, buffers: tuple[BufferPlan, ...]) -> None:
@@ -1330,7 +1814,11 @@ def _check_allocation_order(buffers: tuple[BufferPlan, ...],
 
 
 def _flatten(nodes: tuple[Any, ...]):
+    """Every node of a body, descending into loop bodies and both arms of a branch."""
     for node in nodes:
         yield node
         if isinstance(node, LoopPlan):
             yield from _flatten(node.body)
+        elif isinstance(node, BranchNode):
+            yield from _flatten(node.then)
+            yield from _flatten(node.otherwise)

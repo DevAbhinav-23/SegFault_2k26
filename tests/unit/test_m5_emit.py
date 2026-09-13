@@ -1,11 +1,11 @@
 """Level U — the AIR emitter. Spec: design/03-lld-M5-emitter.md §7, design/04-test-plan.md §2.
 
-Every case here is driven by the hand-written W1 `MappingPlan` literal
-(`tests/fixtures/plans/w1_plan.py`), which is M4's stand-in until D2. The rows of M5 §7 that
-need W1-flip, W2 or W3 are not here: those plans do not exist yet, and `design/PROGRESS-B.md`
-records which they are.
+The W1 cases are driven by the hand-written W1 `MappingPlan` literal
+(`tests/fixtures/plans/w1_plan.py`); the W3 cases are driven by the plan M4 **derives**, since
+no W3 literal exists. The rows of M5 §7 that need W1-flip or W2 are not here: those plans do not
+exist yet, and `design/PROGRESS-B.md` records which they are.
 
-Written by B at P1 together with `spatial/m5_emit.py`.
+Written by B at P1 together with `spatial/m5_emit.py`; extended at P4 with W3.
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from spatial import m5_emit, m6_tools as m6
-from spatial.model import EmissionError, LoopPlan, MappingPlan
+from spatial import m4_mapping as m4, m5_emit, m6_tools as m6
+from spatial.model import BranchNode, EmissionError, LoopPlan, MappingPlan
+from tests.fixtures.mappings import w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers import determinism
 from tests.helpers.diagnostics import assert_diagnostic
@@ -36,6 +37,21 @@ def text(target: str = "npu1") -> str:
     if target not in _TEXTS:
         _TEXTS[target] = m5_emit.emit(w1_plan.plan(target), target).mlir
     return _TEXTS[target]
+
+
+_W3_TEXTS: dict[str, str] = {}
+
+
+def w3_text(target: str = "npu1") -> str:
+    """The emitted W3 module text for `target`, emitted once per process."""
+    if target not in _W3_TEXTS:
+        _W3_TEXTS[target] = m5_emit.emit(m4.plan(w3_legal.legal(target)), target).mlir
+    return _W3_TEXTS[target]
+
+
+def emit_w3_text(target: str = "npu1") -> str:
+    """Module-level and picklable, so `determinism.in_fresh_process` can call it (FR-E10)."""
+    return m5_emit.emit(m4.plan(w3_legal.legal(target)), target).mlir
 
 
 def emit_w1_text(target: str = "npu1") -> str:
@@ -342,6 +358,13 @@ ALLOWED_AIR_NAMES = {
     "air.ops.maximum",            # row 12, via §3.6
     "air.ops.minimum",            # row 12, via §3.6
     "air.ops.select",             # row 12, via §3.6
+    # `Select`'s own predicate. §3.6 line 17 writes it as `EMIT_EXPR(l) <cmp> EMIT_EXPR(r)`,
+    # which holds for `<`, `<=`, `>`, `>=` and **not** for `==`/`!=`: those are deliberately
+    # left undefined on a buffer value (`_value.py:795-805`), so `x == y` is Python's identity
+    # comparison and `ops.select` rejects the `bool` it produces by name (`ops.py:809-816`).
+    # W3 is the first `Select` in the project; erratum recorded in design/PROGRESS-B.md, P4.
+    "air.ops.equal",              # row 12, via §3.6 line 17
+    "air.ops.not_equal",          # row 12, via §3.6 line 17
     # the element types rows 1 and 6 pass as their `dtype` argument; §3.2 names the argument
     # rather than the object, and `air.api` re-exports exactly these five of the ten it has.
     "air.f32", "air.f16", "air.bf16", "air.i32", "air.i8",
@@ -469,3 +492,139 @@ def test_internal_consistency_ping_pong_outside_a_loop():
     assert_diagnostic(excinfo, code="EMIT-AIR-API", clause="build()",
                       mentions=("ping-pong", "invariant 4"),
                       details_keys=("internal_consistency", "buffer"))
+
+
+# --------------------------------------------------------------------------------------------
+# W3 — the rows of M5 §7 the wavefront plan unblocks. Added by B at P4.
+# --------------------------------------------------------------------------------------------
+
+
+def _nodes(body):
+    """Every node of a plan body, descending into loops and both arms of a branch."""
+    out = []
+    for node in body:
+        out.append(node)
+        if isinstance(node, LoopPlan):
+            out += _nodes(node.body)
+        elif isinstance(node, BranchNode):
+            out += _nodes(node.then) + _nodes(node.otherwise)
+    return out
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+@pytest.mark.fr("FR-E1")
+@pytest.mark.parametrize("target", ["npu1", "npu2"])
+def test_E1_herd_arity(target):
+    """A 1-D herd body takes **one** positional coordinate; the tile space is 2-D (finding N-10).
+
+    `_positional_arity` counts declared positional parameters (`_trace.py:725-731`), so a `*args`
+    body would read as arity 0 and `air.api` would reject it — which is why M5 declares `body(c0)`
+    and `body(c0, c1)` rather than one variadic function. What reaches the IR is always a 2-D
+    tile space, with the second extent 1 on a rank-1 herd.
+    """
+    plan = m4.plan(w3_legal.legal(target))
+    assert plan.herd.coords == ("tx",)
+    herd = next(line for line in w3_text(target).splitlines() if "air.herd" in line)
+    assert re.search(r"tile \(%\w+, %\w+\) in \(%\w+=%(\w+), %\w+=%(\w+)\)", herd), herd
+    extents = re.search(r"in \(%\w+=%(\w+), %\w+=%(\w+)\)", herd).groups()
+    constants = dict(re.findall(r"%(\w+) = arith\.constant (\d+) : index", w3_text(target)))
+    assert [constants[name] for name in extents] == ["4", "1"]
+
+
+@pytest.mark.fr("FR-M5")
+def test_M5_uses_branch():
+    """FR-M5's second acceptance: the guards are `scf.if`, and M5's source has no `if tx ==`.
+
+    `bool()` on a `Condition` is refused (`_cond.py:41-45`) because a herd body is traced once
+    for every core at once, so a Python `if` on a coordinate cannot be written even by mistake;
+    `air-to-aie` folds the branch away once the coordinate is a literal (`_cond.py:49-54`).
+    """
+    text = w3_text()
+    assert "scf.if" in text
+    assert text.count("scf.if") == 4                     # head and tail, once per unrolled row
+    assert "if tx ==" not in SOURCE and "if coord" not in SOURCE
+    # the guard is a comparison on the herd coordinate, not on a loop variable
+    assert re.search(r"arith\.cmpi eq, %\w+, %c0\w* : index", text)
+    assert re.search(r"arith\.cmpi eq, %\w+, %c3\w* : index", text)
+
+
+@pytest.mark.fr("FR-E2", "FR-D9")
+def test_E_select_emitted():
+    """The substitution score is `arith.select`, a **value**, with no `scf.if` in the `j` loop.
+
+    FR-D9: a conditional over buffer data is an expression. `ops.select` decides per element and
+    evaluates both sides; `ops.branch` decides per core and runs one — the two halves of
+    if-conversion, and picking the wrong one is what `_cond.py`'s table exists to prevent.
+    """
+    lines = w3_text().splitlines()
+    starts = [i for i, line in enumerate(lines) if "arith.select" in line]
+    assert len(starts) == 2, "one per unrolled row"
+    for start in starts:
+        opener = next(i for i in range(start, -1, -1)
+                      if "scf.for" in lines[i] and _indent(lines[i]) < _indent(lines[start]))
+        closer = next(i for i in range(start, len(lines))
+                      if lines[i].strip() == "}" and _indent(lines[i]) == _indent(lines[opener]))
+        body = lines[opener + 1:closer]
+        assert "scf.if" not in "\n".join(body), "the score is a value, not control flow"
+        assert any("arith.cmpi eq" in line and ": i32" in line for line in body)
+        assert sum("arith.maxsi" in line for line in body) == 3     # the 4-ary max, folded
+
+
+@pytest.mark.fr("FR-E1")
+def test_E_branch_node():
+    """One `scf.if` per `BranchNode`; `otherwise()` only when the arm is non-empty; and nesting
+    nests."""
+    plan = m4.plan(w3_legal.legal())
+    branches = [node for node in _nodes(plan.herd_body) if isinstance(node, BranchNode)]
+    assert len(branches) == 4 and all(branch.otherwise for branch in branches)
+    assert w3_text().count("scf.if") == len(branches)
+
+    row = plan.herd_body[9]
+    head = row.body[0]
+    trimmed = replace(plan, herd_body=plan.herd_body[:9] + (
+        replace(row, body=(replace(head, otherwise=()),) + row.body[1:]),))
+    text = m5_emit.emit(trimmed, "npu1").mlir
+    assert text.count("scf.if") == 4                     # the region pair is still one scf.if
+    assert (text.count("air.channel.get  @West[")
+            == w3_text().count("air.channel.get  @West[") - 1), "the empty arm emitted nothing"
+
+    nested = replace(plan, herd_body=plan.herd_body[:9] + (
+        replace(row, body=(replace(head, then=(replace(head, otherwise=()),), otherwise=()),)
+                + row.body[1:]),))
+    lines = m5_emit.emit(nested, "npu1").mlir.splitlines()
+    assert sum("scf.if" in line for line in lines) == 5
+    outer = next(i for i, line in enumerate(lines) if "scf.if" in line)
+    inner = next(i for i in range(outer + 1, len(lines)) if "scf.if" in lines[i])
+    assert _indent(lines[inner]) > _indent(lines[outer])
+
+
+@pytest.mark.fr("FR-E1", "FR-M7")
+def test_E_tensor_order():
+    """`air.tensor` in `plan.tensors` order — `q`, `r`, `S` — and the other order is rejected.
+
+    `_check_interface` raises a bare `RuntimeError` (`_compile.py:226-240`) whose message lists
+    the interface order it saw; M5 lets it through as `EMIT-AIR-API` with the text verbatim,
+    and M4's invariant 6 is what makes it unreachable from a derived plan.
+    """
+    plan = m4.plan(w3_legal.legal())
+    assert [t.name for t in plan.tensors] == ["q", "r", "S"]
+    signature = next(line for line in w3_text().splitlines() if "func.func @sw(" in line)
+    assert re.findall(r"memref<[^>]*>", signature) == ["memref<32xi32>", "memref<32xi32>",
+                                                       "memref<33x33xi32>"]
+    reordered = replace(plan, tensors=(plan.tensors[2], plan.tensors[0], plan.tensors[1]))
+    with pytest.raises(EmissionError) as excinfo:
+        m5_emit.emit(reordered, "npu1")
+    assert_diagnostic(excinfo, code="EMIT-AIR-API", clause="build()",
+                      details_keys=("air_api_message", "workload"))
+    assert "output tensors must be declared after all input tensors" in (
+        excinfo.value.diagnostic.details["air_api_message"])
+
+
+@pytest.mark.fr("FR-E10")
+def test_E10_byte_identical_w3():
+    """W3 twice in this process, and once in a fresh one under another PYTHONHASHSEED."""
+    assert w3_text("npu1") == emit_w3_text("npu1") == determinism.in_fresh_process(
+        emit_w3_text, "npu1")

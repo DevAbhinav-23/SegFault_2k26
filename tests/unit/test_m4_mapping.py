@@ -1,12 +1,12 @@
 """Level U — mapping and protocol synthesis. Spec: design/03-lld-M4-mapping.md §7.
 
-The rows of M4 §7 this phase can honour: everything that the W1 fill/compute/drain path, the
-general machinery (`CLASSIFY`, `TENSOR_PLAN`, `TILE_SHAPE`, `L3_REGION`, `RESIDENCY`, `SUMMARY`)
-and the `classify()`-level half of the flip and the stream override can carry. The halo,
-wavefront and cascade rows wait on P4/P5/P6, and `test_M4_unbuilt_protocols_fail_legibly` is
-what keeps their absence loud rather than silent.
+The rows of M4 §7 this phase can honour: everything the W1 fill/compute/drain path, the W3
+wavefront, the general machinery (`CLASSIFY`, `TENSOR_PLAN`, `TILE_SHAPE`, `L3_REGION`,
+`RESIDENCY`, `SUMMARY`) and the `classify()`-level half of the flip can carry. The halo and
+cascade rows wait on P5/P6, and `test_M4_unbuilt_protocols_fail_legibly` is what keeps their
+absence loud rather than silent.
 
-Written by B at P2 together with `spatial/m4_mapping.py`.
+Written by B at P2 together with `spatial/m4_mapping.py`; extended at P4 with §3.6.2.
 """
 
 from __future__ import annotations
@@ -19,12 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from spatial import m4_mapping as m4
+from spatial import m4_mapping as m4, m4_selfcheck as selfcheck
 from spatial.model import (BinOp, ChannelPlan, Const, Dtype, Expr, Load, LoopPlan, MappingError,
-                           StoreNode, StreamClause, to_json)
+                           Select, StoreNode, StreamClause, to_json)
 from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
-from tests.helpers import determinism
+from tests.helpers import determinism, plan_interp
 from tests.helpers.diagnostics import assert_diagnostic
 from tests.helpers.golden import assert_golden
 
@@ -36,9 +36,13 @@ SOURCES = {name: Path(module.__file__).read_text(encoding="utf-8")
 """M4's own source, for the import lint (invariant I-1, FR-S20)."""
 
 
-def plan_json(target: str = "npu1") -> str:
+WORKLOADS = {"w1": w1_legal, "w3": w3_legal}
+"""The workloads whose whole plan M4 builds in this cut (the flip and W2 land at P5/P6)."""
+
+
+def plan_json(target: str = "npu1", workload: str = "w1") -> str:
     """Module-level and picklable, so `determinism.in_fresh_process` can call it (FR-M12)."""
-    return to_json(m4.plan(w1_legal.legal(target)))
+    return to_json(m4.plan(WORKLOADS[workload].legal(target)))
 
 
 def imports_after_importing_m4() -> tuple[bool, bool]:
@@ -115,15 +119,36 @@ def test_M2_broadcast_multiple():
 def test_M3_stream_override():
     """A `stream()` clause replaces the derived row and marks it `declared` (§3.2 lines 19-21).
 
-    At `classify()` level: the W1 schedule plus `stream("A", pattern="forward", along=ax.j0)`
-    makes `A` a `FORWARD` along `j0`. The full-plan half waits on the §3.6.2 builder (P4).
+    Two halves. At `classify()` level the W1 schedule plus
+    `stream("A", pattern="forward", along=ax.j0)` makes `A` a `FORWARD`, and its `along` is the
+    **PE axis** `py` that carries `j0`, not the schedule axis the clause names — the ruling on
+    **B-P24**, so one column of `MappingPlan.delivery` does not mean two different things.
+
+    At plan level it is a `PROTOCOL-UNSUPPORTED` (ruling **R-W3-4**): the clause asks for tile
+    forwarding of a *read* operand along a PE axis, and §3.6.2's wavefront forwards the written
+    operand's edge scalar. There is no synthesis rule for the other shape in this cut, so the
+    diagnostic names the clause rather than producing a plan that is not what was asked for.
     """
     mapping = w1_legal.legal()
     clause = StreamClause(operand="A", pattern="forward", along="j0", direction=None, depth=None)
     streamed = replace(mapping, schedule=replace(mapping.schedule, streams=(clause,)))
     rows = m4.classify(streamed)
-    assert rows[0] == ("A", "FORWARD", "j0", True)
+    assert rows[0] == ("A", "FORWARD", "py", True)
     assert rows[1:] == (("B", "MULTICAST", "px", False), ("C", "STATIONARY", None, True))
+
+    with pytest.raises(MappingError) as excinfo:
+        m4.plan(streamed)
+    assert_diagnostic(excinfo, code="PROTOCOL-UNSUPPORTED",
+                      clause='stream("A", pattern="forward", along=ax.j0)',
+                      mentions=("read-only", "§3.6.2"), details_keys=("operand",))
+    # ...and an `along` that no `place()` carries is named, rather than silently indexed
+    unplaced = replace(mapping, schedule=replace(
+        mapping.schedule, streams=(replace(clause, along="k0"),)))
+    with pytest.raises(MappingError) as excinfo:
+        m4.classify(unplaced)
+    assert_diagnostic(excinfo, code="PROTOCOL-UNSUPPORTED",
+                      clause='stream("A", pattern="forward", along=ax.k0)',
+                      mentions=("placed",), details_keys=("along", "place"))
 
 
 # --------------------------------------------------------------------------------------------
@@ -172,6 +197,9 @@ def test_M4_tensor_order(mapping, expected):
     """
     tensors = m4.tensor_plan(mapping)
     assert tuple(t.name for t in tensors) == expected
+    if mapping.kernel.name in ("gemm", "sw") and not mapping.r_space:
+        # ...and at plan level, which is the order `air.tensor` is declared in (§5.6 inv. 6)
+        assert tuple(t.name for t in m4.plan(mapping).tensors) == expected
     assert all(t.level == "L3" and t.scope == "tensor" and t.operand == t.name for t in tensors)
     written = [t.name for t in tensors if any(p.name == t.name and p.is_written
                                               for p in mapping.kernel.params)]
@@ -180,14 +208,6 @@ def test_M4_tensor_order(mapping, expected):
     assert all(all(isinstance(extent, int) for extent in t.shape) for t in tensors)
 
 
-@pytest.mark.fr("FR-M7")
-def test_M4_l1_agrees_with_m3():
-    """The plan's recomputed L1 total equals `LegalMapping.l1_bytes` (§3.3 note 4)."""
-    mapping = w1_legal.legal()
-    plan = m4.plan(mapping)
-    assert m4.l1_total(plan.buffers) == 12288 == mapping.l1_bytes
-    assert plan.summary.l1_bytes == mapping.l1_bytes
-    assert plan.summary.l1_budget == 65536
 
 
 # --------------------------------------------------------------------------------------------
@@ -302,23 +322,226 @@ def test_M4_l1_subscripts_rule():
 
 
 # --------------------------------------------------------------------------------------------
+# FR-M5 — the wavefront forward protocol (W3, §3.6.2 and §6.4)
+# --------------------------------------------------------------------------------------------
+
+
+def w3_plan(MQ: int = 32, target: str = "npu1"):
+    """The derived W3 plan, at the fixture's `MQ` or an odd variant."""
+    return m4.plan(w3_legal.legal(target, MQ=MQ))
+
+
+def _sites(plan, channel: str):
+    return [s for c in plan.channels if c.name == channel for s in c.sites]
+
+
+@pytest.mark.fr("FR-M5")
+@pytest.mark.parametrize("target", TARGETS)
+def test_M5_wavefront_balance(target):
+    """`WestIn[0]`, `West[0..2]`, `EastOut[0]`: five indices, each `MQ` puts and `MQ` gets.
+
+    FR-M5's acceptance verbatim. The source and the drain are what close the chain at both ends
+    — without them `West[0]`'s gets at PE 0 and `West[2]`'s puts at PE 3 would be unmatched, and
+    the whole wavefront would be an unbalanced boundary (ruling **R-W3-1** keeps both).
+    """
+    plan = w3_plan(target=target)
+    rows = {(row["channel"], tuple(row["index"])): (row["puts"], row["gets"])
+            for row in selfcheck.balance_table(plan)
+            if row["channel"] in ("WestIn", "West", "EastOut")}
+    assert rows == {("WestIn", (0,)): (32, 32), ("West", (0,)): (32, 32),
+                    ("West", (1,)): (32, 32), ("West", (2,)): (32, 32),
+                    ("EastOut", (0,)): (32, 32)}
+    assert len(rows) == w3_legal.NR // 8 + 1                       # PJ + 1 indices in total
+
+
+@pytest.mark.fr("FR-M5", "FR-K4")
+def test_M5_stages_q_and_r():
+    """`q` multicasts whole, `r` is one column slice per PE, and the score is a `Select` (G-8).
+
+    Without the staging the plan computes a literal `+2` for every cell and is not
+    Smith-Waterman at all, so the test also asserts that no `Const 2` appears outside a `Select`
+    arm.
+    """
+    plan = w3_plan()
+    channels = {c.name: c for c in plan.channels}
+    assert (channels["QIn"].size, channels["QIn"].broadcast_shape) == ((1,), (4,))
+    assert (channels["RIn"].size, channels["RIn"].broadcast_shape) == ((4,), None)
+    # one segment put for `q`, PJ for `r`; one herd get each, before the row loop
+    assert [s.kind for s in channels["QIn"].sites] == ["put", "get"]
+    assert _sites(plan, "RIn")[0].region.sizes == (8,)
+    buffers = {b.name: b for b in plan.buffers}
+    assert (buffers["qb"].shape, buffers["rb"].shape) == ((32,), (8,))
+    store = plan.herd_body[9].body[2].body[0]
+    select = store.expr.operands[1].rhs
+    assert isinstance(select, Select) and select.cmp_op == "=="
+    assert (select.lhs, select.rhs) == (Load("qb", (Expr({"i": 1}, -1),)),
+                                        Load("rb", (Expr({"j1": 1}),)))
+    assert (select.then, select.otherwise) == (Const(2, "2", Dtype.i32),
+                                               Const(-1, "-1", Dtype.i32))
+    outside = [node for node in _tree(store.expr) if isinstance(node, Const) and node.value == 2]
+    assert outside == [select.then], "a literal +2 outside the Select is not Smith-Waterman"
+
+
+def _tree(node):
+    """Every node of an `ExprNode` tree, parents before children."""
+    from dataclasses import fields as _fields
+
+    out = [node]
+    for field in _fields(node):
+        value = getattr(node, field.name)
+        for item in value if type(value) is tuple else (value,):
+            if hasattr(item, "__dataclass_fields__") and not isinstance(item, Expr):
+                out += _tree(item)
+    return out
+
+
+@pytest.mark.fr("FR-M5", "FR-K4")
+def test_M5_drains_every_row():
+    """`SOut` carries `MQ` puts per PE and its L3 regions are rows `1..MQ` × cols `1..NR` (G-9).
+
+    Draining only the last row would leave `test_sem_coverage`'s (b) — "the claimed drain domain
+    equals the kernel's write domain" — false by construction.
+    """
+    from itertools import product
+
+    plan = w3_plan()
+    rows = [row for row in selfcheck.balance_table(plan) if row["channel"] == "SOut"]
+    assert [(row["puts"], row["gets"]) for row in rows] == [(32, 32)] * 4
+    get = next(s for s in _sites(plan, "SOut") if s.kind == "get")
+    drained = [plan_interp.region_indices(get.region, {"i_drain": i, "pj_bundle": p})
+               for i, p in product(range(1, 33), range(4))]
+    union = set().union(*drained)
+    assert sum(len(part) for part in drained) == len(union) == 32 * 32
+    assert union == set(product(range(1, 33), range(1, 33)))
+
+
+@pytest.mark.fr("FR-M5")
+def test_M5_three_channels():
+    """Three homogeneous forward channels; none mixes an L3 and an L1 endpoint (finding N-2).
+
+    A single `size=[PJ+1]` bundle carrying both is measured to fail
+    `'airrt.dma_memcpy_nd' op failed to specialize channel bundle indices`
+    (`AIRLoweringPass.cpp:798`), which is the whole reason FR-M5 names three.
+    """
+    plan = w3_plan()
+    names = [c.name for c in plan.channels]
+    assert names == ["EastOut", "QIn", "RIn", "SOut", "West", "WestIn"]
+    forward = {c.name: c for c in plan.channels if c.name in ("WestIn", "West", "EastOut")}
+    assert len(forward) == 3
+    assert (forward["WestIn"].size, forward["West"].size,
+            forward["EastOut"].size) == ((1,), (3,), (1,))
+    for channel in plan.channels:
+        core = selfcheck.is_core_to_core(channel, plan)
+        l3 = selfcheck.l3_direction(channel, plan) is not None
+        assert core != l3, f"{channel.name} mixes an L3 endpoint with a core-to-core one"
+    assert selfcheck.is_core_to_core(forward["West"], plan)
+    assert selfcheck.l3_direction(forward["WestIn"], plan) == "in"
+    assert selfcheck.l3_direction(forward["EastOut"], plan) == "out"
+
+
+@pytest.mark.fr("FR-M5")
+def test_M4_swap_loop_peel():
+    """An odd row count is **peeled**, not rejected (the override of D-4; §3.6.1 lines 7-9).
+
+    The same `swap_loop` machinery W2's timestep swap will reuse at P5, exercised here on the
+    row axis: 31 rows give a `1..31 step 2` loop of 15 two-row trips plus one straight-line trip
+    at the same depth, and every wavefront index still sees 31 puts against 31 gets.
+    """
+    even, odd = w3_plan(MQ=32), w3_plan(MQ=31)
+    assert (even.herd_body[9].hi, even.herd_body[9].step) == (Expr((), 33), Expr((), 2))
+    assert len(even.herd_body) == 10, "an even row count needs no peel"
+    assert (odd.herd_body[9].hi, odd.herd_body[9].step) == (Expr((), 31), Expr((), 2))
+    assert len(odd.herd_body) == 16, "the peeled trip is six nodes at the loop's own depth"
+    peeled = odd.herd_body[10:]
+    assert [type(node).__name__ for node in peeled] == [
+        "BranchNode", "StoreNode", "LoopPlan", "StoreNode", "BranchNode", "ChannelSite"]
+    # the peeled row's index is the literal last row, because no loop binds it
+    assert peeled[2].body[0].expr.operands[1].rhs.lhs == Load("qb", (Expr((), 30),))
+    for row in selfcheck.balance_table(odd):
+        if row["channel"] in ("WestIn", "West", "EastOut", "SOut"):
+            assert (row["puts"], row["gets"]) == (31, 31), row
+    # the pure function on its own, away from any workload
+    trips = []
+    nodes, phase = m4.swap_loop("t", 0, 5, "sequential", 0,
+                                lambda index, ph, order: trips.append((index, ph, order)) or ())
+    assert phase == 1 and len(nodes) == 1
+    assert trips == [(Expr({"t": 1}), 0, 0),            # phase 0 of a trip runs row `t`
+                     (Expr({"t": 1}, 1), 1, 0),         # phase 1 runs `t + 1`
+                     (Expr((), 4), 0, 1)]               # the peel runs the literal last row
+    assert (nodes[0].lo, nodes[0].hi, nodes[0].step) == (Expr((), 0), Expr((), 4), Expr((), 2))
+
+
+@pytest.mark.fr("FR-M8")
+def test_M4_wavefront_l1_subscripts():
+    """The P2b table, checked on the real plan: the band is rank 1 where the access is rank 2.
+
+    `_origins` gained the axis's own `lo` this phase (the caveat P2b recorded), which is what
+    makes `8·tx` cancel when `j` starts at 1 rather than 0. The row offset picks the buffer —
+    `−1` is `prev`, `0` is `cur` — and the column is the access's column minus the band origin.
+    """
+    plan = w3_plan()
+    store = plan.herd_body[9].body[2].body[0]
+    j1, i = Expr({"j1": 1}), Expr({"i": 1})
+    assert (store.buffer_id, store.subscripts) == ("cur", (Expr({"j1": 1}, 1),))
+    assert store.expr.operands[1].lhs == Load("prev", (j1,))           # S[i-1, j-1]
+    assert store.expr.operands[2].lhs == Load("prev", (Expr({"j1": 1}, 1),))   # S[i-1, j]
+    assert store.expr.operands[3].lhs == Load("cur", (j1,))            # S[i,   j-1]
+    select = store.expr.operands[1].rhs
+    assert select.lhs == Load("qb", (Expr({"i": 1}, -1),))             # q[i-1]
+    assert select.rhs == Load("rb", (j1,))                             # r[j-1]
+    # and the band geometry those follow from
+    band = m4.band_geometry(w3_legal.legal(), plan.delivery, plan.herd)
+    assert (band.row_axis, band.col_axis, band.row_dim, band.col_dim) == ("i", "j", 0, 1)
+    assert (band.columns, band.ghost, band.width, band.lo, band.hi, band.col_lo) == (
+        8, 1, 9, 1, 33, 1)
+    assert i == Expr({"i": 1})                                          # the frame's row symbol
+
+
+@pytest.mark.fr("FR-M7")
+@pytest.mark.parametrize(("name", "mapping", "expected"), [
+    ("w1", w1_legal.legal(), 12288),
+    ("w3", w3_legal.legal(), 240),
+], ids=["w1", "w3"])
+def test_M4_l1_agrees_with_m3(name, mapping, expected):
+    """The plan's L1 total is `LegalMapping.l1_bytes` plus the protocol buffers M4 adds (§7).
+
+    W1 is `12288 == 12288` — it synthesises no protocol buffer. W3 is `240 == 232 + 8`:
+    `edge_in` and `edge_out` are M4's, carry no `operand`, and are the only allowed difference
+    from what M3 charged (`02-hld.md` §7, §3.3 note 4).
+    """
+    plan = m4.plan(mapping)
+    staged = [b for b in plan.buffers if b.operand is not None]
+    assert m4.l1_total(tuple(staged)) == mapping.l1_bytes
+    assert m4.l1_total(plan.buffers) == expected == plan.summary.l1_bytes
+    assert plan.summary.l1_budget == 65536
+    extra = sum(b.bytes for b in plan.buffers if b.operand is None)
+    assert expected == mapping.l1_bytes + extra
+    assert (mapping.l1_bytes, extra) == {"w1": (12288, 0), "w3": (232, 8)}[name]
+
+
+# --------------------------------------------------------------------------------------------
 # FR-M11 — the summary and the residency block
 # --------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("workload", sorted(WORKLOADS), ids=sorted(WORKLOADS))
 @pytest.mark.fr("FR-M11")
-def test_M11_summary_golden(target):
+def test_M11_summary_golden(workload, target):
     """The summary matches its golden byte for byte, per target (B-P14's ruling).
 
     The herd line carries the *physical* shape and the repeats, which differ between npu1 and
     npu2, so one target-less file cannot hold both: the path is
     `<workload>.<variant>.<target>.summary.txt`.
     """
-    summary = m4.plan(w1_legal.legal(target)).summary
-    assert_golden(f"w1.base.{target}.summary.txt", "\n".join(summary.lines) + "\n", kind="text")
-    for line in ("C: stationary (declared)", "A: multicast along py (derived)",
-                 "B: multicast along px (derived)"):
+    summary = m4.plan(WORKLOADS[workload].legal(target)).summary
+    assert_golden(f"{workload}.base.{target}.summary.txt", "\n".join(summary.lines) + "\n",
+                  kind="text")
+    expected = {"w1": ("C: stationary (declared)", "A: multicast along py (derived)",
+                       "B: multicast along px (derived)"),
+                "w3": ("S: forward along px (declared)", "q: multicast along px (derived)",
+                       "r: stationary (derived)")}[workload]
+    for line in expected:
         assert line in summary.lines
 
 
@@ -346,11 +569,14 @@ def test_M11_residency_line():
 # --------------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("workload", sorted(WORKLOADS), ids=sorted(WORKLOADS))
 @pytest.mark.fr("FR-M12")
-def test_M12_plan_stable():
+def test_M4_plan_stable(workload):
     """The same plan twice in one process, and once in a fresh one under another seed."""
-    assert m4.plan(w1_legal.legal()) == m4.plan(w1_legal.legal())
-    assert plan_json("npu1") == determinism.in_fresh_process(plan_json, "npu1")
+    legal = WORKLOADS[workload].legal
+    assert m4.plan(legal()) == m4.plan(legal())
+    assert plan_json("npu1", workload) == determinism.in_fresh_process(
+        plan_json, "npu1", workload)
 
 
 @pytest.mark.fr("FR-S20")
@@ -427,8 +653,7 @@ def test_M4_reside_l2():
 @pytest.mark.parametrize(("mapping", "phrase"), [
     (w1flip_legal.legal(), "§3.6"),
     (w2_legal.legal(), "§3.6.1"),
-    (w3_legal.legal(), "§3.6"),
-], ids=["flip-cascade", "w2-halo", "w3-wavefront"])
+], ids=["flip-cascade", "w2-halo"])
 def test_M4_unbuilt_protocols_fail_legibly(mapping, phrase):
     """A protocol this cut does not build fails as a `MappingError` naming the phase (§5).
 

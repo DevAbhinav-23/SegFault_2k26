@@ -1,0 +1,25 @@
+S: forward along px (declared)
+q: multicast along px (derived)
+r: stationary (derived)
+S: forward along px, resident for the whole run
+q: multicast along px, resident for the whole run
+r: stationary (spatial), resident for the whole run
+herd: logical (4,) physical (4,) repeats (1,)
+reduction (tiled axes): R_time = {}, R_space = {}
+  qb (32,) i32 = 128 B
+  rb (8,) i32 = 32 B
+  prev (9,) i32 = 36 B
+  cur (9,) i32 = 36 B
+  edge_in (1,) i32 = 4 B
+  edge_out (1,) i32 = 4 B
+L1: 240 of 65536 bytes
+  EastOut size=(1,)
+  QIn size=(1,) broadcast_shape=(4,)
+  RIn size=(4,)
+  SOut size=(4,)
+  West size=(3,)
+  WestIn size=(1,)
+warning: PE [0] names 3 inbound channels (QIn, RIn, WestIn) against 2 S2MM, but QIn, RIn, WestIn lower to packet flows and multiplex onto one shim DMA channel; the circuit-switched count is 0, within the budget of 2 — measured, not contractual (design/03-lld-M4-mapping.md §3.8, risks R-19/R-21)
+warning: PE [1] names 3 inbound channels (QIn, RIn, West) against 2 S2MM, but QIn, RIn lower to packet flows and multiplex onto one shim DMA channel; the circuit-switched count is 1, within the budget of 2 — measured, not contractual (design/03-lld-M4-mapping.md §3.8, risks R-19/R-21)
+warning: PE [2] names 3 inbound channels (QIn, RIn, West) against 2 S2MM, but QIn, RIn lower to packet flows and multiplex onto one shim DMA channel; the circuit-switched count is 1, within the budget of 2 — measured, not contractual (design/03-lld-M4-mapping.md §3.8, risks R-19/R-21)
+warning: PE [3] names 3 inbound channels (QIn, RIn, West) against 2 S2MM, but QIn, RIn lower to packet flows and multiplex onto one shim DMA channel; the circuit-switched count is 1, within the budget of 2 — measured, not contractual (design/03-lld-M4-mapping.md §3.8, risks R-19/R-21)

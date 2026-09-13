@@ -279,7 +279,12 @@ and no reference to the kernel function. It is serialisable to JSON by field ord
 * a **bundle-index** loop is `p<root>_bundle`, where `root` is the untiled parent of the placed
   axis that PE dimension carries — W1's `pi_bundle` and `pj_bundle`, the flip's `pk_bundle`;
 * a **drain** loop is `<axis>_drain`, naming the axis whose trips it enumerates — W1's `i_drain`
-  and `j_drain`, the flip's `i0_drain`;
+  and `j_drain`, the flip's `i0_drain`, W3's `i_drain`;
+* a **source** loop is `<axis>_source`, the same rule for the other direction — W3's `i_source`,
+  the segment-scope loop that puts the forwarded operand's boundary column once per row.
+  *(Added 2026-09-13 at P4, ruling **R-W3-3**: §6.1's protocol has no source loop, so the rule
+  had no spelling for one. Both W3 row loops are `air.sequential` — a row index is not a bundle
+  index, so `LOOP_KIND` takes its default — and only the PE loop around them is `unrolled`.)*
 * a **compute or zeroing** nest is named by the **post-tiling axis it realises** — W1's `i1`,
   `j1`, `k1` (its zeroing nest `i1`, `j1`), the flip's `i1`, `j`, `k1`, W2's `i1`, `j`, W3's
   `j1` — never a positional `m`/`n`/`t`/`m0`/`n0`.

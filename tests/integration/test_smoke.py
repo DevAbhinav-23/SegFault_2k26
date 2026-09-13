@@ -96,3 +96,59 @@ def test_W1_aircc_pdi(tmp_path):
     out = m6.artifact(str(_w1_module(tmp_path, "npu1")), "npu1", "pdi", workdir=tmp_path)
     assert out == str(tmp_path / "air.pdi")
     assert Path(out).is_file()
+
+
+# --------------------------------------------------------------------------------------------
+# W3 as **our emitter** writes it. Spec: design/04-test-plan.md §3.5. Added by B at P4.
+# Only one `aircc` may run at a time; pytest is serial, so do not add xdist to this file.
+# --------------------------------------------------------------------------------------------
+
+
+def _w3_module(tmp_path: Path, target: str) -> Path:
+    from spatial import m4_mapping as m4, m5_emit
+    from tests.fixtures.mappings import w3_legal
+
+    path = tmp_path / f"w3.base.{target}.air.mlir"
+    path.write_text(m5_emit.emit(m4.plan(w3_legal.legal(target)), target).mlir, encoding="utf-8")
+    return path
+
+
+@pytest.mark.slow
+@pytest.mark.requires_aircc
+@pytest.mark.parametrize("target", ["npu1", "npu2"])
+@pytest.mark.fr("FR-T2", "FR-M5")
+def test_W3_aircc_none(tmp_path, target):
+    """`aircc --device <target> --output-format=none` on M5's own wavefront module.
+
+    This is what makes ruling **R-W3-1** a measurement rather than a design argument: the
+    segment-scope source puts `S[i, 0:1]` and the drain gets `S[i, NR:NR+1]` — two L3 endpoints
+    on the kernel's own written tensor, one of them an address `SOut` also covers — and the
+    default pipeline runs `air-verify-hierarchy-locality{strict=true}` on the **placed** IR
+    (`tools/aircc/aircc.cpp:1213-1218`, `cl::init(PIV_error)`), so a race between them would be
+    a hard error here.
+    """
+    _require_aircc()
+    out = m6.artifact(str(_w3_module(tmp_path, target)), target, "none", workdir=tmp_path)
+    assert out == str(tmp_path / "air_project")
+    assert Path(out).is_dir(), "aircc's --tmpdir is the compile-only witness for output none"
+
+
+@pytest.mark.slow
+@pytest.mark.requires_air_opt
+@pytest.mark.fr("FR-M5", "FR-T5")
+def test_W3_hierarchy_locality(tmp_path):
+    """The locality verifier run **explicitly**, so its verdict is recorded and not inferred.
+
+    `aircc` runs it inside a 22-stage build whose exit code says nothing about which pass was
+    happy; this runs the one pass on its own, in both strictness settings, and `m6.verdict`
+    fails on any `error:` line whatever the exit code (FR-T5).
+    """
+    if not m6.tool_available("air-opt"):
+        pytest.skip("air-opt is not resolvable; install the toolchain (07-environment.md §2)")
+    module = _w3_module(tmp_path, "npu1")
+    for strict in ("false", "true"):
+        pipeline = f"builtin.module(air-verify-hierarchy-locality{{strict={strict}}})"
+        run = m6.invoke([m6.tool("air-opt"), module, f"-pass-pipeline={pipeline}",
+                         "-o", tmp_path / f"verified.{strict}.mlir"], cwd=tmp_path)
+        m6.verdict(run)
+        assert run.stderr.strip() == "", run.stderr
