@@ -17,6 +17,7 @@ Parent research repo: **amd-npus** (`/home/adi/Projects/Honours/amd-npus`). This
 - **"2–3 backends via AIR"** honestly means AIE generations **NPU1 (Phoenix/AIE2)** and
   **NPU2 (Strix/AIE2P)** on one `air-to-aie` lowering path; possibly **Versal** (unverified).
   **Qualcomm Hexagon** and **Tenstorrent** are separate backend builds, **not AIR targets**.
+- **Tenstorrent (Wormhole, functional simulator ttsim) is B's second backend via a second emitter from the backend-neutral MappingPlan — not an AIR target, no performance claims; spec in design/08-tt-backend.md. Qualcomm Hexagon stays out (single DSP core, disjoint stack).
 
 ## Where the state lives
 - `hackathon/HANDOFF.md` — **read first**.

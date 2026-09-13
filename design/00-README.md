@@ -32,6 +32,7 @@ Read in this order. Each document assumes the ones above it.
 | 14 | [`03-lld-M8-kernels-demo.md`](03-lld-M8-kernels-demo.md) | the three kernel sources verbatim, the fixtures, the three demo rejections, the five-minute script | read your own, plus M0's contract — C |
 | 15 | [`03-lld-B-open-questions.md`](03-lld-B-open-questions.md) | B's probe log: what was measured, what it settled, what is still open | read it before arguing with a channel shape — B |
 | 16 | [`REVIEW-round1.md`](REVIEW-round1.md) + [`RESPONSE-review1.md`](RESPONSE-review1.md) | the adversarial review of this set and what was done about every item | you want to know why something reads the way it does |
+| 17 | [`08-tt-backend.md`](08-tt-backend.md) | **stretch**: the second emitter, `MappingPlan` → TT-Metalium, **executed** on Tenstorrent's functional simulator ttsim — the translation table, the depth-1 FIFO protocol over counting semaphores, the TT-P3 resource model, FR-TT1…FR-TT13, gates T1–T4, and the honest-limits text | you are arguing about whether the plan is backend-neutral — B |
 
 **Upstream context, not part of this set but load-bearing:**
 `../hackathon/VERIFIED-AIR-FACTS.md` (every AIR fact, with the E1–E5 status table),
@@ -87,6 +88,7 @@ negotiable inside the week.
 | **W2 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G4** B-half: `test_golden_w2`, `test_W2_aircc_none` | B, C | **gate G4, D5** |
 | **W1 weight-stationary flip** (stretch) — 1-D `grid(PK=4)`, `place(px=ax.k0)`, `j` untiled, ascending cascade | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G5** B-half: `test_golden_w1_flip`, `test_W1_flip_aircc_none`, `cascade_channels == 3` | B | **gate G5, D6 midday**; the designated cut if the plan runs over |
 | Device run (stretch) | not started | C | D5 |
+| **TT backend (B, stretch)** — second emitter, `MappingPlan` → TT-Metalium on ttsim; spec [`08-tt-backend.md`](08-tt-backend.md) | **spec drafted 2026-09-13; T1 in progress** | B | **gates T1–T4**; abandoned if a gate is not green after two agent-days |
 | W4 FFT | **out of scope** | — | — |
 | Freeze | — | all | **end of D6** |
 
