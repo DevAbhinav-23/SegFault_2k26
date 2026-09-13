@@ -36,8 +36,11 @@ SOURCES = {name: Path(module.__file__).read_text(encoding="utf-8")
 """M4's own source, for the import lint (invariant I-1, FR-S20)."""
 
 
-WORKLOADS = {"w1": w1_legal, "w2": w2_legal, "w3": w3_legal}
-"""The workloads whose whole plan M4 builds in this cut (the flip lands at P6)."""
+WORKLOADS = {"w1": w1_legal, "flip": w1flip_legal, "w2": w2_legal, "w3": w3_legal}
+"""Every workload whose whole plan M4 builds — all four since P6's cascade builder."""
+
+GOLDEN = {"w1": "w1.base", "flip": "w1.flip", "w2": "w2.base", "w3": "w3.base"}
+"""`<workload>.<variant>` per fixture (`06-interfaces.md` §8): the flip is W1's `flip` variant."""
 
 
 def plan_json(target: str = "npu1", workload: str = "w1") -> str:
@@ -83,11 +86,17 @@ def test_M1_trichotomy_flip():
     `B` is `declared` — `stationary("B")` names it and it is not the reduction target — and the
     containment `ker M_B = span{e_i} ⊆ ker Sπ_u = span{e_i, e_j}` holds in `UCoord`, which is
     what closed B-O5. `C` cascades along `px` because `r_space = span{e_k}` is carried by the
-    placed `k0`. The full-plan half waits on the §3.6.3 builder (P6).
+    placed `k0`. The plan-level half is the same tuple, now that §3.6.3's builder exists.
     """
-    assert m4.classify(w1flip_legal.legal()) == (("A", "STATIONARY", None, False),
-                                                 ("B", "STATIONARY", None, True),
-                                                 ("C", "CASCADE", "px", False))
+    expected = (("A", "STATIONARY", None, False),
+                ("B", "STATIONARY", None, True),
+                ("C", "CASCADE", "px", False))
+    assert m4.classify(w1flip_legal.legal()) == expected
+    plan = m4.plan(w1flip_legal.legal())
+    assert plan.delivery == expected
+    # ...and the delivery block of the summary says it in words (§3.9 lines 3-8)
+    assert plan.summary.lines[:3] == ("A: stationary (derived)", "B: stationary (declared)",
+                                      "C: cascade along px (derived)")
 
 
 @pytest.mark.fr("FR-M2")
@@ -742,6 +751,157 @@ def test_M4_halo_seeds_both_strips():
 
 
 # --------------------------------------------------------------------------------------------
+# FR-M6 — §3.6.3, the cascade chain (P6)
+# --------------------------------------------------------------------------------------------
+
+
+def _sites_of(plan, channel):
+    """Every site of one channel, in plan order."""
+    return next(c for c in plan.channels if c.name == channel).sites
+
+
+@pytest.mark.fr("FR-M6", "FR-K2")
+@pytest.mark.parametrize("target", TARGETS)
+def test_M6_cascade_chain(target):
+    """One `npu_cascade` bundle of `PK-1` links, ascending, 4 guarded stages (§6.2, §7).
+
+    The payload is one `[32,64]` `f32` partial tile per link per `i0` trip — the whole
+    accumulator, which is what `EMPTY_REGION` means (§3.4) — and the chain ascends in `tx`,
+    which is the direction `aie.cascade_flow`'s verifier accepts on a 1-D herd (P-R3).
+    """
+    plan = m4.plan(w1flip_legal.legal(target))
+    chan = next(c for c in plan.channels if c.channel_type is not None)
+    assert (chan.name, chan.size, chan.broadcast_shape, chan.channel_type,
+            chan.chain_direction) == ("CascadeK", (3,), None, "npu_cascade", "ascending")
+    assert chan.dtype is Dtype.f32
+    assert [c.name for c in plan.channels] == ["A2L1", "B2L1", "C2L3", "CascadeK"]
+
+    # the four stages of §3.6.3 lines 19-23, as nested BranchNodes: conjunction is nesting
+    loop = plan.herd_body[-1]
+    assert (loop.axis, loop.kind, loop.lo.const, loop.hi.const, loop.step.const) == \
+        ("i0", "sequential", 0, 64, 32)
+    outer = loop.body[-1]
+    assert outer.predicate == Guard(coord="tx", relation="==", value=Expr((), 0))
+    assert [n.id for n in outer.then] == ["CascadeK.put.4@herd"]
+    get, accumulate, inner = outer.otherwise
+    assert (get.id, get.kind, get.buffer) == ("CascadeK.get.5@herd", "get", "recv")
+    assert get.indices == (Expr({"tx": 1}, -1),)                 # the link below this PE
+    assert outer.then[0].indices == (Expr({"tx": 1}),)           # the link above it
+    assert inner.predicate == Guard(coord="tx", relation="==", value=Expr((), 3))
+    assert [n.id for n in inner.then] == ["C2L3.put.6@herd"]
+    assert [n.id for n in inner.otherwise] == ["CascadeK.put.7@herd"]
+    assert {s.region for s in _sites_of(plan, "CascadeK")} == {m4.EMPTY_REGION}
+    # the payload: one whole [32,64] f32 tile, 8192 B per link per trip
+    recv = next(b for b in plan.buffers if b.name == m4.RECV)
+    assert (recv.shape, recv.bytes, recv.operand, recv.loop_depth) == ((32, 64), 8192, None, 0)
+
+    # ...and the accumulate M4 synthesises for it (R-F-2): the reduction operator comes from
+    # the schedule, and the nest is explicit because there is no whole-buffer StoreNode.
+    assert w1flip_legal.schedule().reductions == (("k", "+"),)
+    i1, j = accumulate, accumulate.body[0]
+    assert (i1.axis, i1.hi.const, j.axis, j.hi.const) == ("i1", 32, "j", 64)
+    subs = (Expr({"i1": 1}), Expr({"j": 1}))
+    assert j.body[0] == StoreNode(buffer_id="acc", subscripts=subs,
+                                  expr=BinOp(op="+", lhs=Load("acc", subs),
+                                             rhs=Load("recv", subs)))
+    assert m4._reduce("max", Load("acc", subs), Load("recv", subs)).op == "maximum"
+
+
+@pytest.mark.fr("FR-M6")
+def test_M6_cascade_orientation():
+    """A 2-D `(1,4)` herd descends; the 1-D `grid(4)` ascends (§3.6.3 lines 4-7).
+
+    Both directions are measured on the pinned wheel: a 1-D herd is a row of columns and the
+    chain runs west to east, a 2-D `(1,4)` herd is one column of rows and the chain must run
+    from the higher row to the lower one, and the opposite of either fails
+    `'aie.cascade_flow' op source tile must be to the North or West of the destination tile`
+    (REVIEW-round1 P-R3, `03-lld-B-open-questions.md` §4). The sites mirror exactly: head and
+    tail swap, and so do the put and get index expressions.
+    """
+    plan = m4.plan(w1flip_legal.legal(grid2d=True))
+    chan = next(c for c in plan.channels if c.channel_type is not None)
+    assert (chan.name, chan.size, chan.chain_direction) == ("CascadeK", (3,), "descending")
+    assert plan.herd.grid == (1, 4) and plan.herd.coords == ("tx", "ty")
+    assert m4.chain_geometry(w1flip_legal.legal(grid2d=True), plan.herd).axis == 1
+    outer = plan.herd_body[-1]
+    assert outer.predicate == Guard(coord="ty", relation="==", value=Expr((), 3))  # head at 3
+    assert outer.then[0].indices == (Expr({"ty": 1}, -1),)       # put at coord - 1
+    get, _accumulate, inner = outer.otherwise
+    assert get.indices == (Expr({"ty": 1}),)                     # get at coord
+    assert inner.predicate == Guard(coord="ty", relation="==", value=Expr((), 0))  # tail at 0
+    assert inner.otherwise[0].indices == (Expr({"ty": 1}, -1),)
+    # `C` still cascades, now along the second PE axis
+    assert plan.delivery[2] == ("C", "CASCADE", "py", False)
+
+
+@pytest.mark.fr("FR-M6", "FR-M7")
+def test_M7_buffer_plan_flip():
+    """§6.2's buffer table: `a` is the one ping-pong candidate, `b` is hoisted at depth 0.
+
+    Allocation order is what `06-interfaces.md` §5.6 requires and what the herd body does:
+    `b`, `acc`, `recv` outside the `i0` sweep, `a` inside it. Line 0 is deliberately **not**
+    the ping-pong shape — hoisting `b` above the loop is the whole point of the flip.
+    """
+    plan = m4.plan(w1flip_legal.legal())
+    assert [(b.name, b.shape, b.bytes, b.loop_depth, b.ping_pong_candidate)
+            for b in plan.buffers] == [("b", (16, 64), 4096, 0, False),
+                                       ("acc", (32, 64), 8192, 0, False),
+                                       ("recv", (32, 64), 8192, 0, False),
+                                       ("a", (32, 16), 2048, 1, True)]
+    assert [b.operand for b in plan.buffers] == ["B", "C", None, "A"]
+    assert all(b.scope == "herd.private" and b.level == "L1" for b in plan.buffers)
+    # the herd body allocates them in exactly that order, `a` as a direct child of the loop
+    assert [n.name for n in plan.herd_body if isinstance(n, type(plan.buffers[0]))] == \
+        ["b", "acc", "recv"]
+    assert plan.herd_body[-1].body[0].name == "a"
+    assert plan.summary.l1_bytes == 24576 == 4096 + 8192 + 8192 + 2 * 2048
+
+
+@pytest.mark.fr("FR-M6", "FR-M8")
+def test_M6_cascade_bodies():
+    """The fills, the drain and the herd body of §6.2, node by node (R-F-1).
+
+    `B2L1` is one unrolled `pk_bundle` loop of four puts, **once**, hoisted above everything;
+    `A2L1` is the same bundle loop around a 2-trip `air.sequential` over `i0`; the drain is
+    `i0_drain`, **sequential** — `i0` is not a channel bundle index, so `LOOP_KIND` gives it
+    `air.sequential` and `03-lld-M5-emitter.md` §6.2 line 37's Python loop is the slip.
+    """
+    plan = m4.plan(w1flip_legal.legal())
+    fill_b, fill_a, herd, drain = plan.segment_body
+    assert (fill_b.axis, fill_b.kind, fill_b.hi.const) == ("pk_bundle", "unrolled", 4)
+    assert fill_b.body[0].channel == "B2L1" and len(fill_b.body) == 1
+    assert fill_b.body[0].region.offsets == (Expr({"pk_bundle": 16}), Expr(()))
+    assert fill_b.body[0].region.sizes == (16, 64)
+    assert (fill_a.axis, fill_a.kind) == ("pk_bundle", "unrolled")
+    assert (fill_a.body[0].axis, fill_a.body[0].kind, fill_a.body[0].step.const) == \
+        ("i0", "sequential", 32)
+    assert fill_a.body[0].body[0].region.offsets == (Expr({"i0": 1}), Expr({"pk_bundle": 16}))
+    assert herd is plan.herd
+    assert (drain.axis, drain.kind, drain.lo.const, drain.hi.const, drain.step.const) == \
+        ("i0_drain", "sequential", 0, 64, 32)
+    assert drain.body[0].channel == "C2L3" and drain.body[0].indices == (Expr(()),)
+    assert drain.body[0].region.offsets == (Expr({"i0_drain": 1}), Expr(()))
+    assert drain.body[0].region.sizes == (32, 64)
+    # the herd body: `b` and its get, `acc`, `recv`, then the `i0` sweep
+    assert plan.herd_body[1].channel == "B2L1" and plan.herd_body[1].order == 1
+    assert plan.herd_body[1].indices == (Expr({"tx": 1}),)
+    inner = plan.herd_body[-1].body
+    assert inner[1].channel == "A2L1" and inner[1].order == 1
+    zero, compute = inner[2], inner[3]
+    assert (zero.axis, zero.body[0].axis) == ("i1", "j")
+    assert zero.body[0].body[0].expr == Const(value=0.0, text="0.0", dtype=Dtype.f32)
+    assert [compute.axis, compute.body[0].axis, compute.body[0].body[0].axis] == \
+        ["i1", "j", "k1"]
+    # the compute store is the kernel's own tree, rewritten into L1 (§6.2 line 8)
+    store = compute.body[0].body[0].body[0]
+    assert store == StoreNode(
+        buffer_id="acc", subscripts=(Expr({"i1": 1}), Expr({"j": 1})),
+        expr=BinOp(op="+", lhs=Load("acc", (Expr({"i1": 1}), Expr({"j": 1}))),
+                   rhs=BinOp(op="*", lhs=Load("a", (Expr({"i1": 1}), Expr({"k1": 1}))),
+                             rhs=Load("b", (Expr({"k1": 1}), Expr({"j": 1}))))))
+
+
+# --------------------------------------------------------------------------------------------
 # FR-M11 — the summary and the residency block
 # --------------------------------------------------------------------------------------------
 
@@ -757,10 +917,16 @@ def test_M11_summary_golden(workload, target):
     `<workload>.<variant>.<target>.summary.txt`.
     """
     summary = m4.plan(WORKLOADS[workload].legal(target)).summary
-    assert_golden(f"{workload}.base.{target}.summary.txt", "\n".join(summary.lines) + "\n",
+    assert_golden(f"{GOLDEN[workload]}.{target}.summary.txt", "\n".join(summary.lines) + "\n",
                   kind="text")
     expected = {"w1": ("C: stationary (declared)", "A: multicast along py (derived)",
                        "B: multicast along px (derived)"),
+                # the four lines `05-work-breakdown.md` §5 step 3 reads off the screen, verbatim
+                "flip": ("B: stationary (declared)",
+                         "B: stationary (spatial), resident for the whole run",
+                         "A: stationary (spatial), re-fetched per i0",
+                         "reduction (tiled axes): R_time = span{e_k1}, R_space = span{e_k0}",
+                         "  CascadeK size=(3,) type=npu_cascade"),
                 "w2": ("U: stationary (declared)",
                        "U: stationary (spatial), resident for the whole run"),
                 "w3": ("S: forward along px (declared)", "q: multicast along px (derived)",
@@ -786,6 +952,22 @@ def test_M11_residency_line():
     flip = w1flip_legal.legal()
     assert m4.residency(flip, "B") == "resident for the whole run"
     assert m4.residency(flip, "A") == "re-fetched per i0"
+    assert [a.name for a in m4.temporal_axes(flip)] == ["i0"]
+    # ...and in the summary the demo points at (`05-work-breakdown.md` §5 step 3)
+    flip_summary = m4.plan(flip).summary
+    for line in ("A: stationary (spatial), re-fetched per i0",
+                 "B: stationary (spatial), resident for the whole run",
+                 "C: cascade along px, re-fetched per i0"):
+        assert line in flip_summary.lines
+    assert flip_summary.residency == (("A", "re-fetched per i0"),
+                                      ("B", "resident for the whole run"),
+                                      ("C", "re-fetched per i0"))
+    # RULING 9's regression: restore `tile(ax.j, 32)` and `B`'s tile moves with `j0` again —
+    # legally stationary in space, and re-fetched on every inner trip. That is the bug the
+    # residency line exists to make visible, and why the flip leaves `j` whole.
+    tiled = w1flip_legal.legal(tile_j=32)
+    assert m4.residency(tiled, "B") == "re-fetched per j0"
+    assert m4.tile_shape(tiled, "B") == (16, 32)
 
 
 # --------------------------------------------------------------------------------------------
@@ -874,19 +1056,27 @@ def test_M4_reside_l2():
                       mentions=("reside", "L2"), details_keys=("operand", "level"))
 
 
+def _two_statements(mapping):
+    """The same kernel with its one statement twice — a shape no protocol builder covers."""
+    kernel = mapping.kernel
+    return replace(mapping, kernel=replace(kernel, statements=kernel.statements * 2))
+
+
 @pytest.mark.parametrize(("mapping", "phrase"), [
-    (w1flip_legal.legal(), "§3.6"),
-], ids=["flip-cascade"])
+    (_two_statements(w1_legal.legal()), "fuses none of them"),
+    (_two_statements(w1flip_legal.legal()), "fuses none of them"),
+], ids=["w1-two-statements", "flip-two-statements"])
 def test_M4_unbuilt_protocols_fail_legibly(mapping, phrase):
-    """A protocol this cut does not build fails as a `MappingError` naming the phase (§5).
+    """A shape M4 does not build fails as a `MappingError` naming what is out of the cut (§5).
 
     §3.1's `PLAN` wrapper re-raises anything that is not already a `SpatialError` with the
     original in `details["internal_exception"]`, so an unbuilt path cannot silently produce a
-    wrong plan.
+    wrong plan. All four protocol builders exist since P6, so the vehicle is a kernel shape
+    rather than a protocol: two fused statements, which `_statement` refuses by name.
     """
     with pytest.raises(MappingError) as excinfo:
         m4.plan(mapping)
     assert_diagnostic(excinfo, code="PROTOCOL-UNSUPPORTED", clause="plan()",
-                      mentions=("lands in P4/P5/P6", phrase),
+                      mentions=("is out of this cut", phrase),
                       details_keys=("internal_exception", "workload"))
     assert "NotImplementedError" in excinfo.value.diagnostic.details["internal_exception"]

@@ -76,9 +76,18 @@ def w3_module(tmp_path: Path) -> Path:
     return path
 
 
-W1_FACTS = ("pingpong_unroll", "hoist_alloc_count", "cascade_channels",
+W1_FACTS = ("pingpong_unroll", "hoist_alloc_count",
             "broadcast_pattern_count", "pingpong_iter_args")
-"""The fields `03-lld-M5-emitter.md` §3.8 owns for W1. `lock_init_histogram` is D6's."""
+"""The fields `03-lld-M5-emitter.md` §3.8 owns for W1. `lock_init_histogram` is D6's.
+
+**`cascade_channels` is gone from this tuple as of P6** (ruling R-F-3): the fact is now read off
+the `aie` pipeline, because it counts `aie.cascade_flow` ops, and W1's module does **not** lower
+through `air-place-herds,air-to-aie` on its own — its `C2L3` bundle index goes through the
+`repeats` strip-mine `affine_map`, which `air-to-aie` cannot fold to a constant, so the pass
+replaces the puts with `air.wait_all` and then fails with *'air.channel.get' op failed to get
+MM2S tile for L3 allocation*. `aircc` reaches `air-to-aie` with the dependency and
+dma-to-channel passes already run; `PIPELINES["aie"]` does not. A GEMM with no cascade has
+nothing to say about cascade flows, so the fact is asserted on W3 (0) and the flip (3) instead."""
 
 
 @pytest.mark.requires_air_opt
@@ -333,3 +342,83 @@ def test_I_facts_golden_w2(tmp_path):
     assert facts["broadcast_pattern_count"] == 0, "no W2 channel carries a broadcast_shape"
     assert sum(facts["lock_init_histogram"].values()) > 0
     assert_golden("w2.base.npu1.ir_facts.json", facts, kind="json")
+
+
+# --------------------------------------------------------------------------------------------
+# W1-flip — the cascade chain. Spec: design/03-lld-M5-emitter.md §3.8. Added by B at P6.
+# --------------------------------------------------------------------------------------------
+
+
+def flip_module(tmp_path: Path, target: str = "npu1") -> Path:
+    """The flip's emitted module, on disk, which is what `air-opt` reads."""
+    from spatial import m4_mapping as m4, m5_emit
+    from tests.fixtures.mappings import w1flip_legal
+
+    path = tmp_path / f"w1.flip.{target}.air.mlir"
+    path.write_text(m5_emit.emit(m4.plan(w1flip_legal.legal(target)), target).mlir,
+                    encoding="utf-8")
+    return path
+
+
+FLIP_FACTS = ("broadcast_pattern_count", "cascade_channels", "hoist_alloc_count",
+              "lock_init_histogram", "pingpong_unroll")
+"""§3.8's fields for the flip. `pingpong_iter_args` is left out for the same reason W3 leaves
+the ping-pong facts out: the `transform` pipeline's number is W1's fact, and what the flip adds
+is the chain."""
+
+
+@pytest.mark.requires_air_opt
+@pytest.mark.fr("FR-E8", "FR-M6")
+def test_I_cascade_channels(tmp_path):
+    """FR-E8's honest form: **three** `aie.cascade_flow` ops after `air-to-aie` (ruling R-F-3).
+
+    One bundle of `size=(PK-1,)` prints `channel_type = "npu_cascade"` once before lowering and
+    `air-to-aie` splits it into three `@channel_N [1, 1]` bundles, so the attribute occurs
+    **four** times in the lowered text and counting the string would answer a different
+    question. The links themselves are what FR-M6 asks for, and they ascend.
+    """
+    _require_air_opt()
+    facts = m6.ir_facts(str(flip_module(tmp_path)), "npu1", ["cascade_channels"],
+                        workdir=tmp_path)
+    assert facts["cascade_channels"] == 3
+    assert facts["_pipeline_aie"] == m6.PIPELINES["aie"].format(
+        target="npu1", **m6.AIE_GEOMETRY["npu1"])
+    lowered = (tmp_path / "aie.mlir").read_text(encoding="utf-8")
+    assert lowered.count('channel_type = "npu_cascade"') == 4, "the string is not the fact"
+    assert [line.strip() for line in lowered.splitlines() if "aie.cascade_flow" in line] == [
+        "aie.cascade_flow(%tile_2_2, %tile_3_2)",
+        "aie.cascade_flow(%tile_1_2, %tile_2_2)",
+        "aie.cascade_flow(%tile_0_2, %tile_1_2)"]
+    # ...and W3, which has no chain, reads 0 off the same pipeline
+    assert m6.ir_facts(str(w3_module(tmp_path)), "npu1", ["cascade_channels"],
+                       workdir=tmp_path)["cascade_channels"] == 0
+
+
+@pytest.mark.requires_air_opt
+@pytest.mark.fr("FR-E3", "FR-M6")
+def test_I_pingpong_labels_flip(tmp_path):
+    """The `i0` loop is labelled `unroll = 2 : i32`, and **one** alloc is hoisted, not two.
+
+    That difference is the flip, measured in the pass's own output: `b` is allocated above the
+    streaming loop and never re-fetched, so it is not a candidate, while `a` is a direct child
+    of the 2-trip `i0` loop whose first touch is a `get`. W1 reads `hoist_alloc_count = 2`
+    because both its tiles stream.
+    """
+    _require_air_opt()
+    facts = m6.ir_facts(str(flip_module(tmp_path)), "npu1",
+                        ["pingpong_unroll", "hoist_alloc_count"], workdir=tmp_path)
+    assert facts["pingpong_unroll"] == 2, "the i0 loop has 2 trips and is labelled"
+    assert facts["hoist_alloc_count"] == 1, "only `a` is a ping-pong candidate (§6.2)"
+
+
+@pytest.mark.requires_air_opt
+@pytest.mark.fr("FR-E5", "FR-E8", "FR-M6", "FR-T6")
+def test_I_facts_golden_flip(tmp_path):
+    """The flip's §3.8 facts, with the pipeline each came from, frozen as one small file."""
+    _require_air_opt()
+    require_pin()
+    facts = m6.ir_facts(str(flip_module(tmp_path)), "npu1", FLIP_FACTS, workdir=tmp_path)
+    assert facts["cascade_channels"] == 3
+    assert facts["broadcast_pattern_count"] == 0, "no flip channel carries a broadcast_shape"
+    assert sum(facts["lock_init_histogram"].values()) > 0
+    assert_golden("w1.flip.npu1.ir_facts.json", facts, kind="json")

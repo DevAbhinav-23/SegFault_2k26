@@ -12,15 +12,16 @@ six columns), so `numpy` is not imported either.
 **What this cut builds.** The ten passes of LLD §3.1 in their fixed order, general in the
 machinery (`TILE_SHAPE` from the `AccessMap` and the tile factors, `CLASSIFY` in `UCoord`,
 `MULTICAST_GEOMETRY`, `L3_REGION`, `LOOP_KIND`, `TENSOR_PLAN`, `RESIDENCY`, `SUMMARY`), with
-**three protocol builders**: the multicast / stationary fill-compute-drain shape of LLD §6.1;
+**four protocol builders**: the multicast / stationary fill-compute-drain shape of LLD §6.1;
 the wavefront of §3.6.2 — one scalar get per row, one scalar put per row, three homogeneous
-channels closed by a segment-scope source and drain; and the halo of §3.6.1 — put north, put
-south, get both ghosts, every plane drained. Both swaps are the same unroll-by-two-and-peel
-(`swap_loop`), over the row axis for the wavefront and over the timestep axis for the halo. The
-cascade (§3.6.3) builder raises `NotImplementedError` naming the phase; §3.1's `PLAN` wrapper
-re-raises any non-`SpatialError` as a `MappingError` carrying it in
-`details["internal_exception"]` (§5), so an input that needs it fails loudly and legibly instead
-of silently producing a wrong plan.
+channels closed by a segment-scope source and drain; the halo of §3.6.1 — put north, put
+south, get both ghosts, every plane drained; and the cascade of §3.6.3 — one `npu_cascade`
+bundle of `PK-1` links, head / middle / tail by nested `BranchNode`, oriented by the herd rank.
+Both swaps are the same unroll-by-two-and-peel (`swap_loop`), over the row axis for the
+wavefront and over the timestep axis for the halo. A shape no builder covers raises
+`NotImplementedError` naming the phase; §3.1's `PLAN` wrapper re-raises any non-`SpatialError`
+as a `MappingError` carrying it in `details["internal_exception"]` (§5), so an input nothing
+builds fails loudly and legibly instead of silently producing a wrong plan.
 
 **Determinism** (HLD §5, invariant I-7): every traversal that affects a name, an order or a
 text is `sorted(...)` on an explicit key; no `id()`, no clock, no RNG.
@@ -34,10 +35,10 @@ from math import lcm, prod
 from typing import Any, Callable, NamedTuple, get_args
 
 from spatial.m4_selfcheck import self_check, warnings
-from spatial.model import (Axis, BranchNode, BufferPlan, ChannelPlan, ChannelSite, Const,
-                           Diagnostic, Dtype, Expr, ExprNode, Guard, HerdPlan, LegalMapping, Load,
-                           LoopPlan, MappingError, MappingPlan, MappingSummary, Param, Region,
-                           SpatialError, StoreNode)
+from spatial.model import (Axis, BinOp, BranchNode, BufferPlan, ChannelPlan, ChannelSite, Const,
+                           Diagnostic, Dtype, Expr, ExprNode, Guard, HerdPlan, LegalMapping,
+                           Load, LoopPlan, MappingError, MappingPlan, MappingSummary, MaxMin,
+                           Param, Region, SpatialError, StoreNode)
 
 # --------------------------------------------------------------------------------------------
 # Constants
@@ -74,8 +75,9 @@ _PHYSICAL_CAP = {("npu1", 1): (4,), ("npu1", 2): (1, 4),
 _CLAUSE = "plan()"
 """The surface call every mapping diagnostic without a user clause of its own points at."""
 
-_LATER = ("lands in P4/P5/P6: this cut builds the LLD §6.1 fill/compute/drain, §3.6.2 "
-          "wavefront and §3.6.1 halo protocols only")
+_LATER = ("is out of this cut: M4 builds the LLD §6.1 fill/compute/drain, §3.6.2 wavefront, "
+          "§3.6.1 halo and §3.6.3 cascade protocols in the shapes design/04-test-plan.md §5 "
+          "fixes, and raises by name for anything else")
 """Every unbuilt path carries this phrase, so an unsupported input says which phase owns it."""
 
 _BUG_FIX = ("this is a defect in the compiler, not in your program: please report it with the "
@@ -651,6 +653,15 @@ def buffer_plan(mapping: LegalMapping,
         return halo_buffers(mapping, delivery, herd, levels)
     if _forwarded(delivery) is not None:
         return wavefront_buffers(mapping, delivery, herd, levels)
+    if mapping.r_space:
+        return cascade_buffers(mapping, delivery, levels)
+    return _staged_buffers(mapping, delivery, levels)
+
+
+def _staged_buffers(mapping: LegalMapping,
+                    delivery: tuple[tuple[str, str, str | None, bool], ...],
+                    levels: dict[str, str]) -> tuple[BufferPlan, ...]:
+    """One L1 tile per L1-resident operand, in allocation order (LLD §3.3 lines 10-21)."""
     out = []
     for operand, _kind, _along, _declared in delivery:
         if levels[operand] != "L1":
@@ -830,6 +841,14 @@ def loop_plan(mapping: LegalMapping,
     if exchanged is not None:
         for axis in mapping.schedule.sequential:
             kinds[row_drain_name(axis)] = loop_kind(row_drain_name(axis), bundle_index=False)
+    if mapping.r_space:
+        # The cascade's drain walks the temporal tile axis the accumulator moves with — the
+        # flip's `i0`, not the PE grid — so it is `<axis>_drain` and `air.sequential`, exactly
+        # as `drain_name`'s docstring anticipated (ruling **R-F-1**; `03-lld-M5-emitter.md`
+        # §6.2 line 37 draws it as a Python loop, which `LOOP_KIND` contradicts).
+        axis = streaming_axis(mapping, _statement(mapping).target.operand)
+        if axis is not None:
+            kinds[row_drain_name(axis)] = loop_kind(row_drain_name(axis), bundle_index=False)
     for buffer in buffers:
         axis = streaming_axis(mapping, buffer.operand) if buffer.operand else None
         if axis is not None:
@@ -880,6 +899,8 @@ def channel_plan(mapping: LegalMapping,
         return halo(mapping, delivery, herd, buffers, loops)[0]
     if _forwarded(delivery) is not None:
         return wavefront(mapping, delivery, herd, buffers, loops)[0]
+    if mapping.r_space:
+        return cascade(mapping, delivery, herd, buffers, loops)[0]
     for operand, kind, _along, _declared in delivery:
         if kind not in ("MULTICAST", "STATIONARY"):
             raise NotImplementedError(
@@ -972,18 +993,19 @@ def _sites(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, bo
                 indices=tuple(_var(bundle_name(mapping, d)) if extent > 1 else ZERO
                               for d, extent in enumerate(size)),
                 buffer=operand,
-                region=l3_region(mapping, operand, _fill_origins(mapping, operand)))
+                region=l3_region(mapping, operand, _fill_origins(mapping, operand, size)))
         if operand in drains:
             out[(f"{operand}2L3", "get")] = _site(
                 f"{operand}2L3", "get", 0, "segment",
                 indices=tuple(_var(drain_name(mapping, d)) if extent > 1 else ZERO
                               for d, extent in enumerate(herd.grid)),
                 buffer=operand,
-                region=l3_region(mapping, operand, _drain_origins(mapping)))
+                region=l3_region(mapping, operand, _drain_origins(mapping, herd.grid)))
     return out
 
 
-def _origins(mapping: LegalMapping, pe_var) -> dict[str, Expr]:
+def _origins(mapping: LegalMapping, pe_var, extents: tuple[int, ...] | None = None
+             ) -> dict[str, Expr]:
     """Per untiled kernel axis, the element coordinate this slab starts at (LLD §3.4).
 
     `pe_var(pe_dim)` names the segment-scope loop standing in for PE coordinate `pe_dim`.
@@ -992,37 +1014,45 @@ def _origins(mapping: LegalMapping, pe_var) -> dict[str, Expr]:
     `[lo + p·factor, lo + (p+1)·factor)`, not `[p·factor, …)`. W1's axes all start at 0, so the
     term was invisible until W2's `i` and W3's `i`/`j`, which start at 1 (the P2b caveat in
     `design/PROGRESS-B.md`, phase P2b — the one edit that phase asked P4 to make).
+
+    `extents` is the bundle shape the caller's `_bundle_nest` walked, when there is one. That
+    nest makes **no** loop for a dim of extent 1 (`_bundle_nest` skips it), so `pe_var(d)` names
+    nothing there and the origin is the axis's `lo`: one PE owns the whole axis. It is invisible
+    on W1/W2/W3 — every PE dim of theirs has extent > 1 — and bites on the flip's 2-D variant,
+    whose `grid(1, 4)` places `i` on a dim of extent 1.
     """
     bindings = dict(mapping.kernel.bindings)
     placed = {_root(mapping, name): d for d, name in enumerate(mapping.schedule.place)}
     out: dict[str, Expr] = {}
     for axis in mapping.kernel.axes:
         lo = _resolve(axis.lo, bindings)
-        if axis.name in placed:
-            factor = _tile_factor(mapping, axis.name)
-            out[axis.name] = _add(lo, _var(pe_var(placed[axis.name]),
-                                           1 if factor is None else factor))
-        else:
+        pe_dim = placed.get(axis.name)
+        if pe_dim is None or (extents is not None and extents[pe_dim] == 1):
             out[axis.name] = lo
+            continue
+        factor = _tile_factor(mapping, axis.name)
+        out[axis.name] = _add(lo, _var(pe_var(pe_dim), 1 if factor is None else factor))
     return out
 
 
-def _fill_origins(mapping: LegalMapping, operand: str) -> dict[str, Expr]:
+def _fill_origins(mapping: LegalMapping, operand: str,
+                  extents: tuple[int, ...] | None = None) -> dict[str, Expr]:
     """`_origins` with the streaming axis of `operand` bound to its own loop variable.
 
     The streaming loop runs in element units (`air.sequential(0, 64, 16)` over `k0`), so the
     origin along that axis is the loop variable itself with coefficient 1 — §3.4's `kk`.
     """
-    origins = _origins(mapping, lambda d: bundle_name(mapping, d))
+    origins = _origins(mapping, lambda d: bundle_name(mapping, d), extents)
     axis = streaming_axis(mapping, operand)
     if axis is not None:
         origins[_root(mapping, axis)] = _var(axis)
     return origins
 
 
-def _drain_origins(mapping: LegalMapping) -> dict[str, Expr]:
+def _drain_origins(mapping: LegalMapping,
+                   extents: tuple[int, ...] | None = None) -> dict[str, Expr]:
     """`_origins` over the drain loops, which index the PE grid directly."""
-    return _origins(mapping, lambda d: drain_name(mapping, d))
+    return _origins(mapping, lambda d: drain_name(mapping, d), extents)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1052,9 +1082,10 @@ def protocol(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, 
         _check_orders(herd_body)
         return segment_body, herd_body
     if mapping.r_space:
-        raise NotImplementedError(
-            f"a non-empty r_space selects the cascade protocol of "
-            f"design/03-lld-M4-mapping.md §3.6.3, which {_LATER}")
+        _channels, segment_body, herd_body = cascade(mapping, delivery, herd, buffers, loops)
+        _check_orders(segment_body)
+        _check_orders(herd_body)
+        return segment_body, herd_body
     sites = {(channel.name, site.kind): site for channel in channels for site in channel.sites}
     sizes = {channel.name: channel.size for channel in channels}
     fills, drains = _fills_and_drains(mapping, delivery)
@@ -1266,17 +1297,22 @@ def _zero(dtype: Dtype) -> Const:
 
 def _zero_nest(mapping: LegalMapping, accumulator: BufferPlan, names: dict[str, str],
                loops: tuple[tuple[str, str], ...], depth_: int,
-               subscripts: tuple[Expr, ...]) -> LoopPlan:
+               subscripts: tuple[Expr, ...], expr: Any = None) -> LoopPlan:
     """The accumulator zeroing: an ordinary `LoopPlan` of `StoreNode(Const 0)` (§5.5, §6.1).
 
     It carries no `statement_index`, because no kernel statement corresponds to it. Its loops
     realise the same post-tiling axes as the compute nest and carry the same names (§5.5 at v5),
     and it writes the same element of the accumulator that the compute nest then accumulates
     into — hence the shared `subscripts`.
+
+    `expr` overrides the stored value, which is what makes this the same nest the cascade's
+    `acc[:] = acc[:] ⊕ recv[:]` needs (§3.6.3 line 21, §6.2): same shape, same names, same
+    subscripts, one different leaf. It is the **only** other arithmetic node M4 synthesises
+    rather than reading off `Statement.expr`, because no kernel statement corresponds to it.
     """
     statement = _statement(mapping)
     body: tuple[Any, ...] = (StoreNode(buffer_id=accumulator.name, subscripts=subscripts,
-                                       expr=_zero(accumulator.dtype)),)
+                                       expr=_zero(accumulator.dtype) if expr is None else expr),)
     axes = [mapping.kernel.axes[j].name
             for row in statement.target.matrix for j, value in enumerate(row) if value]
     if len(axes) != len(accumulator.shape):
@@ -1635,7 +1671,7 @@ def wavefront(mapping: LegalMapping,
                     indices=tuple(_var(bundle_name(mapping, d)) if extent > 1 else ZERO
                                   for d, extent in enumerate(size)),
                     buffer=operand,
-                    region=l3_region(mapping, operand, _fill_origins(mapping, operand)))
+                    region=l3_region(mapping, operand, _fill_origins(mapping, operand, size)))
         segment.append(_bundle_nest(mapping, size, lambda d: bundle_name(mapping, d), loops, 0,
                                     (put,))[0])
     segment.append(row_loop(source, 0, (
@@ -2054,6 +2090,302 @@ def halo(mapping: LegalMapping,
         (ChannelPlan(name=name, size=size, broadcast_shape=None, channel_type=None,
                      chain_direction=None, dtype=dtype, sites=tuple(by_channel[name]))
          for name, (size, dtype) in geometry.items()), key=lambda c: c.name))
+    return channels, tuple(segment), tuple(herd_body)
+
+
+# --------------------------------------------------------------------------------------------
+# §3.6.3 — the cascade chain for a spatial reduction (FR-M6) — W1-flip
+# --------------------------------------------------------------------------------------------
+
+RECV = "recv"
+"""§6.2's cascade receive tile: the one protocol buffer the chain adds beside the accumulator.
+
+It carries no `operand`, so `06-interfaces.md` §5.6 invariant 5 charges it *outside*
+`LegalMapping.l1_bytes` — which is why M3's figure for the flip is `16 384` and the plan's is
+`24 576` (`02-hld.md` §7)."""
+
+_REDUCE = {"+": "+", "*": "*", "max": "maximum", "min": "minimum", "maximum": "maximum",
+           "minimum": "minimum"}
+"""`ScheduleModel.reductions`' operator spelling → the `ExprNode` the accumulate builds."""
+
+
+class Chain(NamedTuple):
+    """The cascade's geometry: which PE line carries it, which way, and its two ends."""
+
+    axis: int
+    """The PE dim carrying the `r_space` basis vector (LLD §3.6.3 line 2)."""
+    coord: str
+    """The herd coordinate on that dim — `tx` on a 1-D herd, `ty` on the 2-D variant."""
+    pes: int
+    """`herd.grid[axis]`: `PK`, so the chain has `PK - 1` links."""
+    direction: str
+    """`"ascending"` | `"descending"` — `ChannelPlan.chain_direction`, never an emitter choice."""
+    head: int
+    """The coordinate that only puts: `0` ascending, `PK-1` descending."""
+    tail: int
+    """The coordinate that only drains to L3: `PK-1` ascending, `0` descending."""
+    put_index: Expr
+    """The link a PE puts into: `coord` ascending, `coord - 1` descending."""
+    get_index: Expr
+    """The link a PE gets from: `coord - 1` ascending, `coord` descending."""
+
+
+def cascade_channel_name(mapping: LegalMapping, axis: int) -> str:
+    """`f"Cascade{axis_name(c).upper()}"` (LLD §3.6.3 line 8) — the flip's `CascadeK`."""
+    return f"Cascade{_root(mapping, mapping.schedule.place[axis]).upper()}"
+
+
+def chain_geometry(mapping: LegalMapping, herd: HerdPlan) -> Chain:
+    """The orientation table of LLD §3.6.3 lines 4-7 and 15-18, measured on both sides.
+
+    **The direction is forced by `aie.cascade_flow`'s verifier** — *source tile must be to the
+    North or West of the destination tile* — and both cases are measured on the pinned wheel
+    (REVIEW-round1 P-R3, `03-lld-B-open-questions.md` §4):
+
+    * a **1-D** `grid(4)` herd places as four columns on one row, so the chain must run west to
+      east: `aie.cascade_flow(%tile_0_2, %tile_1_2)`, `(1,2)→(2,2)`, `(2,2)→(3,2)`, `aircc`
+      exit 0 — and the descending form of the same module fails the verifier;
+    * a **2-D** `(1,4)` herd is one column of four rows and must descend, which is the
+      opposite case rather than a contradiction.
+
+    It is recorded as `ChannelPlan.chain_direction` because M5 has no rule that could recompute
+    it and D-14 forbids it trying.
+    """
+    axis = _cascade_axis(mapping)
+    pes = herd.grid[axis]
+    coord = herd.coords[axis]
+    if pes < 2:
+        raise NotImplementedError(
+            f"the cascade axis {PE_AXIS_NAME[axis]} has extent {pes}; a chain needs at least "
+            f"two PEs to have a link; {_LATER}")
+    if len(herd.grid) == 1:
+        return Chain(axis, coord, pes, "ascending", 0, pes - 1,
+                     _var(coord), _var(coord, 1, -1))
+    return Chain(axis, coord, pes, "descending", pes - 1, 0,
+                 _var(coord, 1, -1), _var(coord))
+
+
+def cascade_buffers(mapping: LegalMapping,
+                    delivery: tuple[tuple[str, str, str | None, bool], ...],
+                    levels: dict[str, str]) -> tuple[BufferPlan, ...]:
+    """The staged tiles plus `recv`, in the order §6.2's herd body allocates them.
+
+    `PROTOCOL_BUFFERS` (LLD §3.3 line 22) appends; §6.2's body allocates `b`, `acc`, `recv`,
+    then `a` **inside** the `i0` loop, and `06-interfaces.md` §5.6 requires `MappingPlan.buffers`
+    to be that order. `recv` therefore goes immediately after the accumulator it receives into,
+    not at the end: `4096 + 8192 + 8192 + 2·2048 = 24 576` (`02-hld.md` §7).
+    """
+    out = list(_staged_buffers(mapping, delivery, levels))
+    if any(buffer.name == RECV for buffer in out) or any(p.name == RECV
+                                                         for p in mapping.kernel.params):
+        raise _internal(f"the cascade's protocol buffer {RECV!r} collides with a staged buffer "
+                        f"or a kernel parameter of the same name "
+                        f"(design/06-interfaces.md §5.6)", buffer=RECV)
+    accumulator = next((b for b in out if is_accumulator(mapping, b)), None)
+    if accumulator is None:
+        raise _internal("the cascade's reduction target is staged in no L1 buffer, so there is "
+                        "nothing for the chain to accumulate into",
+                        buffers=[b.name for b in out])
+    recv = BufferPlan(name=RECV, operand=None, level="L1", scope="herd.private",
+                      shape=accumulator.shape, dtype=accumulator.dtype, bytes=accumulator.bytes,
+                      loop_depth=0, ping_pong_candidate=False)
+    position = out.index(accumulator) + 1
+    return tuple(out[:position] + [recv] + out[position:])
+
+
+def _reduce(op: str, lhs: Any, rhs: Any) -> Any:
+    """`acc ⊕ recv` for the declared reduction operator (LLD §3.6.3 line 21, ruling R-F-2).
+
+    The operator comes from `ScheduleModel.reductions` and is never hard-coded: `+` and `*`
+    build a `BinOp`, `max`/`min` a `MaxMin`.
+    """
+    spelling = _REDUCE.get(op)
+    if spelling is None:
+        raise NotImplementedError(
+            f"the reduction operator {op!r} has no cascade accumulate form; {_LATER}")
+    if spelling in ("+", "*"):
+        return BinOp(op=spelling, lhs=lhs, rhs=rhs)
+    return MaxMin(op=spelling, operands=(lhs, rhs))
+
+
+def _reduction_op(mapping: LegalMapping, chain: Chain) -> str:
+    """The operator declared for the axis the chain carries (`ScheduleModel.reductions`)."""
+    axis = _root(mapping, mapping.schedule.place[chain.axis])
+    declared = dict(mapping.schedule.reductions).get(axis)
+    if declared is not None:
+        return declared
+    reduction = mapping.kernel.reduction
+    if reduction is not None and reduction.op is not None:
+        return reduction.op
+    raise _internal(
+        f"no associative/commutative operator is declared for the cascade axis {axis!r}; M3 "
+        f"raises RSPACE-NO-AC-OP before M4 sees it (design/06-interfaces.md §4.1)", axis=axis)
+
+
+def cascade(mapping: LegalMapping,
+            delivery: tuple[tuple[str, str, str | None, bool], ...], herd: HerdPlan,
+            buffers: tuple[BufferPlan, ...], loops: tuple[tuple[str, str], ...]
+            ) -> tuple[tuple[ChannelPlan, ...], tuple[Any, ...], tuple[Any, ...]]:
+    """`(channels, segment_body, herd_body)` — the cascade chain of LLD §3.6.3 and §6.2.
+
+    The fills and the compute nest are §6.1's, unchanged; what the chain adds is one
+    `npu_cascade` bundle of `PK-1` links and the head / middle / tail discrimination of lines
+    19-23, built as **nested `BranchNode`s** because `_cond.py:57-60` has no `and` — conjunction
+    is nesting. The drain is not the PE grid's: only the tail PE reaches L3, once per trip of
+    the temporal tile axis the accumulator moves with (ruling **R-F-1**).
+
+    **Cascade puts and gets consume no DMA channel** — they lower to
+    `aie.put_cascade`/`aie.get_cascade` (`AIRToAIEPass.cpp:6955-7023`) — which is why
+    `m4_selfcheck.dma_report` skips them and the flip's per-PE counts are 2 inbound and 1
+    outbound (§6.2's DMA note, ruling **R-F-4**).
+    """
+    chain = chain_geometry(mapping, herd)
+    bindings = dict(mapping.kernel.bindings)
+    statement = _statement(mapping)
+    target = statement.target.operand
+    fills, drains = _fills_and_drains(mapping, delivery)
+    if drains != (target,):
+        raise NotImplementedError(
+            f"the cascade drains {list(drains)} where the reduction target is {target!r}; this "
+            f"cut chains one accumulator; {_LATER}")
+    by_operand = {buffer.operand: buffer for buffer in buffers}
+    accumulator = by_operand[target]
+    names = compute_names(mapping)
+    chan = cascade_channel_name(mapping, chain.axis)
+    drain_channel = f"{target}2L3"
+    drain_size = multicast_geometry(herd.grid, chain.axis)[0]
+    drain_axis = streaming_axis(mapping, target)
+    chain_root = _root(mapping, mapping.schedule.place[chain.axis])
+    if any(_column(_access_matrix(mapping, target), _ucol(mapping, chain_root))):
+        raise _internal(
+            f"the accumulator {target!r} indexes {chain_root!r}, the axis the cascade reduces "
+            f"over, so its tile is not constant along the chain",
+            operand=target, axis=chain_root)
+
+    geometry: dict[str, tuple[tuple[int, ...], tuple[int, ...] | None, Dtype, str | None,
+                              str | None]] = {
+        chan: ((chain.pes - 1,), None, accumulator.dtype, "npu_cascade", chain.direction),
+        drain_channel: (drain_size, None, accumulator.dtype, None, None)}
+
+    # ---- the segment body: the fills, the herd marker, the drain ----------------------------
+    segment: list[Any] = []
+    for operand, kind, along, _declared in sorted(
+            (row for row in delivery if row[0] in fills),
+            key=lambda row: (depth(mapping, row[0]), row[0])):
+        # Resident fills before streamed ones: §6.2 hoists the weights above the `i0` sweep and
+        # M5 §6.2 lines 10-14 print `B2L1` first. It is the rule `buffer_plan` already sorts by.
+        size, broadcast = (multicast_geometry(herd.grid, PE_AXIS_NAME.index(along))
+                           if kind == "MULTICAST" else (herd.grid, None))
+        fill = f"{operand}2L1"
+        geometry[fill] = (size, broadcast, _param(mapping, operand).dtype, None, None)
+        top = (all(extent == 1 for extent in size)
+               and streaming_axis(mapping, operand) is None)
+        put = _site(fill, "put", len(segment) if top else 0, "segment",
+                    indices=tuple(_var(bundle_name(mapping, d)) if extent > 1 else ZERO
+                                  for d, extent in enumerate(size)),
+                    buffer=operand,
+                    region=l3_region(mapping, operand, _fill_origins(mapping, operand, size)))
+        segment.append(_fill_loop(mapping, operand, size, loops, put))
+    segment.append(herd)
+
+    # `drain_size` is 1 on the chain dim, so `_origins` binds that axis to its own `lo` — which
+    # is exactly right: the accumulator's tile is constant along the axis the chain reduces over
+    # (asserted above), and the tail PE holds the whole of it.
+    origins = _drain_origins(mapping, drain_size)
+    if drain_axis is not None:
+        origins[_root(mapping, drain_axis)] = _var(row_drain_name(drain_axis))
+    drain_get = _site(drain_channel, "get", 0 if drain_axis is not None else len(segment),
+                      "segment",
+                      indices=tuple(_var(drain_name(mapping, d)) if extent > 1 else ZERO
+                                    for d, extent in enumerate(drain_size)),
+                      buffer=target, region=l3_region(mapping, target, origins))
+    if drain_axis is None:
+        segment.append(drain_get)
+    else:
+        parent = _root(mapping, drain_axis)
+        kernel_axis = _kernel_axis(mapping, parent)
+        segment.append(_bundle_nest(
+            mapping, drain_size, lambda d: drain_name(mapping, d), loops, 0,
+            (LoopPlan(axis=row_drain_name(drain_axis),
+                      lo=_resolve(kernel_axis.lo, bindings),
+                      hi=_resolve(kernel_axis.hi, bindings),
+                      step=_const(_tile_factor(mapping, parent)),
+                      kind=_kind(loops, row_drain_name(drain_axis)),
+                      depth=len([e for e in drain_size if e > 1]), body=(drain_get,)),))[0])
+
+    # ---- the herd body: the resident tiles, then the `i0` sweep -----------------------------
+    herd_body: list[Any] = []
+    streamed = [b for b in buffers if b.loop_depth >= 1]
+    for buffer in buffers:
+        if buffer.loop_depth >= 1:
+            continue
+        herd_body.append(buffer)
+        if buffer.operand in fills:
+            herd_body.append(_site(f"{buffer.operand}2L1", "get", len(herd_body), "herd",
+                                   indices=tuple(_var(name) for name in herd.coords),
+                                   buffer=buffer.name, region=EMPTY_REGION))
+
+    axis = streaming_axis(mapping, streamed[0].operand) if streamed else None
+    if any(streaming_axis(mapping, b.operand) != axis for b in streamed):
+        raise NotImplementedError(
+            f"the streamed buffers {[b.name for b in streamed]} are re-fetched per different "
+            f"axes, so the herd body needs more than one streaming loop; {_LATER}")
+    elements, slab = compute_frame(mapping, herd, axis, names)
+    _, stored = _in_l1(mapping, by_operand, elements, slab, target,
+                       kernel_subscripts(mapping, statement.target))
+
+    nest_depth = 1 if streamed else 0
+    base = 0 if streamed else len(herd_body)
+    body: list[Any] = list(streamed)
+    for buffer in streamed:
+        if buffer.operand in fills:
+            body.append(_site(f"{buffer.operand}2L1", "get", base + len(body), "herd",
+                              indices=tuple(_var(name) for name in herd.coords),
+                              buffer=buffer.name, region=EMPTY_REGION))
+    body.append(_zero_nest(mapping, accumulator, names, loops, nest_depth, stored))
+    body.append(_compute_nest(mapping, by_operand, names, loops, nest_depth, elements, slab,
+                              stored))
+
+    # Lines 19-23: the head puts; everyone else gets, accumulates, and either drains (the tail)
+    # or puts on. The four sites are numbered from the branch's own index in its body, which is
+    # what keeps every `ChannelSite.id` distinct when one body holds two arms (phase P4's
+    # reading 3, extended to a nest).
+    order = base + len(body)
+    chain_put = _site(chan, "put", order, "herd", indices=(chain.put_index,),
+                      buffer=accumulator.name, region=EMPTY_REGION)
+    accumulate = _zero_nest(
+        mapping, accumulator, names, loops, nest_depth, stored,
+        _reduce(_reduction_op(mapping, chain), Load(accumulator.name, stored),
+                Load(RECV, stored)))
+    body.append(BranchNode(
+        predicate=Guard(coord=chain.coord, relation="==", value=_const(chain.head)),
+        then=(chain_put,),
+        otherwise=(_site(chan, "get", order + 1, "herd", indices=(chain.get_index,),
+                         buffer=RECV, region=EMPTY_REGION),
+                   accumulate,
+                   BranchNode(
+                       predicate=Guard(coord=chain.coord, relation="==",
+                                       value=_const(chain.tail)),
+                       then=(_site(drain_channel, "put", order + 2, "herd",
+                                   indices=tuple(ZERO if d == chain.axis else _var(name)
+                                                 for d, name in enumerate(herd.coords)),
+                                   buffer=accumulator.name, region=EMPTY_REGION),),
+                       otherwise=(replace(chain_put, id=f"{chan}.put.{order + 3}@herd",
+                                          order=order + 3),)))))
+    if streamed:
+        herd_body.append(_tile_loop(mapping, axis, loops, 0, tuple(body)))
+    else:
+        herd_body += body
+
+    by_channel: dict[str, list[ChannelSite]] = {}
+    for node in list(_flatten(tuple(segment))) + list(_flatten(tuple(herd_body))):
+        if isinstance(node, ChannelSite):
+            by_channel.setdefault(node.channel, []).append(node)
+    channels = tuple(sorted(
+        (ChannelPlan(name=name, size=size, broadcast_shape=broadcast, channel_type=kind,
+                     chain_direction=direction, dtype=dtype, sites=tuple(by_channel[name]))
+         for name, (size, broadcast, dtype, kind, direction) in geometry.items()),
+        key=lambda c: c.name))
     return channels, tuple(segment), tuple(herd_body)
 
 

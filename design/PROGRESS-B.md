@@ -1282,3 +1282,195 @@ interpreter zeroes it, the device does not — which is the whole reason the see
 that a halo with `PI ≥ 3`, a rank-2 herd, a halo wider than the owned extent, a non-unit timestep
 step or more than one exchanged operand works — each raises by name rather than guessing;
 W1-flip's real plan (the cascade builder does not exist yet).
+
+# Phase P6 — W1-flip, the weight-stationary cascade, end to end (gate G5)
+
+*Person B, 2026-09-13. Branch `role-b`. M4's cascade protocol (§3.6.3), the `recv` protocol
+buffer, the ascending `npu_cascade` chain on a 1-D herd, the residency lines the demo points at,
+goldens on both targets, `aircc` on both plus the 2-D descending variant, `cascade_channels == 3`,
+and the interpreter against `A @ B`. **Not pushed** — the architect verifies and pushes.*
+
+## Landed
+
+| # | What | Where |
+|---|---|---|
+| 1 | **`chain_geometry`** — §3.6.3's orientation table as a `Chain` NamedTuple: the PE dim carrying `r_space`, its coordinate, `PK`, the direction from the herd **rank**, the head/tail coordinates and the put/get index expressions. `ChannelPlan.chain_direction` is set here and read by M5; M5 has no rule that could recompute it (D-14) | `spatial/m4_mapping.py` |
+| 2 | **`cascade_buffers`** — `PROTOCOL_BUFFERS` adds `recv` (the accumulator's shape and dtype, `operand=None`, depth 0), inserted **immediately after** the accumulator so `MappingPlan.buffers` is the order the herd body allocates: `b`, `acc`, `recv`, `a`. `4096 + 8192 + 8192 + 2·2048 = 24 576` | same |
+| 3 | **`cascade(...)`** — four channels, the segment body (`B2L1` fills, `A2L1` fills, the herd marker, the `i0_drain` drain), the herd body (`b` + its get, `acc`, `recv`, the 2-trip `i0` sweep holding `a`, its get, the zeroing nest, the compute nest and the branch nest) | same |
+| 4 | **`_reduce` / `_reduction_op`** — the cascade accumulate is `_zero_nest` with its stored value overridden, and the operator comes from `ScheduleModel.reductions` (`+`/`*` → `BinOp`, `max`/`min` → `MaxMin`), never hard-coded (**R-F-2**) | same |
+| 5 | **`_origins` gained `extents`** — a PE dim of extent 1 has no bundle loop, so its origin is the axis's `lo`. Invisible on W1/W2/W3 (every PE dim > 1) and load-bearing for the flip's 2-D variant, whose `grid(1, 4)` places `i` on a dim of extent 1 | same |
+| 6 | **P3 skips `npu_cascade` sites in both directions** (**R-F-4**) | `spatial/m4_selfcheck.py` |
+| 7 | **`EXTRACTORS["cascade_channels"]` counts `aie.cascade_flow`** and reads it off the `aie` pipeline (**R-F-3**) — C's module, flagged below | `spatial/m6_tools.py` |
+| 8 | **`w1flip_legal` gained two variants**: `grid2d=True` (the 2-D descending fixture) and `tile_j=32` (RULING 9's regression), each with its `LegalMapping` fields derived | `tests/fixtures/mappings/w1flip_legal.py` |
+| 9 | **33 new tests** in the default run, 3 more `slow`, and 7 new goldens | `tests/` |
+
+M5 needed **no change**: rows 5c and 11 were written at P1 and had no plan to exercise them.
+`spatial/model.py` was not touched.
+
+## The rulings, as applied
+
+| # | Ruling | What was done |
+|---|---|---|
+| **R-F-1** | loop kinds | The `C2L3` drain is `LoopPlan(axis="i0_drain", 0..64 step 32, kind="sequential", depth=0)` with the get at index `(0,)` and region `((i0_drain, 0), (32,64), (64,1))`; the `B2L1` fill is one unrolled `pk_bundle` loop of four puts, hoisted; the `A2L1` fill is `pk_bundle` (unrolled) around a 2-trip sequential `i0`. Erratum in `03-lld-M5-emitter.md` §6.2 (line 37 and a paragraph) and in `03-lld-M4-mapping.md` §6.2 |
+| **R-F-2** | the accumulate nest | `LoopPlan(i1 0..32) → LoopPlan(j 0..64) → StoreNode(acc[i1,j] = BinOp("+", Load(acc,(i1,j)), Load(recv,(i1,j))))`, built by `_zero_nest` with an overridden value so the zeroing and the accumulate share one code path, one set of names and one set of subscripts. The operator is read from `mapping.schedule.reductions`; `max`/`min` build a `MaxMin`, asserted in `test_M6_cascade_chain` |
+| **R-F-3** | `cascade_channels` | Counts `aie.cascade_flow` after the `aie` pipeline. **Measured on both the probe and our own module**: the lowered text carries `channel_type = "npu_cascade"` **4** times (`@CascadeK [3]` plus the three `@channel_N [1, 1]` bundles `air-to-aie` splits it into) and `aie.cascade_flow` **3** times. Erratum in `03-lld-M6-toolchain.md` §3.7; **C owns `m6_tools.py`** and should confirm |
+| **R-F-4** | cascade and DMA | `dma_report` skips every occurrence whose channel has `channel_type == "npu_cascade"`. Per PE: inbound `{A2L1, B2L1}` = 2, outbound `{C2L3}` on `tx == 3` only = 1, **no warning**. `test_P3_cascade_not_counted` also asserts the chain *is* core-to-core and *would* have been counted, so the carve-out is a decision and not an accident |
+| **R-F-5** | B-P25 | Written up below, added to `03-lld-M4-mapping.md` §6.3's coverage paragraph, and `test_semantics.py`'s `w2_inputs` now sets it **explicitly** — it did **not** before: planes `1..T` were all-zero, so their boundary differed from plane 0's |
+
+## B-P25 — the W2 fixture invariant (for Person C's `make_fixture.py`)
+
+> **Planes `1..T` of the input `U` must carry plane 0's boundary rows (`0`, `H+1`) and columns
+> (`0`, `W-1`).**
+
+The plan carries plane 0's boundary **forward** — the staged ghost rows at the domain edge and
+the seeded `next` are what every later plane reads there — while the kernel text reads plane
+`t`'s **own** rows `0`/`H+1` and columns `0`/`W-1` out of the one rank-3 array. The two agree
+exactly when the input's boundary is the same in every plane, which is what "read-only Dirichlet
+boundary" (`02-hld.md` §7.2) means for a one-array kernel: time-invariant. The old
+`w2_inputs` left planes `1..T` all-zero, so the fixture violated it; nothing failed, because the
+oracle `jacobi()` overwrites plane `t+1` from plane `t` before touching the interior and the
+drain rewrites rows `1..H`, but the *input* was one a literal execution of the kernel text would
+have read differently. `w2_inputs` now seeds it, and one W2 assertion moved with it: rows `0` and
+`H+1` of the drained planes are no longer zero, they are plane 0's Dirichlet rows.
+
+## Verified (command → result)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `.venv/bin/python -m pytest` | **590 passed**, 12 deselected, 11.2 s (was 557 passed, 9 deselected) |
+| 2 | the same at `PYTHONHASHSEED=1` and `=12345` | 590 passed each |
+| 3 | `.venv/bin/python -m pytest -m slow` | **12 passed**, 590 deselected, 5.7 s (was 9) |
+| 4 | `aircc --device npu1 --output-format=none` on the emitted flip | **exit 0**, **0** `error:` lines, **0.56 s**, four core ELFs `gemm_seg_core_{0,1,2,3}_2` |
+| 5 | the same with `--device npu2` | **exit 0**, **0** `error:` lines, **0.37 s**, the same four cores |
+| 6 | `aie.cascade_flow` in the lowered npu1 design | **3**, ascending: `(%tile_2_2, %tile_3_2)`, `(%tile_1_2, %tile_2_2)`, `(%tile_0_2, %tile_1_2)` — identical on npu2 |
+| 7 | the flows | **9 `aie.flow`, 0 `aie.packet_flow`** on both targets: 4 `A2L1` + 4 `B2L1` inbound, 1 `C2L3` outbound. Per-column shim pressure is **2 in / 1 out**, within the budget, so nothing multiplexes — §3.8's prediction measured, and the cascade binds no DMA channel at all |
+| 8 | `aircc --device npu1` on the **2-D descending variant** | **exit 0**, **0** `error:` lines, **0.35 s**; `aie.cascade_flow(%tile_0_5, %tile_0_4)`, `(0,4)→(0,3)`, `(0,3)→(0,2)` — one column, descending, which is `$PROBE/q/flip2.py`'s measurement reproduced on **our** emitter's output. 1 `aie.flow`, 8 `aie.packet_flow` (the `B2L1` broadcast makes the inbound pressure 5) |
+| 9 | `ir_facts` on the flip, npu1 | `cascade_channels = **3**`, `pingpong_unroll = 2`, `hoist_alloc_count = **1**`, `broadcast_pattern_count = 0`, `lock_init_histogram = {"0": 9, "1": 9}` (18 locks over four cores) |
+| 10 | the interpreter, `default_rng(0)`, integer-valued `f32` in `[-8, 8)`, both targets | `C == A @ B` **exactly** (`np.array_equal`), and the 2-D descending variant too |
+| 11 | the non-vacuity guard | dropping only the cascade accumulate makes `C == A[:, 48:] @ B[48:, :]` — the tail PE's own `k`-slice and nothing else |
+| 12 | `m4.plan(w1flip_legal.legal(t))` → `self_check` | accepted on both targets, **no** warning; balance `CascadeK[k]` 2/2, `A2L1[pk]` 2/2, `B2L1[pk]` 1/1, `C2L3[0]` 2/2 |
+| 13 | `cmp w1.flip.npu1.air.mlir w1.flip.npu2.air.mlir` | **byte-identical** — `physical_herd` is `(4,)` on both (4 divides both caps) and `build(target=)` stamps nothing into `str(module)`, the same fact W2 and W3 record. The two `plan.json` goldens differ, by `schedule.target` |
+
+**`hoist_alloc_count = 1` is the flip measured in the pass's own output.** W1 reads 2 because
+both its tiles stream; here `b` is allocated above the `i0` loop and never re-fetched, so
+`isPingPongCandidate` has one candidate and `a` is it.
+
+## The six summary lines, verbatim
+
+```
+A: stationary (derived)
+B: stationary (declared)
+C: cascade along px (derived)
+A: stationary (spatial), re-fetched per i0
+B: stationary (spatial), resident for the whole run
+C: cascade along px, re-fetched per i0
+```
+
+and line 10, `reduction (tiled axes): R_time = span{e_k1}, R_space = span{e_k0}`, with the
+channel line `  CascadeK size=(3,) type=npu_cascade` and `L1: 24576 of 65536 bytes`.
+
+**Line 10 needed no code change.** `reduction_split` has re-expressed `r_time ∪ r_space` over the
+post-tiling axes by placedness since P2 — a post-tiling axis is spatial when it is placed and
+temporal otherwise — so the flip's untiled `R_space = span{e_k}` renders as `e_k0` spatial and
+`e_k1` temporal, and W1 keeps printing `R_time = span{e_k0, e_k1}, R_space = {}`. Both are
+asserted.
+
+**`05-work-breakdown.md` §5 step 3 prints the channel line as `CascadeK size=[3]`**; the summary
+renders `ChannelPlan.size`, a tuple, so the line is `CascadeK size=(3,)`. The brief fixes the
+tuple spelling; the WBS's square brackets are prose and were left alone.
+
+## The probe comparison (`vendor/probes/review/flip1d.py asc`, regenerated and lowered)
+
+The probe was imported in process (invariant I-1), built at `target="npu1"` and put through the
+same `aircc`: **exit 0, 0 `error:` lines, 1.40 s**.
+
+| fact | ours | probe | why |
+|---|---|---|---|
+| `aie.cascade_flow` | **3** | **3** | **identical**, tile for tile: `(2,2)→(3,2)`, `(1,2)→(2,2)`, `(0,2)→(1,2)` |
+| `aie.flow(` / `aie.packet_flow` | **9 / 0** | **9 / 0** | identical |
+| `aie.core` / `aie.lock` | 4 / 18 | 4 / 18 | identical |
+| `air.channel @` | `A2L1[4]`, `B2L1[4]`, `C2L3[1]`, `CascadeK[3] {npu_cascade}` | the same four | ours are sorted by name (M4 I-7), the probe's are in declaration order |
+| `air.channel.put` / `get` | 11 / 4 | 11 / 4 | identical |
+| `memref.alloc(` | 4 | 4 | identical |
+| `arith.addf` / `mulf` | 2 / 1 | 2 / 1 | identical |
+| `scf.if` | 2 | 2 | identical: head and tail, one `i0` trip traced |
+| `scf.for` | **13** | **17** | the only difference, and it is RULING 9: the probe's `TN = 32` needs a `j0` loop inside **each** of its four `B2L1` bundle puts (+4); ours leaves `j` whole, so `B` is put once per PE with no loop at all |
+
+**The physical realisation is the probe's exactly.** Every remaining difference is a difference in
+the *program*, not in the routing, and each is RULING 9 or a correctness fix the probe did not
+need: the probe predates RULING 9 (`TN = 32`, a 4-trip `ij` loop, `acc[:] = acc[:] + recv[:]`),
+while ours has `TN = 64`, `B` hoisted once, a 2-trip `i0`, the accumulate nest written out (which
+`air.api` lowers to the same two `scf.for` the slice form does — hence the equal `scf.for`
+contribution from that node) and **two distinct** `C2L3` drains of `C[i0:i0+32, :]` where the
+probe drains the same `C[0:32, 0:32]` region four times.
+
+## The `npu_dma_stream` contingency was **not** taken
+
+FR-K2 / `05-work-breakdown.md` §4 allow re-emitting the chain with `channel_type=None` if `aircc`
+rejects `npu_cascade` on either target. `aircc` accepted it on **both**, first attempt, exit 0
+with zero `error:` lines, so no fallback plan was built and none is carried. The contingency is
+one field (`ChannelPlan.channel_type`) if it is ever needed.
+
+## Goldens
+
+Seven new files — `w1.flip.{npu1,npu2}.{air.mlir,plan.json,summary.txt}` and
+`w1.flip.npu1.ir_facts.json`.
+
+**`git diff --stat tests/golden` is not only `w1.flip.*`, and R-F-3 is why.** Two existing files
+changed, each by exactly **one deleted key**, with **no measured number altered**:
+
+* `w1.base.npu1.ir_facts.json` loses `"cascade_channels": 0`. The fact is now read off the `aie`
+  pipeline, and **W1's module does not lower through `air-place-herds,air-to-aie` on its own**:
+  its `C2L3` bundle index goes through the `repeats` strip-mine `affine_map` (npu1 runs a 2×2
+  logical grid on a 1×2 physical herd), `air-to-aie` cannot fold it to a constant, warns
+  *channel bundle indices cannot be resolved to compile-time constants; this channel put will be
+  replaced with air.wait_all*, and then fails `'air.channel.get' op failed to get MM2S tile for
+  L3 allocation`. `aircc` reaches `air-to-aie` with the dependency and dma-to-channel passes
+  already run; `PIPELINES["aie"]` does not. A GEMM with no cascade has nothing to say about
+  cascade flows, so the fact is asserted on W3 (0) and the flip (3) instead.
+* `w3.base.npu1.ir_facts.json` loses `"_pipeline_pingpong"`, because `cascade_channels` was the
+  only W3 fact that pipeline produced. Its `cascade_channels` stays **0** — read from the `aie`
+  pipeline now, and still 0.
+
+Both are recorded rather than worked around: the alternative was to keep counting a string that
+gives 4 where the answer is 3.
+
+## Readings taken, where the documents leave a choice
+
+| # | Reading | Why |
+|---|---|---|
+| 1 | **`C2L3`'s size is `multicast_geometry(grid, chain_axis)[0]`** — the grid with 1 on the chain dim | §6.2 gives `(1,)` for the 1-D flip, which is that formula's value there, and it is the only spelling that generalises: each non-chain PE line has its own tail and needs its own drain index. The 2-D variant gets `(1, 1)` |
+| 2 | **Segment fills are emitted resident-first** (`sorted by (depth(operand), operand)`) | §6.2 and `03-lld-M5-emitter.md` §6.2 lines 10-14 both put the `B2L1` fill above the `A2L1` fill, and "resident before streamed" is the rule `buffer_plan` already sorts by. The generic §6.1 path keeps delivery order, where the question does not arise |
+| 3 | **The four cascade sites are numbered from the outer branch's own index** (`order`, `order+1`, `order+2`, `order+3`) | `06-interfaces.md` §5.2 says `order` is the index in the enclosing body, which for two one-site arms is `0` twice and collapses two distinct sites into one `ChannelSite.id`. P4's reading 3 solved the same problem for W3 by using the branch's index; a nest needs a running counter, and the branch is the last node of its body so the numbers above it are free |
+| 4 | **The accumulator's access must be constant along the chain axis**, asserted | Otherwise the tail PE's drain region is silently wrong. It is `_internal` rather than `NotImplementedError`: M3's `CASCADE-RANK` and the reduction's own definition make it M4's own bug if it ever fires |
+| 5 | **The 2-D variant carries no `double_buffer`** | With `i` placed there is no temporal tile axis at all, so `A` is `resident for the whole run` and `03-lld-M3-checker.md` §3.13 condition 2 would reject `double_buffer("A")` with `PINGPONG-SHAPE`. Its `l1_bytes` is `16384 + 4096 + 4096 = 24 576` at M3's scope either way, because `a` is not doubled |
+| 6 | **`test_M4_unbuilt_protocols_fail_legibly` needed a new vehicle** | All four protocol builders exist, so the flip no longer raises. The vehicle is now a kernel with its statement twice, which `_statement` refuses by name; `_LATER`'s "lands in P4/P5/P6" became "is out of this cut" |
+
+## Open / blockers
+
+| # | Item | Detail |
+|---|---|---|
+| **B-P25** *(new)* | the W2 fixture invariant | Above. **Person C** must satisfy it in `make_fixture.py`; the design document and the test fixture already do |
+| **B-P26** *(new)* | `PIPELINES["aie"]` is not usable on every module we emit | W1's fails as described above. It works on W2, W3 and the flip, whose bundle indices are direct because `physical_herd == grid`. A `repeats > 1` module needs `aircc`'s own prefix, or the fact has to be read out of `air_project/aie.*.mlir` after a compile. **C owns `m6_tools.py`**; nothing is blocked, because no fact we freeze needs it on W1 |
+| **`m6_tools.py` is C's module** | two edits by B | `EXTRACTORS["cascade_channels"]` and `PIPELINE_OF["cascade_channels"]` (R-F-3), with the erratum in `03-lld-M6-toolchain.md` §3.7. Flagged for C |
+| **B-P10**, **B-P12**, **B-P13**, **B-P15**, **B-P20**, **B-O8** | unchanged | — |
+
+## What remains for P7 (close-out)
+
+1. **The demo and its script** (`03-lld-M8-kernels-demo.md`, `05-work-breakdown.md` §5) — B has
+   produced every line step 2 and step 3 read off the screen, but `demo/` is empty.
+2. **Nothing in `spatial/` is B's to finish.** M1, M2 and M3 are Person A's and are still stubs,
+   so every `LegalMapping` in the suite is a hand-written literal: **no test here proves the
+   checker will produce them.** That is the single largest open risk to gate G2-G5 as a chain.
+3. `has_device` / `run` / `diff` / `trace` (M6 §3.4-§3.6, §3.8) — Person C.
+4. The `w2_zero_t` `SWAP-PARITY` negative, which keeps `test_D3_catalogue_complete` reachable —
+   M3's, and M3 does not exist.
+5. A device run. Everything above is off-device; the honest-limits slide is unchanged.
+
+**Not verified in this phase**: that the emitted module **computes** the flipped GEMM on
+hardware — the interpreter interprets the **plan**, never the emitted IR (D-9); that
+`aie.cascade_flow`'s tile assignment holds when `air-place-herds` has to avoid an occupied
+column (`HerdPlan.at` stays `None`, R-03); that the packet/circuit split holds off the pin
+(R-19/R-21); that a cascade with a chain axis of extent 2, a rank-3 herd, more than one
+accumulator, or a reduction operator other than `+` works — each raises by name rather than
+guessing, and only `+` has a plan behind it.

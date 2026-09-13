@@ -429,7 +429,7 @@ EXTRACTORS: dict[str, object] = {
     "pingpong_unroll": _max_unroll,
     "hoist_alloc_count": lambda text: text.count("hoist_alloc = true"),
     "broadcast_pattern_count": lambda text: text.count("broadcast_pattern"),
-    "cascade_channels": lambda text: text.count('channel_type = "npu_cascade"'),
+    "cascade_channels": lambda text: text.count("aie.cascade_flow"),
     "pingpong_iter_args": _max_tokens_per_scf_for,
     "lock_init_histogram": _lock_init_histogram,
 }
@@ -438,14 +438,20 @@ EXTRACTORS: dict[str, object] = {
 PIPELINE_OF: dict[str, str] = {
     "pingpong_unroll": "pingpong",
     "hoist_alloc_count": "pingpong",
-    "cascade_channels": "pingpong",
+    "cascade_channels": "aie",
     "pingpong_iter_args": "transform",
     "broadcast_pattern_count": "broadcast",
     "lock_init_histogram": "aie",
 }
-"""Which pipeline each fact is read from. §3.7 fixes all but `cascade_channels`, whose
-`channel_type` attribute sits on the module-level `air.channel` declarations and survives every
-pipeline; it is grouped with `pingpong` so the common case is one `air-opt` run, not two."""
+"""Which pipeline each fact is read from, exactly as §3.7's table fixes it.
+
+**`cascade_channels` counts `aie.cascade_flow` ops after `air-to-aie`** (ruling R-F-3), which is
+what `03-lld-M5-emitter.md` §3.8 specifies and what actually matters: one bundle of
+`size=(PK-1,)` prints `channel_type = "npu_cascade"` **once** before lowering, and P0c's
+reading 5 counted that string on the `pingpong` pipeline. Measured on the lowered flip probe
+(`vendor/probes/review/ap_asc/aie.flip1d_asc.mlir`), the string occurs **4** times — the
+`@CascadeK [3]` declaration plus the three `@channel_N [1, 1]` bundles `air-to-aie` splits it
+into — while `aie.cascade_flow` occurs **3**, which is the number of physical links."""
 
 
 def ir_facts(mlir_path: str, target: Target, facts: Iterable[str],

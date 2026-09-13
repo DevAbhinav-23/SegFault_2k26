@@ -1140,7 +1140,23 @@ end of it. Only `B` is resident for the whole run, and that is the flip's claim.
 
 **DMA channels**: cascade puts and gets do **not** consume DMA channels (they lower to
 `aie.put_cascade`/`aie.get_cascade`, `AIRToAIEPass.cpp:6955-7023`), so per PE inbound is
-`{A2L1, B2L1}` = 2 and outbound is `{C2L3}` on `tx == PK-1` only = 1.
+`{A2L1, B2L1}` = 2 and outbound is `{C2L3}` on `tx == PK-1` only = 1. *(Erratum, 2026-09-13,
+ruling **R-F-4**: §3.8's P3 check therefore **skips** every `channel_type == "npu_cascade"`
+site in both directions. Without that carve-out the chain is core-to-core, hence
+circuit-switched by `CIRCUIT`, and PE 1 names three inbound channels against 2 S2MM — a
+`DMA-CHANNELS` error on a design `aircc` compiles, measured exit 0 on both targets.)*
+
+*Two errata on the node listings above, 2026-09-13.* (a) **Site orders.** `ChannelSite.order` is
+the index in its **enclosing body** (`06-interfaces.md` §5.2 at v4, P0c reading 12), so the
+`B2L1` get on herd-body line 1 carries `order=1`, not `0`, and the `A2L1` get inside the `i0`
+loop carries `order=1` there. The four cascade sites are numbered from the outer `BranchNode`'s
+own index in its body — `4`, `5`, `6`, `7` on the flip — which is what keeps every
+`ChannelSite.id` distinct when one body holds two exclusive arms (phase P4's reading 3, extended
+to a nest). (b) **The drain loop.** `C2L3`'s segment-scope drain is `air.sequential(0, M, TM)`
+named `i0_drain`, **not** an unrolled loop: `LOOP_KIND` (§3.5) unrolls a loop only when its
+variable is a channel bundle index, and the drain's index is the constant `0`. Its region is
+`((i0_drain, 0), (32,64), (64,1))` in **element** units, which is the form `_tile_loop` produces
+and the form `03-lld-M5-emitter.md` §6.2 line 38 prints. Ruling **R-F-1**.
 
 ### 6.3 W2 — Jacobi 5-point with halo exchange
 
@@ -1230,6 +1246,16 @@ and `W-1` are the read-only boundary and the value written back is the one that 
 the L3 image equals the oracle everywhere. `test_sem_coverage` compares against the **claimed**
 drain domain and then that against the kernel's write domain (`04-test-plan.md` §3.4), and the
 claim is this sentence.
+
+*Fixture invariant **B-P25**, 2026-09-13 (ruling **R-F-5**).* That last clause holds only of an
+input whose boundary is **time-invariant**. The plan carries plane 0's boundary forward — the
+staged ghost rows at the domain edge and the seeded `next` are what every later plane reads at
+rows `0`/`H+1` and columns `0`/`W-1` — while the kernel text reads plane `t`'s **own** boundary
+out of the one rank-3 array. The two agree iff planes `1..T` of the input carry plane 0's
+boundary rows and columns, which is what "read-only Dirichlet boundary" (`02-hld.md` §7.2) means
+for a one-array kernel. Any fixture generator — `03-lld-M8-kernels-demo.md`'s `make_fixture.py`
+included — must satisfy it, or the plan and the kernel text compute different things at the
+boundary. `tests/integration/test_semantics.py`'s `w2_inputs` sets it explicitly.
 
 ### 6.4 W3 — Smith-Waterman anti-diagonal wavefront
 

@@ -27,7 +27,7 @@ import pytest
 
 from spatial import m4_mapping as m4
 from spatial.model import Expr
-from tests.fixtures.mappings import w1_legal, w2_legal, w3_legal
+from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.helpers import plan_interp
 
 TARGETS = ("npu1", "npu2")
@@ -307,9 +307,21 @@ W2's diff uses `tol = 1e-5` where W1, W1-flip and W3 are exact (`04-test-plan.md
 
 
 def w2_inputs(T: int, seed: int = 0) -> dict[str, np.ndarray]:
-    """W2's fixture data: plane 0 integer-valued `f32`, Dirichlet rows and columns included."""
+    """W2's fixture data: plane 0 integer-valued `f32`, Dirichlet rows and columns included.
+
+    **B-P25, the fixture invariant.** Planes `1..T` carry plane 0's boundary rows (`0`, `H+1`)
+    and columns (`0`, `W-1`). The plan carries plane 0's boundary *forward* — the staged ghost
+    rows at the domain edge and the seeded `next` are what every later plane reads there — while
+    the kernel text reads plane `t`'s **own** rows `0`/`H+1` and columns `0`/`W-1` out of the
+    input array. The two agree exactly when the input's boundary is the same in every plane,
+    which is what "read-only Dirichlet boundary" (`02-hld.md` §7.2) means for a one-array
+    kernel: a time-invariant boundary. Any other input makes the plan and the kernel text
+    compute different things, so Person C's `make_fixture.py` must satisfy this too.
+    """
     U = np.zeros((T + 1, H + 2, WIDTH), dtype=np.float32)
     U[0] = np.random.default_rng(seed).integers(-8, 8, (H + 2, WIDTH)).astype(np.float32)
+    U[1:, 0], U[1:, H + 1] = U[0, 0], U[0, H + 1]                       # the Dirichlet rows
+    U[1:, :, 0], U[1:, :, WIDTH - 1] = U[0, :, 0], U[0, :, WIDTH - 1]   # ...and columns
     return {"U": U}
 
 
@@ -355,8 +367,10 @@ def test_sem_compute_nodes_w2(target, T):
     for column in (0, WIDTH - 1):
         assert np.array_equal(out[1:, 1:H + 1, column],
                               np.broadcast_to(plane0[1:H + 1, column], (T, H)))
-    # rows 0 and H+1 are never drained — the drain covers rows 1..H — so they stay as staged
-    assert not out[1:, 0].any() and not out[1:, H + 1].any()
+    # rows 0 and H+1 are never drained — the drain covers rows 1..H — so they stay as the input
+    # left them, which under B-P25 is plane 0's Dirichlet boundary
+    assert np.array_equal(out[1:, 0], np.broadcast_to(plane0[0], (T, WIDTH)))
+    assert np.array_equal(out[1:, H + 1], np.broadcast_to(plane0[H + 1], (T, WIDTH)))
     assert np.array_equal(out[0], plane0), "plane 0 is read-only and is never written back"
 
 
@@ -449,3 +463,115 @@ def test_sem_coverage_w2(target, T):
         "drained plane carry back the staged read-only boundary (03-lld-M4-mapping.md §6.3)")
     assert union - written == {(t, i, j) for t in range(1, T + 1) for i in range(1, H + 1)
                                for j in (0, WIDTH - 1)}
+
+
+# --------------------------------------------------------------------------------------------
+# W1-flip — the cascade. Spec: design/04-test-plan.md §3.4, §8 item 5. Added by B at P6.
+# --------------------------------------------------------------------------------------------
+
+PK = 4
+
+
+@pytest.mark.fr("FR-K2", "FR-M6")
+@pytest.mark.parametrize("target", TARGETS)
+def test_sem_compute_nodes_flip(target):
+    """Interpreting the flip's plan reproduces `A @ B` **exactly**, on both targets.
+
+    Same kernel, same data, a different dataflow: each PE owns a `k`-slice, accumulates its own
+    partial `[32,64]` tile and hands it up the chain, and only `tx == PK-1` reaches L3. An
+    off-by-one in the chain would show as a missing or doubled `k`-slice, which `==` catches
+    because the values are integer-valued `f32` in `[-8, 8)` (`04-test-plan.md` §8 item 5).
+    """
+    tensors = inputs()
+    expected = tensors["A"] @ tensors["B"]
+    out = plan_interp.run(m4.plan(w1flip_legal.legal(target)), tensors)
+    assert np.array_equal(out["C"], expected)
+    assert out["C"].dtype == np.float32
+
+
+@pytest.mark.fr("FR-K2", "FR-M6")
+def test_sem_compute_nodes_flip_2d():
+    """The 2-D descending variant computes the same product — the orientation is not the maths.
+
+    It is a **test fixture**, not a demo artifact: `grid(1, 4)` with `place(px=ax.i0,
+    py=ax.k0)`, `i0` of extent 1, no `double_buffer` and no temporal tile axis at all, so the
+    whole `[64,64]` accumulator is resident and the chain descends in `ty`.
+    """
+    tensors = inputs()
+    out = plan_interp.run(m4.plan(w1flip_legal.legal(grid2d=True)), tensors)
+    assert np.array_equal(out["C"], tensors["A"] @ tensors["B"])
+
+
+@pytest.mark.fr("FR-K2")
+def test_sem_compute_nodes_flip_is_the_plan_not_the_kernel():
+    """Dropping the cascade accumulate changes the answer — the test above is not vacuous.
+
+    The corruption is the one that matters for FR-M6: keep every transfer, but throw the
+    received partial tile away instead of adding it. The chain then delivers only the tail PE's
+    own `k`-slice, and `C` is a quarter of the product.
+    """
+    from dataclasses import replace
+
+    plan = m4.plan(w1flip_legal.legal())
+    loop = plan.herd_body[-1]
+    branch = loop.body[-1]
+    get, accumulate, inner = branch.otherwise
+    broken = replace(branch, otherwise=(get, inner))          # the accumulate nest is gone
+    corrupted = replace(plan, herd_body=plan.herd_body[:-1] + (
+        replace(loop, body=loop.body[:-1] + (broken,)),))
+    tensors = inputs()
+    out = plan_interp.run(corrupted, tensors)["C"]
+    assert not np.array_equal(out, tensors["A"] @ tensors["B"])
+    assert np.array_equal(out, tensors["A"][:, 3 * TK:] @ tensors["B"][3 * TK:, :])
+
+
+@pytest.mark.fr("FR-K2", "FR-M8")
+@pytest.mark.parametrize("target", TARGETS)
+def test_sem_access_regions_flip(target):
+    """Every L3 region of the flip is the `AccessMap` image of the subdomain it claims.
+
+    `A2L1[pk]` at `i0` covers rows `i0 … i0+32` and the PE's own `k`-slice; `B2L1[pk]` covers
+    that `k`-slice against **all** `N` columns, which is the whole of RULING 9 as an index set;
+    `C2L3[0]` at `i0` covers the row-block the tail PE drained.
+    """
+    mapping = w1flip_legal.legal(target)
+    plan = m4.plan(mapping)
+    sites = {(c.name, s.kind): s for c in plan.channels for s in c.sites}
+    reads = {access.operand: access for access in mapping.kernel.statements[0].reads}
+    write = mapping.kernel.statements[0].target
+    checked = 0
+    for pk, i0 in product(range(PK), range(0, M, TM)):
+        subdomain = {"i": range(i0, i0 + TM), "j": range(N),
+                     "k": range(pk * TK, (pk + 1) * TK)}
+        got = plan_interp.region_indices(sites[("A2L1", "put")].region,
+                                         {"pk_bundle": pk, "i0": i0})
+        assert got == image(mapping, reads["A"], subdomain), ("A2L1", pk, i0)
+        got = plan_interp.region_indices(sites[("B2L1", "put")].region, {"pk_bundle": pk})
+        assert got == image(mapping, reads["B"], subdomain), ("B2L1", pk)
+        got = plan_interp.region_indices(sites[("C2L3", "get")].region, {"i0_drain": i0})
+        assert got == image(mapping, write, subdomain), ("C2L3", i0)
+        checked += 3
+    assert checked == 24
+    # the cascade's payload is the whole accumulator: an empty region names no index set
+    assert all(s.region.offsets == () for s in sites_of(plan, "CascadeK"))
+
+
+def sites_of(plan, channel):
+    """Every site of one channel of a plan, in plan order."""
+    return next(c for c in plan.channels if c.name == channel).sites
+
+
+@pytest.mark.fr("FR-K2", "FR-M8")
+@pytest.mark.parametrize("target", TARGETS)
+def test_sem_coverage_flip(target):
+    """The tail PE's two drained row-blocks partition `C`: no gap, no overlap."""
+    mapping = w1flip_legal.legal(target)
+    plan = m4.plan(mapping)
+    get = next(s for s in sites_of(plan, "C2L3") if s.kind == "get")
+    drained = [plan_interp.region_indices(get.region, {"i0_drain": i0})
+               for i0 in range(0, M, TM)]
+    union: set[tuple[int, ...]] = set().union(*drained)
+    assert sum(len(part) for part in drained) == len(union) == M * N      # (a) no overlap
+    write = mapping.kernel.statements[0].target
+    domain = {axis.name: range(axis.extent) for axis in mapping.kernel.axes}
+    assert union == image(mapping, write, domain)                         # (b) the whole domain

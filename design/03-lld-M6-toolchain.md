@@ -413,14 +413,15 @@ PIPELINES = {
   "transform": PIPELINES["pingpong_full"][:-1] + ",air-ping-pong-transform,canonicalize,cse)",
   "broadcast": "builtin.module(air-dependency,air-broadcast-detection)",
   "pairs":     "builtin.module(air-dependency,air-dependency-canonicalize)",
-  "aie":       "builtin.module(air-to-aie{{device={target}}})",
+  "aie":       "builtin.module(air-place-herds{{num-rows={rows} num-cols={cols} "
+               "row-anchor={row_anchor} col-anchor=0}},air-to-aie{{device={target}}})",
 }
 
 EXTRACTORS = {
   "pingpong_unroll":         lambda txt: max_int(findall(r"unroll = (\d+) : i32", txt), default=0),
   "hoist_alloc_count":       lambda txt: txt.count("hoist_alloc = true"),
   "broadcast_pattern_count": lambda txt: txt.count("broadcast_pattern"),
-  "cascade_channels":        lambda txt: txt.count('channel_type = "npu_cascade"'),
+  "cascade_channels":        lambda txt: txt.count("aie.cascade_flow"),   # R-F-3, from "aie"
   "pingpong_iter_args":      lambda txt: max_count(r"!air\.async\.token", per_scf_for(txt)),
   "lock_init_histogram":     lambda txt: histogram(findall(r"init = (\d+)", txt)),
 }
@@ -438,6 +439,22 @@ FUNCTION ir_facts(mlir_path, target, facts, workdir):
         out[f"_pipeline_{pipeline_name}"] = pipe  # recorded in the golden, see below
     RETURN out
 ```
+
+*Erratum, 2026-09-13 (ruling **R-F-3**).* `cascade_channels` counts **`aie.cascade_flow` ops
+after the `aie` pipeline**, which is what `03-lld-M5-emitter.md` §3.8's own table specifies, and
+`PIPELINE_OF["cascade_channels"]` is therefore `"aie"` and not `"pingpong"`. Counting the
+`channel_type = "npu_cascade"` **string** answers a different question: one bundle of
+`size=(PK-1,)` prints the attribute once before lowering, and `air-to-aie` splits it into three
+`@channel_N [1, 1]` bundles beside the surviving `@CascadeK [3]` declaration, so the string
+occurs **4** times in the lowered W1-flip and `aie.cascade_flow` occurs **3** — the number of
+physical links, which is the fact FR-M6 and FR-E8 are about (`03-lld-B-open-questions.md` §4).
+Measured on `vendor/probes/review/ap_asc/aie.flip1d_asc.mlir` and again on our own emitted
+module. Two consequences, both recorded in `design/PROGRESS-B.md` phase P6: the fact is not
+readable for **W1**, whose module does not lower through `air-place-herds,air-to-aie` alone
+(its `C2L3` bundle index goes through the `repeats` strip-mine `affine_map`, which the pass
+cannot fold, and it then fails *'air.channel.get' op failed to get MM2S tile for L3
+allocation*); and the `aie` pipeline gained its `air-place-herds` prefix at P4 for the same
+family of reasons, which the table above now carries.
 
 **Q-5 — RESOLVED, measured [M]. The short pipeline suffices: use
 `builtin.module(air-dependency,air-label-scf-for-to-ping-pong{device=npu1})`.** Run on VF §E.5's

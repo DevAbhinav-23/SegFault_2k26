@@ -62,6 +62,13 @@ SHIM_DMA_CHANNELS_PER_COL = 2
 L1_BUDGET = 65536
 """`L1_BYTES` (`_trace.py:100`) — `06-interfaces.md` §5.6 invariant 5's budget."""
 
+CASCADE = "npu_cascade"
+"""A cascade channel lowers to `aie.put_cascade` / `aie.get_cascade`
+(`AIRToAIEPass.cpp:6955-7023`) — a dedicated core-to-core wire, **not** a tile DMA — so its
+sites are invisible to the P3 budget in **both** directions (`03-lld-M4-mapping.md` §6.2's DMA
+note, ruling R-F-4). Counting them would reject the flip: PE 1 would name three inbound
+channels (`A2L1`, `B2L1`, `CascadeK`) against 2 S2MM, and `aircc` compiles it (P-R3)."""
+
 _CLAUSE = "plan()"
 """The surface call a mapping diagnostic with no user clause of its own points at."""
 
@@ -1012,6 +1019,8 @@ def dma_report(plan: MappingPlan) -> tuple[Pressure, ...]:
     live: dict[tuple[int, ...], list[Occurrence]] = {
         coord: [] for coord in coordinates(plan.herd.grid)}
     for occurrence in occurrences(plan, herd_only=True):
+        if by_name[occurrence.site.channel].channel_type == CASCADE:
+            continue          # a cascade op binds no DMA channel at all — see `CASCADE` above
         live[occurrence.coord].append(occurrence)
     out = []
     for coord in coordinates(plan.herd.grid):

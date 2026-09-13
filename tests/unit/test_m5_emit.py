@@ -1,11 +1,11 @@
 """Level U — the AIR emitter. Spec: design/03-lld-M5-emitter.md §7, design/04-test-plan.md §2.
 
 The W1 cases are driven by the hand-written W1 `MappingPlan` literal
-(`tests/fixtures/plans/w1_plan.py`); the W2 and W3 cases are driven by the plans M4 **derives**,
-since no literal exists for either. Only the rows that need W1-flip are missing: that plan does
-not exist yet, and `design/PROGRESS-B.md` records which they are.
+(`tests/fixtures/plans/w1_plan.py`); the W1-flip, W2 and W3 cases are driven by the plans M4
+**derives**, since no literal exists for any of them. Every row of §7 has a vehicle since P6.
 
-Written by B at P1 together with `spatial/m5_emit.py`; extended at P4 with W3, P5 with W2.
+Written by B at P1 together with `spatial/m5_emit.py`; extended at P4 with W3, P5 with W2 and
+P6 with the W1-flip's cascade (rows 5c and 11, the two that had no plan to exercise them).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import pytest
 
 from spatial import m4_mapping as m4, m5_emit, m6_tools as m6
 from spatial.model import BranchNode, EmissionError, LoopPlan, MappingPlan
-from tests.fixtures.mappings import w2_legal, w3_legal
+from tests.fixtures.mappings import w1flip_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers import determinism
 from tests.helpers.diagnostics import assert_diagnostic
@@ -57,6 +57,16 @@ def w2_text(target: str = "npu1") -> str:
     if target not in _W2_TEXTS:
         _W2_TEXTS[target] = m5_emit.emit(m4.plan(w2_legal.legal(target)), target).mlir
     return _W2_TEXTS[target]
+
+
+_FLIP_TEXTS: dict[str, str] = {}
+
+
+def flip_text(target: str = "npu1") -> str:
+    """The emitted W1-flip module text for `target`, emitted once per process."""
+    if target not in _FLIP_TEXTS:
+        _FLIP_TEXTS[target] = m5_emit.emit(m4.plan(w1flip_legal.legal(target)), target).mlir
+    return _FLIP_TEXTS[target]
 
 
 def emit_w2_text(target: str = "npu1") -> str:
@@ -647,6 +657,55 @@ def test_E_branch_node():
     outer = next(i for i, line in enumerate(lines) if "scf.if" in line)
     inner = next(i for i in range(outer + 1, len(lines)) if "scf.if" in lines[i])
     assert _indent(lines[inner]) > _indent(lines[outer])
+
+
+@pytest.mark.fr("FR-E8", "FR-M6")
+@pytest.mark.parametrize("target", ["npu1", "npu2"])
+def test_E8_cascade_text(target):
+    """Row 5c for real: `air.channel @CascadeK [3] {channel_type = "npu_cascade"}`, no broadcast.
+
+    FR-E8's acceptance as written expects the attribute **three times**; one bundle of
+    `size=(PK-1,)` prints it once, and the fact that matters — three physical links — is
+    `ir_facts.cascade_channels == 3` after `air-to-aie` (`03-lld-B-open-questions.md` §4,
+    ruling R-F-3). `test_I_cascade_channels` is the other half; this is the text half.
+    """
+    text = flip_text(target)
+    assert 'air.channel @CascadeK [3] {channel_type = "npu_cascade"}' in text
+    declaration = next(line for line in text.splitlines() if "@CascadeK" in line
+                       and line.strip().startswith("air.channel"))
+    assert "broadcast_shape" not in declaration, "_channel.py:170-177 forbids it on a cascade"
+    assert text.count('channel_type = "npu_cascade"') == 1, "one bundle, not PK-1 channels"
+    # the other three channels are plain, and the chain carries the accumulator whole
+    for name, size in (("A2L1", "[4]"), ("B2L1", "[4]"), ("C2L3", "[1]")):
+        assert f"air.channel @{name} {size}\n" in text
+    assert text.count("air.channel.put  @CascadeK[") == 2      # head, and the middle PEs
+    assert text.count("air.channel.get  @CascadeK[") == 1
+
+
+@pytest.mark.fr("FR-E1")
+def test_E_branch_node_flip():
+    """The flip's two `BranchNode`s **nest**: `scf.if` inside the `else` of another `scf.if`.
+
+    `_cond.py:57-60` has no `and`, so `tx != head and tx == tail` is written as nesting, and
+    that is what M4 built (§3.6.3 lines 19-23). Every `otherwise` is non-empty here, so both
+    branches emit their region pair.
+    """
+    plan = m4.plan(w1flip_legal.legal())
+    branches = [node for node in _nodes(plan.herd_body) if isinstance(node, BranchNode)]
+    assert len(branches) == 2 and all(branch.otherwise for branch in branches)
+    lines = flip_text().splitlines()
+    ifs = [i for i, line in enumerate(lines) if "scf.if" in line]
+    assert len(ifs) == len(branches) == 2
+    assert _indent(lines[ifs[1]]) > _indent(lines[ifs[0]]), "the tail guard nests in the else"
+    # the guards compare the herd coordinate against 0 (head) and 3 (tail)
+    assert re.search(r"arith\.cmpi eq, %\w+, %c0\w* : index", flip_text())
+    assert re.search(r"arith\.cmpi eq, %\w+, %c3\w* : index", flip_text())
+    # ...and the accumulate nest M4 synthesised sits inside the else arm, as two scf.for
+    outer_else = next(i for i in range(ifs[0], len(lines)) if lines[i].strip().endswith("} else {")
+                      and _indent(lines[i]) == _indent(lines[ifs[0]]))
+    between = lines[outer_else:ifs[1]]
+    assert sum("scf.for" in line for line in between) == 2
+    assert sum("arith.addf" in line for line in between) == 1
 
 
 @pytest.mark.fr("FR-E1", "FR-M7")

@@ -3,7 +3,8 @@
 The `test_M9_*`, `test_M10_*`, `test_M11_*`, `test_M4_*` and `test_P3_*` rows of M4 §7 that this
 phase can honour: everything driven by W1's, W3's and W2's real plans, by the six hand-corrupted
 W1 literals of `tests/fixtures/corrupt/` and by the two synthetic hand plans built there on
-`w2_legal`. Only the flip's rows wait, on §3.6.3's cascade builder at P6.
+`w2_legal`, and — since P6 — by the flip's own plan. Every `test_M9_*`/`test_P3_*` row of §7
+now has a vehicle.
 
 The synthetic halo plans are **kept** beside the real ones they now supersede: they are the same
 shape with no protocol builder behind them, so a `BALANCE`, `CHANNEL-CYCLE` or `DMA-CHANNELS`
@@ -27,7 +28,7 @@ from tests.fixtures.corrupt import (branch_gets, broadcast_underconsumed, dma_pa
                                     dma_three_inbound, dropped_get, extra_put_in_loop, halo,
                                     halo_guard_dropped, halo_reversed, iv_bundle_index,
                                     pingpong_hoisted, tensor_order)
-from tests.fixtures.mappings import w1_legal, w2_legal, w3_legal
+from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers.diagnostics import assert_diagnostic
 
@@ -424,6 +425,72 @@ def test_M4_l1_agrees_with_m3():
                       mentions=(16384, 12288), details_keys=("plan_l1_bytes",
                                                              "mapping_l1_bytes", "invariant"))
     assert excinfo.value.diagnostic.details["invariant"] == 5
+
+
+@pytest.mark.fr("FR-M7", "FR-M6")
+@pytest.mark.parametrize("target", TARGETS)
+def test_M4_l1_agrees_with_m3_flip(target):
+    """The flip charges `24576 == 16384 + 8192`: M3's staging subset plus M4's `recv` (§7).
+
+    `recv` carries no `operand`, which is exactly what `06-interfaces.md` §5.6 invariant 5 uses
+    to split the two figures — M3 charges what the schedule stages, M4 adds what the protocol
+    needs (`02-hld.md` §7).
+    """
+    plan = m4.plan(w1flip_legal.legal(target))
+    staged = sc.l1_total(tuple(b for b in plan.buffers if b.operand is not None))
+    assert (sc.l1_total(plan.buffers), staged, plan.mapping.l1_bytes) == (24576, 16384, 16384)
+    assert sc.l1_total(plan.buffers) == staged + 8192
+    assert sc.l1_budget(plan) is None
+
+
+@pytest.mark.fr("FR-M9", "FR-M10", "FR-M6")
+@pytest.mark.parametrize("target", TARGETS)
+def test_M9_selfcheck_accepts_flip(target):
+    """The flip's real plan passes every check on both targets, with **no** warning (§7).
+
+    The balance rows are §6.2's own arithmetic: one put and one get per cascade link per `i0`
+    trip, `A2L1` refilled on both trips, `B2L1` filled once, and the tail PE's two drained
+    row-blocks matching the drain loop's two trips.
+    """
+    plan = m4.plan(w1flip_legal.legal(target))
+    assert sc.self_check(plan) is None
+    assert sc.warnings(plan) == ()
+    assert [line for line in plan.summary.lines if line.startswith("warning: ")] == []
+    rows = {(row["channel"], tuple(row["index"])): (row["puts"], row["gets"])
+            for row in sc.balance_table(plan)}
+    assert rows == {("A2L1", (0,)): (2, 2), ("A2L1", (1,)): (2, 2),
+                    ("A2L1", (2,)): (2, 2), ("A2L1", (3,)): (2, 2),
+                    ("B2L1", (0,)): (1, 1), ("B2L1", (1,)): (1, 1),
+                    ("B2L1", (2,)): (1, 1), ("B2L1", (3,)): (1, 1),
+                    ("C2L3", (0,)): (2, 2),
+                    ("CascadeK", (0,)): (2, 2), ("CascadeK", (1,)): (2, 2),
+                    ("CascadeK", (2,)): (2, 2)}
+    assert sc.acyclicity(plan) is None
+    # the 2-D descending variant is checked too: it is a test fixture, not a demo artifact
+    assert sc.self_check(m4.plan(w1flip_legal.legal(target, grid2d=True))) is None
+
+
+@pytest.mark.fr("FR-M6")
+def test_P3_cascade_not_counted():
+    """A cascade op binds **no** DMA channel, in either direction (§6.2's note, ruling R-F-4).
+
+    `aie.put_cascade` / `aie.get_cascade` (`AIRToAIEPass.cpp:6955-7023`) is a dedicated
+    core-to-core wire, not a tile DMA. Counting the chain would make PE 1 name three inbound
+    channels against 2 S2MM and reject a design `aircc` compiles (P-R3) — so the flip's per-PE
+    counts are inbound `{A2L1, B2L1}` = 2 and outbound `{C2L3}` on the tail PE only = 1.
+    """
+    plan = m4.plan(w1flip_legal.legal())
+    assert next(c for c in plan.channels if c.name == "CascadeK").channel_type == sc.CASCADE
+    report = {(row.coord, row.kind): row for row in sc.dma_report(plan)}
+    for tx in range(4):
+        assert report[((tx,), "get")].hard == report[((tx,), "get")].all_ == ("A2L1", "B2L1")
+        expected = ("C2L3",) if tx == 3 else ()
+        assert report[((tx,), "put")].hard == report[((tx,), "put")].all_ == expected
+    assert all(len(row.hard) <= row.budget for row in report.values())
+    assert sc.dma_channels(plan) is None and sc.warnings(plan) == ()
+    # ...and the chain *is* core-to-core, so without the carve-out it would have been counted
+    chain = next(c for c in plan.channels if c.name == "CascadeK")
+    assert sc.is_core_to_core(chain, plan) and sc.circuit(chain, plan)
 
 
 @pytest.mark.fr("FR-M7")

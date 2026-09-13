@@ -190,3 +190,73 @@ def test_W3_hierarchy_locality(tmp_path):
                          "-o", tmp_path / f"verified.{strict}.mlir"], cwd=tmp_path)
         m6.verdict(run)
         assert run.stderr.strip() == "", run.stderr
+
+
+# --------------------------------------------------------------------------------------------
+# W1-flip as **our emitter** writes it. Spec: design/04-test-plan.md §3.5. Added by B at P6.
+# Only one `aircc` may run at a time; pytest is serial, so do not add xdist to this file.
+# --------------------------------------------------------------------------------------------
+
+
+def _flip_module(tmp_path: Path, target: str, **variant) -> Path:
+    from spatial import m4_mapping as m4, m5_emit
+    from tests.fixtures.mappings import w1flip_legal
+
+    name = "w1.flip" if not variant else "w1.flip2d"
+    path = tmp_path / f"{name}.{target}.air.mlir"
+    plan = m4.plan(w1flip_legal.legal(target, **variant))
+    path.write_text(m5_emit.emit(plan, target).mlir, encoding="utf-8")
+    return path
+
+
+@pytest.mark.slow
+@pytest.mark.requires_aircc
+@pytest.mark.parametrize("target", ["npu1", "npu2"])
+@pytest.mark.fr("FR-T2", "FR-M6", "FR-K2")
+def test_W1_flip_aircc_none(tmp_path, target):
+    """`aircc --device <target> --output-format=none` on M5's own cascade module.
+
+    This is gate **G5**'s toolchain half and the answer to open question Q-1: the chain survives
+    `aircc` with no `at=` pinning, on **both** generations, and lowers to exactly `PK-1 = 3`
+    `aie.cascade_flow` ops ascending along the herd's one row of columns — `(0,2)→(1,2)`,
+    `(1,2)→(2,2)`, `(2,2)→(3,2)`. The descending form of the same module is measured to fail
+    `'aie.cascade_flow' op source tile must be to the North or West of the destination tile`
+    (REVIEW-round1 P-R3), which is why `ChannelPlan.chain_direction` is a plan field.
+
+    Every flow is circuit-switched: the per-column shim pressure is 2 inbound (`A2L1`, `B2L1`)
+    and 1 outbound (`C2L3`), within the 2-S2MM / 2-MM2S budget, and the cascade binds no DMA
+    channel at all (`03-lld-M4-mapping.md` §6.2's note).
+    """
+    _require_aircc()
+    out = m6.artifact(str(_flip_module(tmp_path, target)), target, "none", workdir=tmp_path)
+    assert out == str(tmp_path / "air_project")
+    assert Path(out).is_dir(), "aircc's --tmpdir is the compile-only witness for output none"
+    lowered = next(Path(out).glob("aie.*.mlir")).read_text(encoding="utf-8")
+    flows = [line.strip() for line in lowered.splitlines() if "aie.cascade_flow" in line]
+    assert flows == ["aie.cascade_flow(%tile_2_2, %tile_3_2)",
+                     "aie.cascade_flow(%tile_1_2, %tile_2_2)",
+                     "aie.cascade_flow(%tile_0_2, %tile_1_2)"]
+    assert lowered.count("aie.packet_flow") == 0, "shim pressure is 2 in and 1 out"
+    assert lowered.count("aie.flow(") == 9, "4 A2L1 + 4 B2L1 + 1 C2L3"
+    assert len(list(Path(tmp_path).glob("elfs_*"))) == 4, "one core ELF per PE of the chain"
+
+
+@pytest.mark.slow
+@pytest.mark.requires_aircc
+@pytest.mark.fr("FR-M6")
+def test_W1_flip_2d_aircc_none(tmp_path):
+    """The 2-D **descending** variant compiles too, once, on npu1 (§3.6.3's other orientation).
+
+    `grid(1, 4)` on npu1 is one column of four rows (`_trace.py:88-91`), so the chain must run
+    from the higher row to the lower one, and the lowered design says so:
+    `(0,5)→(0,4)`, `(0,4)→(0,3)`, `(0,3)→(0,2)` — the `$PROBE/q/flip2.py` measurement, now on
+    our own emitter's output. It is a **test fixture**, not a demo artifact.
+    """
+    _require_aircc()
+    out = m6.artifact(str(_flip_module(tmp_path, "npu1", grid2d=True)), "npu1", "none",
+                      workdir=tmp_path)
+    lowered = next(Path(out).glob("aie.*.mlir")).read_text(encoding="utf-8")
+    assert [line.strip() for line in lowered.splitlines() if "aie.cascade_flow" in line] == [
+        "aie.cascade_flow(%tile_0_5, %tile_0_4)",
+        "aie.cascade_flow(%tile_0_4, %tile_0_3)",
+        "aie.cascade_flow(%tile_0_3, %tile_0_2)"]

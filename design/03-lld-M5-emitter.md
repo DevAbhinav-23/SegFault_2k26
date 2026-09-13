@@ -498,7 +498,7 @@ L1 memrefs carry `2 : i32` as their memory space (`memref<32x16xf32, 2 : i32>`),
 34                    cC.put(acc, indices=[0])
 35                  with tail.otherwise():
 36                    casc.put(acc, indices=[tx])
-37          for i0 in range(0, 64, 32):                              # PYTHON loop: drain, unrolled
+37          for i0 in air.sequential(0, 64, 32):                     # drain: 2 trips (R-F-1)
 38            cC.get(C[i0 : i0+32, 0:64], indices=[0])
 39  module := launch.build("npu1")
 ```
@@ -523,6 +523,17 @@ of the same two numbers (`03-lld-M4-mapping.md` §3.9). `a` is also the only
 Lines 30-32 are the other half of D-14. The plan contains **no whole-tile store**: M4 expanded
 `acc[:] = acc[:] + recv[:]` into this explicit `LoopPlan` nest of scalar `StoreNode`s
 (`06-interfaces.md` §5.5), so M5 walks it with rows 7 and 12 and needs no slice-assignment rule.
+The reduction operator is read from `ScheduleModel.reductions` and never hard-coded — `+` builds
+a `BinOp`, `max`/`min` a `MaxMin` (ruling **R-F-2**).
+
+*Erratum, 2026-09-13 (ruling **R-F-1**, applied to line 37).* The `C2L3` drain was drawn as a
+trace-time Python loop. `LOOP_KIND` (`03-lld-M4-mapping.md` §3.5) makes a loop unrolled only when
+its variable **is** a channel bundle index; `i0` is not — the drain's bundle index is the
+constant `0` — so the loop is `air.sequential(0, M, TM)`, named `i0_drain` by §5.5's `<axis>_drain`
+rule, and the emitted text carries one `scf.for` of two trips. The same slip is corrected in §6.3
+lines 21-23 (W2) and §6.4 lines 31-35 (W3). The `B2L1` fill on line 10 and the `A2L1` fill on
+line 12 **are** unrolled Python loops, because `pk` is a bundle index; the `A2L1` fill's inner
+`i0` loop on line 13 is `air.sequential`, which is what line 13 already says.
 
 ### 6.3 W2 — Jacobi halo exchange (`03-lld-M4-mapping.md` §6.3)
 

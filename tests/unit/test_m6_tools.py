@@ -172,8 +172,20 @@ def test_pipelines_and_extractors_agree():
         "air-ping-pong-transform,canonicalize,cse)")
     assert m6.EXTRACTORS["pingpong_unroll"]("scf.for ... {unroll = 2 : i32}") == 2
     assert m6.EXTRACTORS["pingpong_unroll"]("nothing here") == 0
+    # `cascade_channels` counts the **physical links** `air-to-aie` built, not the attribute on
+    # the declaration (ruling R-F-3, `03-lld-M5-emitter.md` §3.8). The lowered W1-flip carries
+    # `channel_type = "npu_cascade"` four times — `@CascadeK [3]` plus the three `@channel_N`
+    # bundles the pass splits it into — and `aie.cascade_flow` three times, which is the number
+    # that matters. This sample is the shape of both.
+    assert m6.PIPELINE_OF["cascade_channels"] == "aie"
     assert m6.EXTRACTORS["cascade_channels"](
-        'air.channel @C [3] {channel_type = "npu_cascade"}') == 1
+        'air.channel @CascadeK [3] {channel_type = "npu_cascade"}\n'
+        'air.channel @channel_0 [1, 1] {channel_type = "npu_cascade"}\n'
+        "aie.cascade_flow(%tile_0_2, %tile_1_2)\n"
+        "aie.cascade_flow(%tile_1_2, %tile_2_2)\n"
+        "aie.cascade_flow(%tile_2_2, %tile_3_2)\n") == 3
+    assert m6.EXTRACTORS["cascade_channels"](
+        'air.channel @C [3] {channel_type = "npu_cascade"}') == 0
     assert m6.EXTRACTORS["lock_init_histogram"](
         "init = 0\ninit = 1\ninit = 1") == {"0": 1, "1": 2}
 

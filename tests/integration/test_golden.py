@@ -1,12 +1,12 @@
 """Level G — the golden pipeline. Spec: design/04-test-plan.md §3.1, design/06-interfaces.md §8.
 
-W1, W2 and W3. The W1-flip variant needs the cascade builder of M4 §3.6.3, which lands in
-P6 (`design/PROGRESS-B.md`).
+All four variants: `w1.base`, `w1.flip`, `w2.base` (+ `w2.odd`) and `w3.base`.
 
 A golden is valid **only for the pinned wheel** (FR-T6), so a pin mismatch **skips** every test
 here with the reason rather than failing it (§8 rule 2).
 
-Written by B at P1, extended at P2 with the M4 path; C owns `tests/helpers/golden.py`.
+Written by B at P1, extended at P2 with the M4 path, P4 with W3, P5 with W2 and P6 with the
+flip; C owns `tests/helpers/golden.py`.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import pytest
 
 from spatial import m4_mapping as m4, m5_emit, m6_tools as m6
 from spatial.model import Expr, ToolchainError, to_json
-from tests.fixtures.mappings import w1_legal, w2_legal, w3_legal
+from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers.golden import assert_golden
 
@@ -163,3 +163,48 @@ def test_golden_w2_summary(target):
                  "  ToNorth size=(1,)", "  ToSouth size=(1,)"):
         assert line in summary.lines
     assert not [line for line in summary.lines if line.startswith("warning: ")]
+
+
+# --------------------------------------------------------------------------------------------
+# W1-flip — the weight-stationary cascade, derived by M4 and emitted by M5. Added by B at P6.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-E7", "FR-M6", "FR-K2", "FR-T6")
+def test_golden_w1_flip(target):
+    """Gate G5's B half: the flip's `LegalMapping` → M4 → M5 → the AIR text, byte for byte.
+
+    FR-K2's claim is that the flip is a **schedule** edit: `w1flip_legal` imports W1's kernel
+    unchanged and changes four clauses plus the dropped `tile(ax.j, TN)`, and what comes out is
+    a different dataflow — weights resident, `A` streaming, partial sums on an `npu_cascade`
+    chain. The two goldens are the evidence that nothing in the kernel moved.
+    """
+    require_pin()
+    assert w1flip_legal.kernel() == w1_legal.kernel(), "FR-K2: no source edit"
+    plan = m4.plan(w1flip_legal.legal(target))
+    result = m5_emit.emit(plan, target)
+    assert_golden(f"w1.flip.{target}.air.mlir", result.mlir, kind="text")
+    assert_golden(f"w1.flip.{target}.plan.json", json.loads(to_json(plan)), kind="json")
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-M11", "FR-K2")
+def test_golden_w1_flip_summary(target):
+    """The flip's summary, and the six lines `05-work-breakdown.md` §5 step 3 reads out loud."""
+    require_pin()
+    summary = m4.plan(w1flip_legal.legal(target)).summary
+    assert_golden(f"w1.flip.{target}.summary.txt", "\n".join(summary.lines) + "\n", kind="text")
+    for line in ("A: stationary (derived)", "B: stationary (declared)",
+                 "C: cascade along px (derived)",
+                 "A: stationary (spatial), re-fetched per i0",
+                 "B: stationary (spatial), resident for the whole run",
+                 "C: cascade along px, re-fetched per i0",
+                 "reduction (tiled axes): R_time = span{e_k1}, R_space = span{e_k0}",
+                 "L1: 24576 of 65536 bytes",
+                 "  CascadeK size=(3,) type=npu_cascade"):
+        assert line in summary.lines
+    assert not [line for line in summary.lines if line.startswith("warning: ")]
+    # W1's own summary is the other half of the demo: same kernel, the other dataflow
+    base = w1_plan.plan(target).summary
+    assert "C: stationary (declared)" in base.lines and "L1: 12288 of 65536 bytes" in base.lines
