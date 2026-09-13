@@ -133,6 +133,44 @@ def test_W3_aircc_none(tmp_path, target):
     assert Path(out).is_dir(), "aircc's --tmpdir is the compile-only witness for output none"
 
 
+# --------------------------------------------------------------------------------------------
+# W2 as **our emitter** writes it. Spec: design/04-test-plan.md §3.5. Added by B at P5.
+# Only one `aircc` may run at a time; pytest is serial, so do not add xdist to this file.
+# --------------------------------------------------------------------------------------------
+
+
+def _w2_module(tmp_path: Path, target: str) -> Path:
+    from spatial import m4_mapping as m4, m5_emit
+    from tests.fixtures.mappings import w2_legal
+
+    path = tmp_path / f"w2.base.{target}.air.mlir"
+    path.write_text(m5_emit.emit(m4.plan(w2_legal.legal(target)), target).mlir, encoding="utf-8")
+    return path
+
+
+@pytest.mark.slow
+@pytest.mark.requires_aircc
+@pytest.mark.parametrize("target", ["npu1", "npu2"])
+@pytest.mark.fr("FR-T2", "FR-M4")
+def test_W2_aircc_none(tmp_path, target):
+    """`aircc --device <target> --output-format=none` on M5's own halo module.
+
+    The routing is the whole point at `PI = 2`: every core needs `UIn` plus one ghost get
+    inbound and `UOut` plus one boundary put outbound, which is exactly the 2-S2MM / 2-MM2S
+    budget with nothing left over. `PI = 4` puts three circuit-switched flows on the first
+    interior PE and is measured to fail here with `'aie.connect' op … TileID(1, 2) targets same
+    dst` (REVIEW-round1 P-R2) — `test_P3_dma_inbound` is what rejects it twenty seconds earlier.
+    """
+    _require_aircc()
+    out = m6.artifact(str(_w2_module(tmp_path, target)), target, "none", workdir=tmp_path)
+    assert out == str(tmp_path / "air_project")
+    assert Path(out).is_dir(), "aircc's --tmpdir is the compile-only witness for output none"
+    # ...and the lowered design is all circuit-switched, one flow per endpoint per core
+    lowered = next(Path(out).glob("aie.*.mlir")).read_text(encoding="utf-8")
+    assert lowered.count("aie.packet_flow") == 0, "nothing multiplexes at PI = 2"
+    assert lowered.count("aie.flow(") == 6, "2 UIn + 2 UOut + ToNorth + ToSouth"
+
+
 @pytest.mark.slow
 @pytest.mark.requires_air_opt
 @pytest.mark.fr("FR-M5", "FR-T5")

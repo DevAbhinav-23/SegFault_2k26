@@ -1,13 +1,15 @@
 """Level U — the plan self-check. Spec: `design/03-lld-M4-mapping.md` §3.7, §3.8 and §7.
 
 The `test_M9_*`, `test_M10_*`, `test_M11_*`, `test_M4_*` and `test_P3_*` rows of M4 §7 that this
-phase can honour: everything driven by W1's real plan, by the six hand-corrupted W1 literals of
-`tests/fixtures/corrupt/` and by the two synthetic hand plans built there on `w2_legal`. The rows
-that name W2's, W3's or the flip's **own** plans — `test_M4_balanced`, `test_M10_w2_acyclic`,
-`test_M5_wavefront_balance` — wait for those protocol builders at P4/P5/P6; what stands in for
-them here is the same shape, hand-written, so the checker itself is exercised now.
+phase can honour: everything driven by W1's, W3's and W2's real plans, by the six hand-corrupted
+W1 literals of `tests/fixtures/corrupt/` and by the two synthetic hand plans built there on
+`w2_legal`. Only the flip's rows wait, on §3.6.3's cascade builder at P6.
 
-Written by B at P3 together with `spatial/m4_selfcheck.py`.
+The synthetic halo plans are **kept** beside the real ones they now supersede: they are the same
+shape with no protocol builder behind them, so a `BALANCE`, `CHANNEL-CYCLE` or `DMA-CHANNELS`
+that fires on both says the checker caught it and not the builder.
+
+Written by B at P3 together with `spatial/m4_selfcheck.py`; extended at P5 with W2's own plan.
 """
 
 from __future__ import annotations
@@ -20,12 +22,12 @@ import pytest
 
 from spatial import m4_mapping as m4
 from spatial import m4_selfcheck as sc
-from spatial.model import Dtype, MappingError
+from spatial.model import BranchNode, ChannelSite, Dtype, LoopPlan, MappingError
 from tests.fixtures.corrupt import (branch_gets, broadcast_underconsumed, dma_packet_warn,
                                     dma_three_inbound, dropped_get, extra_put_in_loop, halo,
                                     halo_guard_dropped, halo_reversed, iv_bundle_index,
                                     pingpong_hoisted, tensor_order)
-from tests.fixtures.mappings import w1_legal, w3_legal
+from tests.fixtures.mappings import w1_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers.diagnostics import assert_diagnostic
 
@@ -74,6 +76,92 @@ def test_M9_selfcheck_accepts_w3(target):
     # and the warning reaches the summary, which is what §3.8 asks for
     assert [line for line in plan.summary.lines if line.startswith("warning: ")] == [
         f"warning: {message}" for message in messages]
+
+
+def w2_plan(T: int = 4, PI: int = 2, target: str = "npu1"):
+    """The derived W2 plan, at the fixture's `T`/`PI` or a variant."""
+    return m4.plan(w2_legal.legal(target, T=T, PI=PI))
+
+
+def _flat(nodes):
+    """Every node of a plan body, descending into loops and both arms of a branch."""
+    for node in nodes:
+        yield node
+        if isinstance(node, LoopPlan):
+            yield from _flat(node.body)
+        elif isinstance(node, BranchNode):
+            yield from _flat(node.then)
+            yield from _flat(node.otherwise)
+
+
+def w2_with_body(plan, herd_body):
+    """`plan` with a rewritten herd body, its `channels` re-pointed at the sites it now holds.
+
+    `06-interfaces.md` §5.6 forbids one site id naming two different sites, so a corruption made
+    with `dataclasses.replace` on a body node has to be reflected in `ChannelPlan.sites` too.
+    """
+    sites = {node.id: node for body in (plan.segment_body, herd_body)
+             for node in _flat(body) if isinstance(node, ChannelSite)}
+    return replace(plan, herd_body=herd_body,
+                   channels=tuple(replace(channel,
+                                          sites=tuple(sites[s.id] for s in channel.sites))
+                                  for channel in plan.channels))
+
+
+def w2_reversed(plan):
+    """The real W2 plan with each `STEP` emitted `[GET, GET, PUT, PUT]` — §3.7.2's cycle.
+
+    Built from the plan M4 derives, not from a hand-written stand-in: the site ids, buffers and
+    regions are the real protocol's and only the **order** changes, which is precisely the one
+    property §3.6.1 calls not negotiable.
+    """
+    loop = plan.herd_body[4]
+    body = list(loop.body)
+    for base in (0, 6):
+        body[base:base + 4] = [body[base + 2], body[base + 3], body[base], body[base + 1]]
+    return replace(plan, herd_body=plan.herd_body[:4] + (replace(loop, body=tuple(body)),))
+
+
+@pytest.mark.fr("FR-M9", "FR-M10", "FR-M4")
+@pytest.mark.parametrize("target", TARGETS)
+def test_M9_selfcheck_accepts_w2(target):
+    """W2's real plan passes every check, on both targets, and records **no** warning (§7).
+
+    `PI = 2` is exactly at the 2-S2MM / 2-MM2S budget with every flow circuit-switched, so
+    unlike W3 there is nothing for §3.8 to warn about — and `aircc` is measured to agree, six
+    `aie.flow`s and zero `aie.packet_flow`s (`design/PROGRESS-B.md`, phase P5).
+    """
+    plan = w2_plan(target=target)
+    assert sc.self_check(plan) is None
+    assert sc.warnings(plan) == ()
+    assert [line for line in plan.summary.lines if line.startswith("warning: ")] == []
+    report = {(row.coord, row.kind): row for row in sc.dma_report(plan)}
+    assert report[((0,), "get")].hard == ("ToNorth", "UIn")
+    assert report[((0,), "put")].hard == ("ToSouth", "UOut")
+    assert report[((1,), "get")].hard == ("ToSouth", "UIn")
+    assert report[((1,), "put")].hard == ("ToNorth", "UOut")
+    assert all(len(row.hard) == len(row.all_) == row.budget for row in report.values())
+    assert sc.self_check(w2_plan(T=5, target=target)) is None
+
+
+@pytest.mark.fr("FR-M9", "FR-M4")
+@pytest.mark.parametrize("T", [4, 5])
+def test_M4_balanced(T):
+    """Every channel index of W2's real plan, both boundary PEs, `put_count == get_count`.
+
+    The table carries a row per index of every channel rather than only the ones something
+    reached, because "absent" and "balanced" are the two readings a reader must not have to
+    tell apart (§7). At `PI = 2` the halo bundles are `size=(1,)` and both PEs reach their one
+    index, so the zero rows this fixture could show are the ones `test_M9_count_table_has_
+    every_index` shows on W1's fan-out instead.
+    """
+    plan = w2_plan(T=T)
+    rows = {(row["channel"], tuple(row["index"])): (row["puts"], row["gets"])
+            for row in sc.balance_table(plan)}
+    assert rows == {("ToNorth", (0,)): (T, T), ("ToSouth", (0,)): (T, T),
+                    ("UIn", (0,)): (1, 1), ("UIn", (1,)): (1, 1),
+                    ("UOut", (0,)): (T, T), ("UOut", (1,)): (T, T)}
+    assert sc.balance(plan) is None
 
 
 @pytest.mark.fr("FR-M9")
@@ -141,6 +229,23 @@ def test_M9_rejects_guarded_put_only():
     assert (details["put_count"], details["get_count"]) == (0, 1)
     assert [tuple(site["coord"]) for site in details["get_sites"]] == [(1,)]  # PE 1
 
+    # ...and on W2's **real** plan, which now supersedes the synthetic stand-in: the guard is
+    # what keeps `tx` inside `[0, PI-1)`, so without it PE 1 gets at `ToNorth[1]`, an index of a
+    # `size=(1,)` bundle that no put can reach.
+    plan = w2_plan()
+    loop = plan.herd_body[4]
+    body = list(loop.body)
+    for position in (2, 8):                                   # the north ghost get, both phases
+        body[position] = replace(body[position], guard=None)
+    excinfo = raises(w2_with_body(plan, plan.herd_body[:4]
+                                  + (replace(loop, body=tuple(body)),)))
+    assert_diagnostic(excinfo, code="BALANCE", clause="plan()", mentions=("ToNorth", 0, 4),
+                      details_keys=("rule", "get_sites"))
+    details = excinfo.value.diagnostic.details
+    assert details["rule"] == "per-branch"
+    assert (tuple(details["index"]), details["put_count"], details["get_count"]) == ((1,), 0, 4)
+    assert {tuple(site["coord"]) for site in details["get_sites"]} == {(1,)}
+
 
 # --------------------------------------------------------------------------------------------
 # FR-M10 — P2b acyclicity (§3.7.2)
@@ -160,6 +265,44 @@ def test_M10_cycle_rejected():
         "ToNorth.get.2@herd", "ToSouth.put.5@herd", "ToSouth.get.3@herd", "ToNorth.put.4@herd"}
     for edge in cycle:                                # every end names where it is
         assert set(edge["from"]) == {"site", "channel", "kind", "index", "coord"}
+
+    # ...and on W2's **real** plan: the same reversal of the same four sites, built with
+    # `dataclasses.replace` on the protocol M4 derives rather than on a hand-written stand-in.
+    excinfo = raises(w2_reversed(w2_plan()))
+    assert_diagnostic(excinfo, code="CHANNEL-CYCLE", clause="plan()",
+                      mentions=("ToNorth", "ToSouth"), details_keys=("cycle", "channels"))
+    cycle = excinfo.value.diagnostic.details["cycle"]
+    assert list(excinfo.value.diagnostic.details["channels"]) == ["ToNorth", "ToSouth"]
+    assert len(cycle) >= 4 and len(cycle) % 2 == 0
+    assert sum(1 for edge in cycle if edge["kind"] == "channel") == len(cycle) // 2
+    assert {edge["from"]["channel"] for edge in cycle} == {"ToNorth", "ToSouth"}
+    # the order M4 actually builds is the one that is acyclic — that is `test_M10_w2_acyclic`
+    assert sc.acyclicity(w2_plan()) is None
+
+
+@pytest.mark.fr("FR-M10", "FR-M4")
+@pytest.mark.parametrize("T", [4, 5])
+def test_M10_w2_acyclic(T):
+    """No SCC of W2's real plan contains a channel edge, for either parity of `T` (§7).
+
+    With `[PUT_n, PUT_s, GET_n, GET_s]` the only outgoing edges of a get are program-order edges
+    to later compute, and the loop back edge is `StructuralBack` and excluded. The put→get edges
+    themselves are FIFO-paired (`m4_selfcheck._pairs`): pairing a *later* put with an *earlier*
+    get is a dependency no execution has, and it is what the unroll-by-two would otherwise
+    manufacture out of a protocol §3.7.2 itself calls acyclic.
+    """
+    plan = w2_plan(T=T)
+    nodes, edges = sc.graph(plan)
+    assert sc.acyclicity(plan) is None
+    channel_edges = [e for e in edges if e.kind == "channel"]
+    assert channel_edges, "a halo with no channel edge would make this vacuous"
+    components = [c for c in sc._tarjan(nodes, edges) if len(c) > 1]
+    assert components == [], components
+    # every halo put is paired with exactly one get, and it is the one at the same phase
+    pairs = [(e.src.site, e.dst.site) for e in channel_edges
+             if e.src.site.startswith(("ToNorth", "ToSouth"))]
+    assert len(pairs) == 2 * (2 + T % 2)
+    assert all(len({src for src, _ in pairs if _ == dst}) == 1 for _, dst in pairs)
 
 
 @pytest.mark.fr("FR-M10")
@@ -309,10 +452,26 @@ def test_M4_names_and_marker():
 def test_P3_dma_inbound():
     """Three circuit-switched inbound channels on one PE is an error naming the physical budget.
 
-    The LLD's row is W2 at `PI = 4`; W2's own plan lands at P4, so the fixture is the synthetic
-    halo at the same extent — `UIn` plus both ghost gets on the first interior PE, which is the
-    shape `aircc` is measured to fail on (`'aie.connect' op … TileID(1, 2) targets same dst`).
+    §7's row is W2 at `PI = 4`, and it is now the **real** plan: `m4.plan` runs `self_check` on
+    its own result, so `w2_legal.legal(target, T=4, PI=4)` never leaves M4. The interior PE `(1,)`
+    names `UIn` plus both ghost gets, all three circuit-switched (per-column shim pressure is 1,
+    so `UIn` is not upgraded to a packet flow) — the shape `aircc` is measured to fail on with
+    `'aie.connect' op … TileID(1, 2) targets same dst` (REVIEW-round1 P-R2), twenty seconds in
+    and naming a physical tile the user has never heard of. The checker rejects it first.
     """
+    with pytest.raises(MappingError) as excinfo:
+        m4.plan(w2_legal.legal("npu1", T=4, PI=4))
+    assert_diagnostic(excinfo, code="DMA-CHANNELS", clause="grid(4)",
+                      mentions=("circuit-switched", "2 S2MM", "UIn", "ToNorth", "ToSouth", 2),
+                      details_keys=("coord", "direction", "channels", "budget", "count"))
+    details = excinfo.value.diagnostic.details
+    assert (tuple(details["coord"]), details["direction"]) == ((1,), "inbound")
+    assert (sorted(details["channels"]), details["budget"], details["count"]) == (
+        ["ToNorth", "ToSouth", "UIn"], 2, 3)
+    assert sorted(details["circuit_switched"]) == sorted(details["all_channels"])
+    assert m4.plan(w2_legal.legal("npu1", T=4, PI=2)) is not None      # PI = 2 is accepted
+
+    # the synthetic stand-in, kept: it is the same rule with no protocol builder behind it
     excinfo = raises(dma_three_inbound.plan(PI=4))
     assert_diagnostic(excinfo, code="DMA-CHANNELS", clause="grid(4)",
                       mentions=("circuit-switched", "2 S2MM", "UIn", "ToNorth", "ToSouth", 2),

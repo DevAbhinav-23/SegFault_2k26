@@ -120,19 +120,20 @@ def test_I_pingpong_transform(tmp_path):
 
 
 @pytest.mark.requires_air_opt
-@pytest.mark.parametrize("workload", ["w1", "w3"])
+@pytest.mark.parametrize("workload", ["w1", "w2", "w3"])
 @pytest.mark.fr("FR-E5")
 def test_I_broadcast_count(tmp_path, workload):
     """R-04's tripwire: declaring `broadcast_shape` bypasses the detector (D-4, VF §S9).
 
     **Measured 0** on our emitted W1 (`03-lld-M5-emitter.md` §3.8, finding N-8) and, for the
     same reason, on W3 — `QIn` carries `broadcast_shape = [4]`, so the pass has nothing left to
-    derive. If either number ever changes, record the new one: it means
-    `air-broadcast-detection` now walks something we emit, and the reason belongs in the commit
-    message, not in a patched expectation.
+    derive. W2's 0 has a different reason and is worth having: **no** W2 channel is a broadcast
+    at all, so the pass has nothing to find rather than nothing left to find. If any number ever
+    changes, record the new one: it means `air-broadcast-detection` now walks something we emit,
+    and the reason belongs in the commit message, not in a patched expectation.
     """
     _require_air_opt()
-    module = {"w1": w1_module, "w3": w3_module}[workload](tmp_path)
+    module = {"w1": w1_module, "w2": w2_module, "w3": w3_module}[workload](tmp_path)
     facts = m6.ir_facts(str(module), "npu1", ["broadcast_pattern_count"], workdir=tmp_path)
     assert facts["broadcast_pattern_count"] == 0
     assert facts["_pipeline_broadcast"] == m6.PIPELINES["broadcast"].format(target="npu1")
@@ -175,3 +176,160 @@ def test_I_facts_golden_w3(tmp_path):
     assert facts["cascade_channels"] == 0, "a wavefront has no npu_cascade channel"
     assert sum(facts["lock_init_histogram"].values()) > 0
     assert_golden("w3.base.npu1.ir_facts.json", facts, kind="json")
+
+
+# --------------------------------------------------------------------------------------------
+# W2 — the halo exchange, and experiment **E1** run on our own module. Added by B at P5.
+# --------------------------------------------------------------------------------------------
+
+
+def w2_module(tmp_path: Path, target: str = "npu1") -> Path:
+    """W2's emitted module, on disk, which is what `air-opt` reads."""
+    from spatial import m4_mapping as m4, m5_emit
+    from tests.fixtures.mappings import w2_legal
+
+    path = tmp_path / f"w2.base.{target}.air.mlir"
+    path.write_text(m5_emit.emit(m4.plan(w2_legal.legal(target)), target).mlir, encoding="utf-8")
+    return path
+
+
+W2_FACTS = ("broadcast_pattern_count", "pingpong_unroll", "lock_init_histogram")
+"""What §3.8 has to say about a halo: no derived broadcast (nothing carries `broadcast_shape`),
+no ping-pong (`DEPTH` is 0 for the `cur`/`next` pair, so there is no candidate loop — D-5's
+second meaning, R-W2-4), and the lock inits `air-to-aie` allocated."""
+
+_DEF = re.compile(r"^%([\w.]+) = ([\w.]+)(?: async)?\s*(?:\[([^\]]*)\])?")
+_YIELD = re.compile(r"^scf\.yield %([\w.]+)")
+_SITE = re.compile(r"^%[\w.]+ = air\.channel\.(put|get) async\s*(?:\[[^\]]*\])?\s*@(\w+)")
+
+
+class _Flow:
+    """The token-dependency graph of one `air-opt -air-dependency` module.
+
+    MLIR prints SSA names **per region**, so `%57` inside one `scf.if` and `%57` inside the next
+    are different values; a flat name table would fuse a put's token with a get's and make the E1
+    check answer a different question. Names are therefore resolved lexically — innermost region
+    first — and every definition gets a unique id.
+
+    A token reaches a consumer either through that consumer's own dependency list or through an
+    `scf.if` result: a guarded put yields its token out of the region, so whoever takes the
+    result takes the put's. `scf.for` yields are deliberately **not** followed: that edge is the
+    loop-carried one, and E1's question is about one iteration.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.dependents: dict[int, set[int]] = {}
+        self.sites: list[tuple[str, str, int, list[int]]] = []
+        self._scopes: list[tuple[dict[str, int], int | None]] = [({}, None)]
+        self._next = 0
+        for raw in text.splitlines():
+            self._line(raw.strip())
+
+    def _resolve(self, name: str) -> int:
+        for names, _result in reversed(self._scopes):
+            if name in names:
+                return names[name]
+        return -hash(name) % (1 << 30)             # a block argument: a key, never a target
+
+    def _define(self, name: str) -> int:
+        self._next += 1
+        self._scopes[-1][0][name] = self._next
+        return self._next
+
+    def _line(self, line: str) -> None:
+        if line.startswith("}") and len(self._scopes) > 1:
+            carried = self._scopes.pop()[1]        # `} else {` re-opens the same scf.if
+            if line.endswith("{"):
+                self._scopes.append(({}, carried))
+                return
+        yielded = _YIELD.match(line)
+        if yielded and self._scopes[-1][1] is not None:
+            self.dependents.setdefault(self._resolve(yielded.group(1)),
+                                       set()).add(self._scopes[-1][1])
+        site = _SITE.match(line)
+        defined = _DEF.match(line)
+        dependencies = [self._resolve(name)
+                        for name in re.findall(r"%([\w.]+)", defined.group(3) or "")
+                        ] if defined else []
+        result = self._define(defined.group(1)) if defined else None
+        if site and result is not None:
+            self.sites.append((site.group(1), site.group(2), result, dependencies))
+        for dependency in dependencies:
+            self.dependents.setdefault(dependency, set()).add(result)
+        if line.endswith("{"):
+            self._scopes.append(({}, result if defined and defined.group(2) == "scf.if"
+                                 else None))
+
+    def reachable(self, seeds: list[int]) -> set[int]:
+        """Every value transitively derived from one of `seeds`."""
+        out: set[int] = set()
+        frontier = list(seeds)
+        while frontier:
+            for consumer in self.dependents.get(frontier.pop(), ()):
+                if consumer not in out:
+                    out.add(consumer)
+                    frontier.append(consumer)
+        return out
+
+
+@pytest.mark.requires_air_opt
+@pytest.mark.fr("FR-M4")
+def test_I_w2_no_put_get_token_edge(tmp_path):
+    """**Experiment E1, on our own module**: no halo get waits on a halo put's token.
+
+    `hackathon/HANDOFF.md`'s recipe: run `air-opt -pass-pipeline='builtin.module(air-dependency)'`
+    and check that no token edge joins a PE's put to its own get. That is what makes the
+    put-before-get order of §3.6.1 safe rather than a rendezvous — a token from the puts into the
+    gets would serialise the exchange and reintroduce exactly the deadlock VF §C cleared it of,
+    and `air.api` offers no asynchronous form to select (B-P12), so the safety rests entirely on
+    what this pass builds.
+
+    The check is mechanical: taint every value transitively derived from a halo put's token —
+    through dependency lists and through the `scf.if` result its `scf.yield` feeds — and assert
+    no halo get's dependency list names a tainted value. A *negative* cannot be built through
+    the plan: `ChannelSite.depends_on` reaches `air.api` as `dependency=`, which is validated and
+    then unused by `_emit` (B-P12), so the puts and the gets are emitted identically and this is
+    a measurement of the **lowering**, which is exactly what E1 asks about.
+    """
+    _require_air_opt()
+    out = tmp_path / "dependency.mlir"
+    pipeline = "builtin.module(air-dependency)"
+    m6.verdict(m6.invoke([m6.tool("air-opt"), w2_module(tmp_path),
+                          f"-pass-pipeline={pipeline}", "-o", out], cwd=tmp_path))
+    flow = _Flow(out.read_text(encoding="utf-8"))
+
+    halo = ("ToNorth", "ToSouth")
+    puts = [s for s in flow.sites if s[0] == "put" and s[1] in halo]
+    gets = [s for s in flow.sites if s[0] == "get" and s[1] in halo]
+    assert len(puts) == len(gets) == 4, flow.sites   # two links x two phases, unrolled by two
+    assert len(flow.sites) == 15, "2 UIn puts, 1 UIn get, 8 halo, 2 UOut puts, 2 UOut gets"
+    assert all(dependencies for _kind, _channel, _result, dependencies in gets), \
+        "a get with no dependency at all would make this vacuous"
+
+    tainted = flow.reachable([result for _kind, _channel, result, _deps in puts])
+    assert len(tainted) >= 2 * len(puts), (
+        "each put's token should reach at least its air.wait_all and its scf.if result; "
+        "a taint that stops at the put means the walk is not following anything")
+    for _kind, channel, result, dependencies in gets:
+        assert not set(dependencies) & tainted, (
+            f"a {channel} get waits on a value derived from a halo put's token — "
+            f"E1's rendezvous, which VF §C's verdict says the lowering does not build")
+
+
+@pytest.mark.requires_air_opt
+@pytest.mark.fr("FR-E5", "FR-M4", "FR-T6")
+def test_I_facts_golden_w2(tmp_path):
+    """W2's §3.8 facts, with the pipeline each came from, frozen as one small file.
+
+    `pingpong_unroll` is asserted **0** rather than omitted: `double_buffer("U")` is the explicit
+    `cur`/`next` pair (D-5's second meaning), the pair sits outside the timestep loop, and
+    `isPingPongCandidate` therefore has no candidate loop to label. A number appearing here later
+    would mean the pass started labelling something we did not ask it to.
+    """
+    _require_air_opt()
+    require_pin()
+    facts = m6.ir_facts(str(w2_module(tmp_path)), "npu1", W2_FACTS, workdir=tmp_path)
+    assert facts["pingpong_unroll"] == 0, "the cur/next pair is not an isPingPongCandidate"
+    assert facts["broadcast_pattern_count"] == 0, "no W2 channel carries a broadcast_shape"
+    assert sum(facts["lock_init_histogram"].values()) > 0
+    assert_golden("w2.base.npu1.ir_facts.json", facts, kind="json")

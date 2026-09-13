@@ -451,8 +451,37 @@ def graph(plan: MappingPlan) -> tuple[tuple[Node, ...], tuple[Edge, ...]]:
        regions, and drawing one would make W1 look cyclic;
     5. the loop back edge is `StructuralBack` and is **excluded** (`AIRCorrectnessChecker.md`
        §5.3) — which is what makes the halo acyclic within a timestep.
+
+    Channel edges follow `_pairs` below, which is the **one** place this module is more precise
+    than §3.7.2's literal text; the reason is there.
     """
     return _build(plan).snapshot()
+
+
+def _pairs(puts: list[Node], gets: list[Node]) -> Iterator[tuple[Node, Node]]:
+    """Which put feeds which get on one `(channel, concrete index)` — FIFO order where it holds.
+
+    §3.7.2 writes the channel edge as *"for every put node and every get node whose (channel,
+    concrete index) match, a directed edge put → get"*. That all-pairs rule over-approximates a
+    channel, which is a **FIFO**: the k-th get receives the k-th put and waits on that one, not
+    on every put the index will ever see. The over-approximation is harmless while one body
+    holds one transfer per index, and it is not harmless once `swap_loop` unrolls a two-phase
+    protocol: W2's own halo then reports a four-edge cycle
+    `put_n(phase 1, PE 1) → get_n(phase 0, PE 0) → put_s(phase 1, PE 0) → get_s(phase 0, PE 1)`
+    built entirely out of edges that pair a *later* put with an *earlier* get — a dependency no
+    execution has. §3.7.2's own worked argument ("no path leads back to a put") is made
+    **within a timestep**, and the unroll is what puts two timesteps in one body.
+
+    So: when both sides have the same number of nodes and each side is one coordinate's own
+    program order, the k-th put is zipped to the k-th get — the exact semantics, and strictly
+    fewer edges. Otherwise (several producers into one index, or a body shape that splits one
+    side and not the other, as W3's guarded `WestIn` does) the pairing is not defined and the
+    all-pairs rule stands. Recorded in `design/PROGRESS-B.md`, phase P5.
+    """
+    if (len(puts) == len(gets) and len({node.coord for node in puts}) <= 1
+            and len({node.coord for node in gets}) <= 1):
+        return iter(zip(puts, gets))
+    return ((put, get) for put in puts for get in gets)
 
 
 def _build(plan: MappingPlan) -> _Graph:
@@ -467,9 +496,8 @@ def _build(plan: MappingPlan) -> _Graph:
             continue
         plan_channel = next(c for c in plan.channels if c.name == channel)
         for destination in fanout(index, plan_channel.size, plan_channel.broadcast_shape):
-            for put in nodes:
-                for get in out.ends.get((channel, destination, "get"), ()):
-                    out.edge(put, get, "channel")
+            for put, get in _pairs(nodes, out.ends.get((channel, destination, "get"), [])):
+                out.edge(put, get, "channel")
     return out
 
 

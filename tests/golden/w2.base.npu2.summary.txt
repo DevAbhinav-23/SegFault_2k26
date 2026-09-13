@@ -1,0 +1,11 @@
+U: stationary (declared)
+U: stationary (spatial), resident for the whole run
+herd: logical (2,) physical (2,) repeats (1,)
+reduction (tiled axes): R_time = {}, R_space = {}
+  cur (10, 16) f32 = 640 B
+  next (10, 16) f32 = 640 B
+L1: 1280 of 65536 bytes
+  ToNorth size=(1,)
+  ToSouth size=(1,)
+  UIn size=(2,)
+  UOut size=(2,)

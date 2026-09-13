@@ -1066,3 +1066,219 @@ another wheel; that the packet/circuit split holds off the pin (R-19/R-21); that
 a herd rank of 2, more than one `FORWARD` row, a non-unit row step, an east-side overhang or a
 row span other than 2 works — each raises `NotImplementedError` naming the phase rather than
 guessing; W2's and W1-flip's real plans (neither builder exists yet).
+
+---
+
+# Phase P5 — W2, the Jacobi halo exchange, end to end (gate G4)
+
+*Person B, 2026-09-13. Branch `role-b`. M4's halo protocol (§3.6.1), the `cur`/`next` pair with
+unroll-by-two and the odd-`T` peel, every plane drained, the `PI = 4` `DMA-CHANNELS` negative on
+the real plan, goldens on both targets, `aircc`, experiment **E1** on our own module, and the
+interpreter against a two-loop numpy Jacobi. **Not pushed** — the architect verifies and pushes.*
+
+## Landed
+
+| # | What | Where |
+|---|---|---|
+| 1 | **`strip_geometry`** — the `Strip` a halo needs, derived rather than tabulated: which array dim is the timestep (the `sequential` axis, whose write offset `+1` against read offsets `0` is what makes the pair a pair), which is the exchanged dim (the placed axis the clause names), the owned extent, the per-dim halo from the `WindowClause`, and the L1 shape `[owned + 2·halo]` per kept dim. `(10, 16)` falls out of `HS = 8`, `halo = 1` and `W = 16`; **no W2 literal shape anywhere**. Every shape it cannot build raises `NotImplementedError` naming the phase, or `PROTOCOL-UNSUPPORTED` naming the clause | `spatial/m4_mapping.py` |
+| 2 | **`halo_buffers`** — `cur`/`next`, both carrying `operand="U"`, so §5.6 invariant 5 charges them against `LegalMapping.l1_bytes`: `1280 == 1280`, no protocol buffer added. Neither is a ping-pong candidate (R-W2-4) | same |
+| 3 | **`halo(...)`** — four channels, the segment body (`pi_bundle` `UIn` puts, the herd marker, `pi_bundle` × `t_drain` `UOut` gets) and the herd body (two allocs, the `UIn` get, the seed copy, the `swap_loop` over `t`). `swap_loop` is reused from P4 unchanged, which is what it was factored out for | same |
+| 4 | **`_in_strip`** — the strip is rank 2 where the access is rank 3: the timestep offset picks the buffer (`0` → src, `+1` → dst) and every other dim is the access's index minus the staged slab's origin, so `tx·HS` cancels and the ghost row shifts the result by the halo. The mirror of P4's `_in_band` | same |
+| 5 | **`_pairs`** — channel edges are FIFO-paired where the pairing is defined (below) | `spatial/m4_selfcheck.py` |
+| 6 | **`_site` takes `guard` / `is_async` / `depends_on`** — the halo's boundary puts are `is_async=True` and its ghost gets keep `depends_on=()` | `spatial/m4_mapping.py` |
+| 7 | **`wavefront_channel_name` → `staging_channel_name`** — W2's `UIn`/`UOut` follow the same `<Operand>In`/`<Operand>Out` rule as W3's `QIn`/`RIn`/`SOut`, so the name no longer says "wavefront" | same |
+| 8 | **42 new tests** in the default run, two more `slow`, and nine new goldens (below) | `tests/` |
+
+## The one substantive deviation: **the swap pair is seeded, not just `cur`**
+
+§3.6.1 stages plane `lo` into `cur` alone and says so. §6.3's coverage paragraph then says of the
+drain that *"the value written back is the one that was staged in, so the L3 image equals the
+oracle everywhere"* — a claim about **every** drained plane. The planes alternate between `cur`
+and `next`, and the drain puts the strip **whole** (all `W` columns, §6.3's own superset
+sentence), so both strips must carry the staged read-only boundary. `next` is never a `get`
+target. Three values are therefore undefined without a seed:
+
+* `next[:, 0]` and `next[:, W-1]` — the Dirichlet **columns**, which the update never writes
+  (`j` runs `1..W-1`) and no exchange touches;
+* PE `0`'s `next[0, :]` and PE `PI-1`'s `next[HS+1, :]` — the domain-edge **ghost rows**, whose
+  guards (`tx > 0`, `tx < PI-1`) are false exactly there.
+
+With them undefined the plan computes the Dirichlet boundary as zero on every second plane and
+as plane 0's value on the others, and the drain writes that alternation into L3 — so no oracle
+of either reading matches, and §6.3's sentence is false as written. The plan therefore carries a
+`StoreNode` copy `next[i1,j] = cur[i1,j]` over the whole strip, immediately after the `UIn` get:
+the same device the accumulator zeroing (§6.1) and the cascade accumulate (§6.2) already use for
+a node no kernel statement corresponds to. `UIn` stays **1 put / 1 get** per index, which is what
+§7's `test_M4_balanced` row asks for, and the herd body gains one node. Errata are in
+`03-lld-M4-mapping.md` §3.6.1 and §6.3 and in `03-lld-M5-emitter.md` §6.3;
+`test_M4_halo_seeds_both_strips` is the test, and `test_sem_compute_nodes_w2` is what would fail
+without it.
+
+## The second deviation: **P2b channel edges are FIFO-paired**
+
+§3.7.2 writes the channel edge as *"for every put node and every get node whose (channel,
+concrete index) match … a directed edge put → get"*. On W2's real plan that rule reports a cycle:
+
+```
+put_n(phase 1, PE 1) --channel--> get_n(phase 0, PE 0) --program--> put_s(phase 1, PE 0)
+                     --channel--> get_s(phase 0, PE 1) --program--> put_n(phase 1, PE 1)
+```
+
+Every channel edge in it pairs a **later** put with an **earlier** get, which a FIFO never does:
+the k-th get receives the k-th put and waits on that one. The all-pairs rule is an
+over-approximation that is harmless while one body holds one transfer per index and stops being
+harmless once `swap_loop` puts two timesteps in one body — and §3.7.2's own argument that the
+halo is acyclic is made *within a timestep*, which is the framing the unroll breaks.
+
+`_pairs` therefore zips the k-th put to the k-th get **when the pairing is defined** — both sides
+the same number of nodes, each side one coordinate's own program order — and falls back to
+all-pairs otherwise (several producers into one index; a body shape that splits one side and not
+the other, which is W3's guarded `WestIn`: one segment put node against two herd get nodes). It
+is strictly fewer edges, so it cannot turn a cyclic plan acyclic by accident anywhere the pairing
+does not apply, and where it does apply it is the exact semantics. The reversed halo still raises
+`CHANNEL-CYCLE` on both the synthetic fixture and W2's real plan
+(`test_M10_cycle_rejected`), and W1's, W3's and the corrupt corpus's verdicts are all unchanged.
+
+## The `PI = 4` diagnostic, verbatim
+
+```text
+DMA-CHANNELS: PE [1] needs 3 circuit-switched inbound DMA channels (ToNorth, ToSouth, UIn) but
+an AIE2 core tile has 2 S2MM — a budget of 2
+  in clause: grid(4)
+  fix:       shrink the herd so fewer neighbours meet at one PE, or stage fewer operands from
+             L3: grid(4) puts 3 inbound flows on PE [1]
+  details:   coord=(1,), direction='inbound', channels=('ToNorth','ToSouth','UIn'), count=3,
+             budget=2, circuit_switched=('ToNorth','ToSouth','UIn'),
+             all_channels=('ToNorth','ToSouth','UIn')
+```
+
+It is raised from inside `m4.plan`, so `w2_legal.legal(target, T=4, PI=4)` never produces a plan
+at all. `aircc` is **measured** to fail on this shape (`'aie.connect' op … TileID(1, 2) targets
+same dst`, REVIEW-round1 P-R2), so the failing `aircc` was **not** re-run this phase: the checker
+rejects first and that is the point of the check. Per-column shim pressure for the inbound
+direction is 1 (`UIn` alone), so `UIn` is not auto-upgraded to a packet flow and all three are
+circuit-switched — which is why this is an error and W3's three inbound channels are a warning.
+
+## `aircc`, `air-opt` and `ir_facts` results
+
+| target | command | exit | `error:` lines | wall |
+|---|---|---|---|---|
+| npu1 | `aircc --device npu1 --output-format=none` | 0 | 0 | 0.23 s |
+| npu2 | `aircc --device npu2 --output-format=none` | 0 | 0 | 0.22 s |
+| npu1 | `air-opt -pass-pipeline='builtin.module(air-dependency)'` | 0 | 0 | < 0.1 s |
+
+Both runs used a scratch `--tmpdir` and `cwd` outside the repository, one at a time. The lowered
+design is **all circuit-switched on both targets**: 6 `aie.flow`, 0 `aie.packet_flow` —
+`shim_0_0 → tile_0_2 DMA:0` and `shim_1_0 → tile_1_2 DMA:0` (`UIn`), the two reverse flows on
+DMA:0 (`UOut`), and `tile_1_2 → tile_0_2 DMA:1` / `tile_0_2 → tile_1_2 DMA:1` (`ToNorth`,
+`ToSouth`). Every core sits at exactly 2 S2MM and 2 MM2S, which is §3.8's prediction measured.
+
+`ir_facts` for W2/npu1: `broadcast_pattern_count = 0` (no W2 channel declares a
+`broadcast_shape`, so the detector has nothing to *find* rather than nothing *left* to find),
+`pingpong_unroll = 0` (the `cur`/`next` pair sits outside the timestep loop, so
+`isPingPongCandidate` has no candidate loop — D-5's second meaning), and
+**`lock_init_histogram = {"0": 8, "1": 2, "2": 6}`** — 16 locks over two cores. Cross-checked:
+the `PIPELINES["aie"]` figure and `aircc`'s own `air_project/aie.w2.base.npu1.air.mlir` are
+identical.
+
+## Experiment **E1**, run on our own module
+
+`air-opt <w2 npu1 module> -pass-pipeline='builtin.module(air-dependency)'`, then a mechanical
+walk of the token graph (`test_I_w2_no_put_get_token_edge`, `requires_air_opt`). **Verdict: no
+token edge joins a PE's put to its own get.** Every one of the eight halo ops takes the same
+dependency the pass gives the whole timestep:
+
+```mlir
+%14 = scf.for %arg11 = %c0_12 to %c4_13 step %c2_14 iter_args(%arg12 = %13) -> (!air.async.token) {
+  %18 = scf.if %16 -> (!air.async.token) {
+    %57 = air.channel.put async [%arg12]  @ToNorth[%56] (%results[1, 0] [1, 16] [16, 1]) ...
+    %58 = air.wait_all async [%57]  {id = 6 : i32}
+    scf.yield %58 : !air.async.token
+  } else { ... }
+  ...
+  %26 = scf.if %24 -> (!air.async.token) {
+    %57 = air.channel.get async [%arg12]  @ToNorth[%56] (%results[9, 0] [1, 16] [16, 1]) ...
+```
+
+Phase 0's four ops all take `%arg12`, the loop's iter-arg token — the state **before** the
+timestep — and phase 1's all take `%32`, the token of phase 0's compute nest. The `scf.if`
+results the puts yield (`%18`, `%22`, `%38`, `%42`) are **dead**: nothing consumes them. The
+mechanical form of that: taint everything transitively derived from a halo put's token (through
+dependency lists, and through the `scf.if` result its `scf.yield` feeds — `scf.for` yields are
+deliberately not followed, that edge being the loop-carried one) and assert no halo get's
+dependency list names a tainted value. The taint is 8 values; the gets' dependency lists are
+`{%arg12, %32}`; the intersection is empty. MLIR prints SSA names **per region**, so the walk
+resolves names lexically and gives every definition a unique id — a flat name table fuses the
+`%57` of one `scf.if` with the `%57` of the next and answers a different question.
+
+A *negative* cannot be constructed through the plan: `ChannelSite.depends_on` reaches `air.api`
+as `dependency=`, which is type-validated and then unused by `_emit` (**B-P12**), so the puts and
+the gets are emitted identically and E1's safety rests entirely on this lowering. That is
+precisely what the test measures, and the non-vacuity guard is that each put's token is asserted
+to reach at least its `air.wait_all` and its `scf.if` result.
+
+## The probe comparison (`vendor/probes/q/pi2/w2_pi2.py`, regenerated and lowered this session)
+
+| fact | ours | probe `w2_pi2` | why |
+|---|---|---|---|
+| `aie.flow` (circuit) | **6** | **6** | **byte-identical**, tile for tile and DMA channel for DMA channel |
+| `aie.packet_flow` | **0** | **0** | identical: nothing multiplexes at `PI = 2` |
+| `aie.core` / tiles | 2 / `tile_0_2`, `tile_1_2` | 2 / same | identical |
+| `air.channel @` | 4 — `ToNorth[1]`, `ToSouth[1]`, `UIn[2]`, `UOut[2]` | 4, same names and sizes | the `size=[PI-1]` link convention is the probe's own |
+| `scf.if` | **8** | **8** | identical: four guarded sites × two unrolled phases |
+| `air.channel.get` | 7 | 7 | identical |
+| `air.channel.put` | **8** | **7** | ours drains **every** timestep (G-10); the probe puts the strip once after the loop |
+| `scf.for` | **9** | **5** | +2 for the `next` seed copy, +2 for the per-PE plane drain (`air.sequential(0, T)`); the probe drains with no loop at all |
+| `arith.addf` | **8** | **6** | the kernel's **five**-point sum against the probe's four-point |
+| `arith.mulf` | 2 | 2 | identical — `0.2` against the probe's `0.25` |
+| `memref.alloc` | 2 | 2 | identical |
+| `aie.lock` inits | `{0: 8, 1: 2, 2: 6}` | `{0: 8, 1: 4, 2: 4}` | 16 locks each; ours allocates more two-slot producers because it drains a plane per timestep |
+| `tensors` | 1 — `U [5,18,16]` | 2 — `U [16,16]`, `Uout [16,16]` | RULING 1: one rank-3 parameter, read and written, is the kernel's L3 interface |
+
+The physical realisation is the probe's exactly; every difference is a difference in the
+**program** — a five-point stencil against a four-point one, a per-timestep drain against a
+single one, a seeded pair against an unseeded one — and each is a fact the probe got wrong for
+our purposes rather than a routing risk.
+
+## Readings taken, where the documents disagree
+
+| # | Reading | Why |
+|---|---|---|
+| 1 | **The update nest is `i1 ∈ [0, HS)` with `dst[i1+1, j]`**, not `i (1..HS+1)` with `dst[i,j]` | The brief gives both the bound `1..HS+1` and the subscripts `dst[i1+1, j]`, which are inconsistent; §6.3 gave the other pair. `_compute_nest`'s rule for a tiled axis is `lo = 0, hi = <tile extent>` and `l1_subscripts` then adds the halo back, so the machinery can only produce the first form. Same rows either way. Erratum in §6.3. |
+| 2 | **`t_drain` is `air.sequential`, `pi_bundle` is unrolled** (ruling R-W2-1) | `LOOP_KIND`: `p` is a channel bundle index, `t` is not. M5 §6.3 lines 21-23 drew both as Python loops, the same slip §6.4 had for W3. Erratum in M5 §6.3. |
+| 3 | **The `w2.odd` variant is a `plan.json` golden only** | The `T = 5` module differs from `base` by the peeled tail alone, which `test_E_peel_is_plan_driven` asserts on the text; a second module golden would freeze the same fact twice. `06-interfaces.md` §8 carries the `<variant>` erratum. |
+| 4 | **W2's npu1 and npu2 AIR texts are byte-identical** | `physical_herd` is `(2,)` on both (2 divides both caps) and `build(target=)` stamps nothing into `str(module)`. Both goldens are kept, as for W3: two identical files record the fact, and a wheel that starts stamping the device shows up as a diff. The two `plan.json` goldens do differ, by `schedule.target`. |
+| 5 | **The peeled `STEP`'s update nest keeps `LoopPlan.depth = 1`** although it now sits at herd-body top level | It is built by the same `trip` closure as an in-loop one, and W3's peel has carried the same since P4. `depth` is recorded and never emitted (`06-interfaces.md` §5.5), so this is cosmetic; changing it would churn W3's plan golden for no behaviour. Asserted explicitly in `test_M4_odd_T_peel` so it is a decision rather than an accident. |
+| 6 | **The oracle carries the Dirichlet boundary forward** | `02-hld.md` §7.2 calls rows `0`/`H+1` and columns `0`/`W-1` the *read-only* Dirichlet boundary. The one-array kernel text never copies them into plane `t+1`, so a literal transcription would decay them to zero after plane 1 — and then §6.3's "the value written back is the one that was staged in" would be false. The constant-boundary reading is the only one consistent with both, and it is what the seeded pair computes. |
+
+## Verified (command → result)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `.venv/bin/python -m pytest` | **557 passed** (was 515), 9 deselected, 6.3 s |
+| 2 | the same at `PYTHONHASHSEED=1` and `=12345` | 557 passed each |
+| 3 | `.venv/bin/python -m pytest -m slow` | **9 passed** (was 7: `test_W2_aircc_none[npu1]`, `[npu2]` are new) |
+| 4 | `pytest --update-goldens` | 9 new goldens; `git diff --stat tests/golden` lists **only** `w2.*` files, so every W1 and W3 golden is byte-identical before and after |
+| 5 | the interpreter against the two-loop numpy Jacobi, `default_rng(0)`, both targets, `T = 4` and `T = 5` | **max abs error 0.0** in all four (`tol` is `1e-5`; the plan's left-nested association happens to match the oracle's, so the slack is unused). No deadlock: the round-robin scheduler makes put-before-get progress at every trip |
+| 6 | the boundary assertions | columns `0` and `W-1` of rows `1..H` of every drained plane equal plane 0's; rows `0` and `H+1` of planes `1..T` stay zero (the drain covers rows `1..H` only); plane 0 is never written back |
+| 7 | `m4.plan(w2_legal.legal(t, T=4, PI=4))` | `DMA-CHANNELS` on both targets, never a plan |
+
+## Open / blockers
+
+| # | Item | Detail |
+|---|---|---|
+| **M4 §7 rows still waiting** | `test_M6_cascade_chain`, `test_M6_cascade_orientation`, `test_M11_residency_line`'s flip half, `test_E8_cascade_text` — **P6**. W2's own rows are all live now, and `test_M4_unbuilt_protocols_fail_legibly` is down to the flip. |
+| **`SWAP-PARITY` reachability** | §10's B-O6 note keeps `SWAP-PARITY` reachable through the `w2_zero_t` (`T = 0`) fixture, which is M3's and does not exist yet. M4 no longer raises it at all (the peel is built), so `test_D3_catalogue_complete` depends on M3 landing that negative. |
+| **A rank-2 halo is not built** | `ToWest`/`ToEast` beside `ToNorth`/`ToSouth` — `strip_geometry` raises `NotImplementedError` naming both pairs rather than building half of it. B-O7 (`PI ≥ 3` at all) is unchanged and out of scope. |
+| **B-P10**, **B-P12**, **B-P13**, **B-P15**, **B-P20**, **B-O8** | unchanged | — |
+
+**Not verified in this phase**: that the emitted module **computes** Jacobi on hardware — the
+interpreter interprets the **plan**, never the emitted IR (D-9), and only a device run closes that
+(the honest-limits slide is unchanged); that `air-dependency`'s token graph is what the *lock*
+lowering then does (E1's recipe checks the dependency pass, and VF §C.3's lock argument is the
+other half — neither is a device run); that `aircc`'s 0.23 s holds on another machine or wheel;
+that the seeded pair is what real hardware reads out of an uninitialised `memref.alloc` (the
+interpreter zeroes it, the device does not — which is the whole reason the seed exists);
+that a halo with `PI ≥ 3`, a rank-2 herd, a halo wider than the owned extent, a non-unit timestep
+step or more than one exchanged operand works — each raises by name rather than guessing;
+W1-flip's real plan (the cascade builder does not exist yet).

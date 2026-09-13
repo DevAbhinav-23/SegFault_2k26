@@ -1,7 +1,7 @@
 """Level G — the golden pipeline. Spec: design/04-test-plan.md §3.1, design/06-interfaces.md §8.
 
-W1 and W3. The W1-flip and W2 variants need the cascade and halo builders of M4 §3.6.3/§3.6.1,
-which land in P5/P6 (`design/PROGRESS-B.md`).
+W1, W2 and W3. The W1-flip variant needs the cascade builder of M4 §3.6.3, which lands in
+P6 (`design/PROGRESS-B.md`).
 
 A golden is valid **only for the pinned wheel** (FR-T6), so a pin mismatch **skips** every test
 here with the reason rather than failing it (§8 rule 2).
@@ -16,8 +16,8 @@ import json
 import pytest
 
 from spatial import m4_mapping as m4, m5_emit, m6_tools as m6
-from spatial.model import ToolchainError, to_json
-from tests.fixtures.mappings import w1_legal, w3_legal
+from spatial.model import Expr, ToolchainError, to_json
+from tests.fixtures.mappings import w1_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers.golden import assert_golden
 
@@ -115,3 +115,51 @@ def test_golden_w3_summary(target):
         assert line in summary.lines
     warnings = [line for line in summary.lines if line.startswith("warning: ")]
     assert len(warnings) == 4 and all("packet" in line for line in warnings)
+
+
+# --------------------------------------------------------------------------------------------
+# W2 — the halo exchange, derived by M4 and emitted by M5. Added by B at P5.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-E7", "FR-M4", "FR-K3", "FR-T6")
+def test_golden_w2(target):
+    """Gate G4's B half: `LegalMapping` → M4 → M5 → the AIR text, byte for byte, per target."""
+    require_pin()
+    plan = m4.plan(w2_legal.legal(target))
+    result = m5_emit.emit(plan, target)
+    assert_golden(f"w2.base.{target}.air.mlir", result.mlir, kind="text")
+    assert_golden(f"w2.base.{target}.plan.json", json.loads(to_json(plan)), kind="json")
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-M4", "FR-L14", "FR-T6")
+def test_golden_w2_odd(target):
+    """`w2.odd` — the `T = 5` **plan** golden, and deliberately no module golden.
+
+    `06-interfaces.md` §8's `<variant>` vocabulary gains `odd` beside `base` and `flip` (erratum,
+    2026-09-13). Only `plan.json` is frozen: the module differs from `base` by the peeled tail
+    alone, which `test_E_peel_is_plan_driven` asserts directly, so a second 300-line module
+    golden would freeze the same fact twice and diff twice whenever the emitter changes.
+    """
+    require_pin()
+    plan = m4.plan(w2_legal.legal(target, T=5))
+    assert_golden(f"w2.odd.{target}.plan.json", json.loads(to_json(plan)), kind="json")
+    assert (plan.herd_body[4].hi, plan.herd_body[4].step) == (Expr((), 4), Expr((), 2))
+    assert len(plan.herd_body) == 11, "the peeled STEP is six nodes after the loop"
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-M11")
+def test_golden_w2_summary(target):
+    """W2's summary: the delivery block of **B-P22**, the residency of R-W2-3, no warning."""
+    require_pin()
+    summary = m4.plan(w2_legal.legal(target)).summary
+    assert_golden(f"w2.base.{target}.summary.txt", "\n".join(summary.lines) + "\n", kind="text")
+    for line in ("U: stationary (declared)",
+                 "U: stationary (spatial), resident for the whole run",
+                 "L1: 1280 of 65536 bytes",
+                 "  ToNorth size=(1,)", "  ToSouth size=(1,)"):
+        assert line in summary.lines
+    assert not [line for line in summary.lines if line.startswith("warning: ")]

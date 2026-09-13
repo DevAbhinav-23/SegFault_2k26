@@ -12,14 +12,15 @@ six columns), so `numpy` is not imported either.
 **What this cut builds.** The ten passes of LLD §3.1 in their fixed order, general in the
 machinery (`TILE_SHAPE` from the `AccessMap` and the tile factors, `CLASSIFY` in `UCoord`,
 `MULTICAST_GEOMETRY`, `L3_REGION`, `LOOP_KIND`, `TENSOR_PLAN`, `RESIDENCY`, `SUMMARY`), with
-**two protocol builders**: the multicast / stationary fill-compute-drain shape of LLD §6.1, and
+**three protocol builders**: the multicast / stationary fill-compute-drain shape of LLD §6.1;
 the wavefront of §3.6.2 — one scalar get per row, one scalar put per row, three homogeneous
-channels closed by a segment-scope source and drain, and the `prev`/`cur` swap as an
-unroll-by-two-and-peel (`swap_loop`, which W2's timestep swap reuses). The halo (§3.6.1) and
-cascade (§3.6.3) builders raise `NotImplementedError` naming the phase; §3.1's `PLAN` wrapper
+channels closed by a segment-scope source and drain; and the halo of §3.6.1 — put north, put
+south, get both ghosts, every plane drained. Both swaps are the same unroll-by-two-and-peel
+(`swap_loop`), over the row axis for the wavefront and over the timestep axis for the halo. The
+cascade (§3.6.3) builder raises `NotImplementedError` naming the phase; §3.1's `PLAN` wrapper
 re-raises any non-`SpatialError` as a `MappingError` carrying it in
-`details["internal_exception"]` (§5), so an input that needs one of them fails loudly and
-legibly instead of silently producing a wrong plan.
+`details["internal_exception"]` (§5), so an input that needs it fails loudly and legibly instead
+of silently producing a wrong plan.
 
 **Determinism** (HLD §5, invariant I-7): every traversal that affects a name, an order or a
 text is `sorted(...)` on an explicit key; no `id()`, no clock, no RNG.
@@ -73,8 +74,8 @@ _PHYSICAL_CAP = {("npu1", 1): (4,), ("npu1", 2): (1, 4),
 _CLAUSE = "plan()"
 """The surface call every mapping diagnostic without a user clause of its own points at."""
 
-_LATER = ("lands in P4/P5/P6: this cut builds the LLD §6.1 fill/compute/drain and §3.6.2 "
-          "wavefront protocols only")
+_LATER = ("lands in P4/P5/P6: this cut builds the LLD §6.1 fill/compute/drain, §3.6.2 "
+          "wavefront and §3.6.1 halo protocols only")
 """Every unbuilt path carries this phrase, so an unsupported input says which phase owns it."""
 
 _BUG_FIX = ("this is a defect in the compiler, not in your program: please report it with the "
@@ -646,6 +647,8 @@ def buffer_plan(mapping: LegalMapping,
     `plan()` asserts that the body it then builds allocates them in exactly this order.
     """
     levels = {operand: _level(mapping, operand) for operand, *_rest in delivery}
+    if _exchanged(mapping) is not None:
+        return halo_buffers(mapping, delivery, herd, levels)
     if _forwarded(delivery) is not None:
         return wavefront_buffers(mapping, delivery, herd, levels)
     out = []
@@ -805,19 +808,28 @@ def loop_plan(mapping: LegalMapping,
     walked by the `p<root>_bundle` loop above (ruling **R-W3-3**; `03-lld-M5-emitter.md` §6.4
     lines 31-35 draw them as Python loops, which contradicts §3.5's `LOOP_KIND`). §6.1's
     `<root>_drain` is the PE-grid drain and does not exist on a wavefront plan.
+
+    The halo's drain walks **planes** inside the PE bundle loop, for the same reason and by the
+    same rule: `t` is not a bundle index, so `<time>_drain` is `air.sequential(lo, hi)` and only
+    `p<root>_bundle` around it is unrolled (ruling **R-W2-1**; `03-lld-M5-emitter.md` §6.3
+    lines 21-23 draw both as Python loops).
     """
     kinds: dict[str, str] = {}
     forwarded = _forwarded(delivery)
+    exchanged = _exchanged(mapping)
     for pe_dim in range(len(mapping.schedule.place)):
         kinds[bundle_name(mapping, pe_dim)] = loop_kind(bundle_name(mapping, pe_dim),
                                                         bundle_index=True)
-        if forwarded is None:
+        if forwarded is None and exchanged is None:
             kinds[drain_name(mapping, pe_dim)] = loop_kind(drain_name(mapping, pe_dim),
                                                            bundle_index=True)
     if forwarded is not None:
         axis = row_axis(mapping, forwarded[0])
         for name in (source_name(axis), row_drain_name(axis)):
             kinds[name] = loop_kind(name, bundle_index=False)
+    if exchanged is not None:
+        for axis in mapping.schedule.sequential:
+            kinds[row_drain_name(axis)] = loop_kind(row_drain_name(axis), bundle_index=False)
     for buffer in buffers:
         axis = streaming_axis(mapping, buffer.operand) if buffer.operand else None
         if axis is not None:
@@ -864,6 +876,8 @@ def channel_plan(mapping: LegalMapping,
                  herd: HerdPlan, buffers: tuple[BufferPlan, ...],
                  loops: tuple[tuple[str, str], ...]) -> tuple[ChannelPlan, ...]:
     """Every `air.channel` with its geometry and its ordered sites, sorted by name (FR-M8)."""
+    if _exchanged(mapping) is not None:
+        return halo(mapping, delivery, herd, buffers, loops)[0]
     if _forwarded(delivery) is not None:
         return wavefront(mapping, delivery, herd, buffers, loops)[0]
     for operand, kind, _along, _declared in delivery:
@@ -897,11 +911,17 @@ def channel_plan(mapping: LegalMapping,
     return tuple(sorted(out, key=lambda c: c.name))
 
 
-def _site(channel: str, kind: str, order: int, scope: str, **rest: Any) -> ChannelSite:
-    """One site, with LLD §3.1's `id` rule; this cut's sites are all plain and token-free."""
+def _site(channel: str, kind: str, order: int, scope: str, *, guard: Guard | None = None,
+          is_async: bool = False, depends_on: tuple[str, ...] = (), **rest: Any) -> ChannelSite:
+    """One site, with LLD §3.1's `id` rule.
+
+    `guard`, `is_async` and `depends_on` default to the plain token-free form every fill /
+    compute / drain and wavefront site takes; the halo's boundary puts pass `is_async=True` and
+    its ghost gets keep `depends_on=()` deliberately (§3.6.1's site order, VF §C's E1 verdict).
+    """
     return ChannelSite(id=f"{channel}.{kind}.{order}@{scope}", kind=kind, channel=channel,
-                       scope=scope, guard=None, is_async=False, depends_on=(), order=order,
-                       **rest)
+                       scope=scope, guard=guard, is_async=is_async, depends_on=depends_on,
+                       order=order, **rest)
 
 
 def _sites(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, bool], ...],
@@ -1017,13 +1037,15 @@ def protocol(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, 
     """`(segment_body, herd_body)` — the dispatch of LLD §3.1 line 7 / §3.6.
 
     The dispatch is on which clauses are present, not on which workload it is: `exchange`
-    selects §3.6.1, `forward` §3.6.2 and a non-empty `r_space` §3.6.3. This cut builds none of
-    those three, so each raises; what it does build is §6.1's fill / compute / drain shape.
+    selects §3.6.1, `forward` §3.6.2 and a non-empty `r_space` §3.6.3. The cascade still
+    raises; what this cut builds is §6.1's fill / compute / drain shape, §3.6.2's wavefront and
+    §3.6.1's halo.
     """
-    if mapping.schedule.exchanges:
-        raise NotImplementedError(
-            f"exchange({mapping.schedule.exchanges[0].operand}, ...) selects the halo protocol "
-            f"of design/03-lld-M4-mapping.md §3.6.1, which {_LATER}")
+    if _exchanged(mapping) is not None:
+        _channels, segment_body, herd_body = halo(mapping, delivery, herd, buffers, loops)
+        _check_orders(segment_body)
+        _check_orders(herd_body)
+        return segment_body, herd_body
     if _forwarded(delivery) is not None:
         _channels, segment_body, herd_body = wavefront(mapping, delivery, herd, buffers, loops)
         _check_orders(segment_body)
@@ -1316,14 +1338,16 @@ PREV, CUR, EDGE_IN, EDGE_OUT = "prev", "cur", "edge_in", "edge_out"
 """The protocol buffers §6.4 names: the row swap pair and the two edge scalars."""
 
 
-def wavefront_channel_name(operand: str, suffix: str) -> str:
-    """`QIn`, `RIn`, `SOut` — LLD §6.4's own channel table, **not** §3.5's `{a}2L1`/`{a}2L3`.
+def staging_channel_name(operand: str, suffix: str) -> str:
+    """`QIn`, `RIn`, `SOut`, `UIn`, `UOut` — §6.3/§6.4's own tables, not §3.5's `{a}2L1`.
 
     §3.5's rule names W1's channels `A2L1`/`C2L3`; §6.4 and `02-hld.md` §7.3 name every one of
-    the wavefront's six `<Name>In` / `<Name>Out`, which is the family `WestIn`/`West`/`EastOut`
-    already belongs to and is what the acceptance rows of FR-M5 and §7 name. The wavefront
-    therefore keeps §6.4's spelling; the fill/compute/drain protocol keeps §3.5's. Recorded in
-    `design/PROGRESS-B.md`, phase P4.
+    the wavefront's six `<Name>In` / `<Name>Out`, and §3.6.1's halo table names `UIn`/`UOut` by
+    the same rule — the family `WestIn`/`West`/`EastOut` already belongs to, and what the
+    acceptance rows of FR-M4, FR-M5 and §7 name. The wavefront and the halo therefore keep
+    §6.3/§6.4's spelling; the fill/compute/drain protocol keeps §3.5's. (Named
+    `wavefront_channel_name` at P4, renamed at P5 when W2's halo became its second caller;
+    recorded in `design/PROGRESS-B.md`.)
     """
     return f"{operand[:1].upper()}{operand[1:]}{suffix}"
 
@@ -1534,7 +1558,7 @@ def wavefront(mapping: LegalMapping,
     coord, pes = herd.coords[0], herd.grid[0]
     bundle = bundle_name(mapping, 0)
     source, drain = source_name(band.row_axis), row_drain_name(band.row_axis)
-    out_name = wavefront_channel_name(band.operand, "Out")
+    out_name = staging_channel_name(band.operand, "Out")
     names = compute_names(mapping)
     inner = names[band.col_axis]
     bindings = dict(mapping.kernel.bindings)
@@ -1604,7 +1628,7 @@ def wavefront(mapping: LegalMapping,
     for operand, how, along, _declared in staged:                    # §3.5's CHANNEL_PLAN rows
         size, broadcast = (multicast_geometry(herd.grid, PE_AXIS_NAME.index(along))
                            if how == "MULTICAST" else (herd.grid, None))
-        fill = wavefront_channel_name(operand, "In")
+        fill = staging_channel_name(operand, "In")
         geometry[fill] = (size, broadcast, _param(mapping, operand).dtype)
         top = all(extent == 1 for extent in size)
         put = _site(fill, "put", len(segment) if top else 0, "segment",
@@ -1630,7 +1654,7 @@ def wavefront(mapping: LegalMapping,
 
     herd_body: list[Any] = list(buffers)
     for operand, _how, _along, _declared in staged:
-        herd_body.append(_site(wavefront_channel_name(operand, "In"), "get", len(herd_body),
+        herd_body.append(_site(staging_channel_name(operand, "In"), "get", len(herd_body),
                                "herd",
                                indices=tuple(_var(name) for name in herd.coords),
                                buffer=by_operand[operand].name, region=EMPTY_REGION))
@@ -1653,6 +1677,383 @@ def wavefront(mapping: LegalMapping,
         (ChannelPlan(name=name, size=size, broadcast_shape=broadcast, channel_type=None,
                      chain_direction=None, dtype=dtype, sites=tuple(by_channel[name]))
          for name, (size, broadcast, dtype) in geometry.items()), key=lambda c: c.name))
+    return channels, tuple(segment), tuple(herd_body)
+
+
+# --------------------------------------------------------------------------------------------
+# §3.6.1 — the halo exchange protocol (FR-M4) — W2
+# --------------------------------------------------------------------------------------------
+
+NEXT = "next"
+"""The second half of §6.3's swap pair; `CUR` above is the first. D-5's *second* meaning:
+`double_buffer` on an exchanged operand is this explicit pair, not `isPingPongCandidate`."""
+
+HALO_CHANNELS = (("ToNorth", "ToSouth"), ("ToWest", "ToEast"))
+"""§3.1's name table: the two halo bundles per PE axis, ascending-index direction first.
+
+Index `k` of the first name means "the link PE `k+1` → PE `k`" and of the second "PE `k` →
+PE `k+1`", which is §3.6.1's table read off the `px` row. Only the `px` pair is reachable in
+this cut: a rank-2 herd would exchange along both axes at once, which `strip_geometry` rejects
+by name rather than building half of it."""
+
+
+class Strip(NamedTuple):
+    """The geometry of an exchanged operand's per-PE strip (LLD §3.6.1, §6.3).
+
+    The L1 strip is the operand's array **minus its time dim** — that dim's two-plane span is
+    the `cur`/`next` pair, not a buffer axis — with every remaining dim widened by its declared
+    halo. `dims` lists the array dims the strip keeps, in order, so `shape[k]` is the extent of
+    array dim `dims[k]`.
+    """
+
+    operand: str
+    dtype: Dtype
+    time_axis: str
+    time_dim: int
+    plane: int
+    exchange_axis: str
+    exchange_dim: int
+    halo: int
+    owned: int
+    dims: tuple[int, ...]
+    axes: tuple[str, ...]
+    halos: tuple[int, ...]
+    shape: tuple[int, ...]
+    lo: int
+    hi: int
+    pes: int
+    north: str
+    south: str
+
+
+def _exchanged(mapping: LegalMapping):
+    """The one `ExchangeClause`, or `None` — the halo dispatch of LLD §3.1 line 7."""
+    clauses = mapping.schedule.exchanges
+    if len(clauses) > 1:
+        raise NotImplementedError(
+            f"{len(clauses)} operands are exchanged "
+            f"({[clause.operand for clause in clauses]}); this cut synthesises one halo per "
+            f"plan; {_LATER}")
+    return clauses[0] if clauses else None
+
+
+def _dim_axes(mapping: LegalMapping, operand: str) -> tuple[str, ...]:
+    """The one unit-coefficient kernel axis indexing each array dim of `operand`."""
+    matrix = _access_matrix(mapping, operand)
+    out = []
+    for index, row in enumerate(matrix):
+        support = [mapping.kernel.axes[j].name for j, value in enumerate(row) if value]
+        if len(support) != 1 or row[_ucol(mapping, support[0])] != 1:
+            raise NotImplementedError(
+                f"array dim {index} of {operand!r} is indexed by {support} with coefficients "
+                f"{[v for v in row if v]}; a halo strip needs one unit-coefficient axis per "
+                f"dim; {_LATER}")
+        out.append(support[0])
+    return tuple(out)
+
+
+def strip_geometry(mapping: LegalMapping,
+                   delivery: tuple[tuple[str, str, str | None, bool], ...],
+                   herd: HerdPlan) -> Strip:
+    """The `Strip` of the one `exchange`d operand — all §3.6.1 needs to be general.
+
+    Everything is derived: which array dim is the timestep (the `sequential` axis, whose write
+    offset of `+1` against read offsets of `0` is what makes the swap a *pair*), which is the
+    exchanged dim (the placed axis the clause names), the owned extent, and the per-dim halo
+    from the `WindowClause`. `TILE_SHAPE` for the strip is `[owned + 2·halo]` per kept dim —
+    W2's `(10, 16)` — with **no** W2 literal anywhere.
+    """
+    clause = _exchanged(mapping)
+    operand = clause.operand
+    param = _param(mapping, operand)
+    text = f'exchange("{operand}", along=ax.{clause.along}, halo={clause.halo})'
+    if not param.is_written:
+        raise _fail(
+            f"{operand!r} is read-only, and the halo protocol of "
+            f"design/03-lld-M4-mapping.md §3.6.1 exchanges the boundary of the strip the "
+            f"kernel **writes**; there is nothing to exchange on a read-only operand",
+            f"drop the clause, or exchange the operand the kernel writes",
+            clause=text, operand=operand)
+    if _level(mapping, operand) != "L1":
+        raise _fail(
+            f"the exchanged operand {operand!r} does not reside in L1, so there is no strip to "
+            f"exchange", f'write reside({operand}="L1")', clause=text, operand=operand)
+    place = tuple(mapping.schedule.place)
+    if clause.along not in place:
+        raise _fail(
+            f"{clause.along!r} is not a placed axis, so no PE line carries the halo of "
+            f"{operand!r}; placed here: {list(place)}",
+            f"name a placed axis in the clause, or place {clause.along!r} with "
+            f"place(px={clause.along})",
+            clause=text, operand=operand, along=clause.along, place=list(place))
+    pe_dim = place.index(clause.along)
+    if len(herd.grid) != 1:
+        raise NotImplementedError(
+            f"the herd is rank {len(herd.grid)}; a halo on a rank-2 herd exchanges along both "
+            f"PE axes at once ({HALO_CHANNELS[0]} **and** {HALO_CHANNELS[1]}), and this cut "
+            f"synthesises the 1-D case only; {_LATER}")
+    if herd.grid[pe_dim] < 2:
+        raise NotImplementedError(
+            f"the herd has {herd.grid[pe_dim]} PE(s); a halo needs at least one link, so "
+            f"{HALO_CHANNELS[pe_dim][0]} would have extent 0; {_LATER}")
+    if _forwarded(delivery) is not None or mapping.r_space:
+        raise NotImplementedError(
+            f"the schedule combines an exchange with a wavefront or a cascade; §3.1 says the "
+            f"three write into disjoint parts of the body, but this cut builds one protocol "
+            f"per plan; {_LATER}")
+
+    axes = _dim_axes(mapping, operand)
+    exchange_axis = _root(mapping, clause.along)
+    time = [d for d, axis in enumerate(axes) if axis in mapping.schedule.sequential]
+    if len(time) != 1 or exchange_axis not in axes:
+        raise NotImplementedError(
+            f"{operand!r} is indexed by {list(axes)} with sequential axes "
+            f"{list(mapping.schedule.sequential)}; a halo strip needs exactly one timestep dim "
+            f"and one exchanged dim; {_LATER}")
+    time_dim = time[0]
+    time_axis = axes[time_dim]
+    statement = _statement(mapping)
+    bindings = dict(mapping.kernel.bindings)
+    planes = {_resolve(access.offsets[time_dim], bindings)
+              for access in statement.reads} | {_const(0)}
+    plane = _resolve(statement.target.offsets[time_dim], bindings)
+    if planes != {_const(0)} or not plane.is_constant or plane.const != 1:
+        raise NotImplementedError(
+            f"{operand!r} is written at timestep offset {plane} and read at "
+            f"{sorted(p.const for p in planes if p.is_constant)}; the swap pair holds the plane "
+            f"being computed and the one before it, and nothing else; {_LATER}")
+
+    window = next((w for w in mapping.schedule.windows if w.operand == operand), None)
+    halos = dict(zip(window.dims, window.halo)) if window is not None else {}
+    if halos.get(exchange_axis, 0) < 1:
+        raise _fail(
+            f"{operand!r} is exchanged along {exchange_axis!r} but declares no halo there, so "
+            f"there is no ghost row to fill",
+            f'declare the window: window("{operand}", dims=(...), halo=1)',
+            clause=text, operand=operand, along=clause.along,
+            window=None if window is None else list(window.dims))
+    axis = _kernel_axis(mapping, time_axis)
+    lo, hi, step = (_resolve(bound, bindings) for bound in (axis.lo, axis.hi, axis.step))
+    if not (lo.is_constant and hi.is_constant and step.is_constant and step.const == 1):
+        raise NotImplementedError(
+            f"the timestep axis {time_axis!r} runs {lo}..{hi} step {step}; a halo advances one "
+            f"plane at a time between compile-time constants; {_LATER}")
+    kept = tuple(d for d in range(len(axes)) if d != time_dim)
+    widths = tuple(halos.get(axes[d], 0) for d in kept)
+    north, south = HALO_CHANNELS[pe_dim]
+    return Strip(operand=operand, dtype=param.dtype, time_axis=time_axis, time_dim=time_dim,
+                 plane=plane.const, exchange_axis=exchange_axis,
+                 exchange_dim=axes.index(exchange_axis), halo=halos[exchange_axis],
+                 owned=_tile_extent(mapping, exchange_axis), dims=kept,
+                 axes=tuple(axes[d] for d in kept), halos=widths,
+                 shape=tuple(_tile_extent(mapping, axes[d]) + 2 * w
+                             for d, w in zip(kept, widths)),
+                 lo=lo.const, hi=hi.const, pes=herd.grid[pe_dim], north=north, south=south)
+
+
+def halo_buffers(mapping: LegalMapping,
+                 delivery: tuple[tuple[str, str, str | None, bool], ...],
+                 herd: HerdPlan, levels: dict[str, str]) -> tuple[BufferPlan, ...]:
+    """The halo's L1 plan: the `cur`/`next` swap pair, in allocation order (§6.3).
+
+    Both carry `operand`, so `06-interfaces.md` §5.6 invariant 5 charges them against
+    `LegalMapping.l1_bytes` — W2's `2 · 10 · 16 · 4 = 1280`, which M3 charged as the same
+    two-plane span. Neither is a `ping_pong_candidate`: `DEPTH` is 0 for a written operand and
+    the pair sits **outside** the timestep loop, so `isPingPongCandidate` has no candidate loop
+    to find (R-W2-4, D-5's second meaning).
+    """
+    strip = strip_geometry(mapping, delivery, herd)
+    out = []
+    for name in (CUR, NEXT):
+        out.append(BufferPlan(name=name, operand=strip.operand, level="L1",
+                              scope="herd.private", shape=strip.shape, dtype=strip.dtype,
+                              bytes=prod(strip.shape) * strip.dtype.sizeof,
+                              loop_depth=depth(mapping, strip.operand),
+                              ping_pong_candidate=ping_pong(mapping, strip.operand)))
+    for operand, _how_, _along, _declared in delivery:
+        if operand != strip.operand and levels[operand] == "L1":
+            raise NotImplementedError(
+                f"the schedule stages {operand!r} beside the exchanged {strip.operand!r}; this "
+                f"cut's halo body stages the exchanged operand only; {_LATER}")
+    return tuple(out)
+
+
+def _in_strip(strip: Strip, elements: dict[str, Expr], origins: tuple[Expr, ...],
+              subscripts: tuple[Expr, ...], bindings: dict[str, int],
+              source: str, destination: str) -> tuple[str, tuple[Expr, ...]]:
+    """`(buffer, subscripts)` for one access to the exchanged operand (§6.3's update).
+
+    The strip is rank 2 where the access is rank 3, because the **timestep** offset does not
+    index a buffer — it picks which of the two swapped buffers holds that plane: `0` is the one
+    being read, `+1` the one being written. Every other dim is the access's own index minus the
+    staged slab's origin, so the PE's `tx·HS` cancels exactly the way `l1_subscripts` cancels
+    W1's tile origin, and the ghost row shifts the result by the halo.
+    """
+    plane = _add(_substitute(_resolve(subscripts[strip.time_dim], bindings), elements),
+                 _scale(elements[strip.time_axis], -1))
+    if not plane.is_constant or plane.const not in (0, strip.plane):
+        raise NotImplementedError(
+            f"an access to {strip.operand!r} sits {plane} planes from the one being read; the "
+            f"swap pair holds two planes; {_LATER}")
+    out = tuple(_add(_substitute(_resolve(subscripts[dim], bindings), elements),
+                     _scale(origins[k], -1))
+                for k, dim in enumerate(strip.dims))
+    return (destination if plane.const else source), out
+
+
+def halo(mapping: LegalMapping,
+         delivery: tuple[tuple[str, str, str | None, bool], ...], herd: HerdPlan,
+         buffers: tuple[BufferPlan, ...], loops: tuple[tuple[str, str], ...]
+         ) -> tuple[tuple[ChannelPlan, ...], tuple[Any, ...], tuple[Any, ...]]:
+    """`(channels, segment_body, herd_body)` — the halo exchange of LLD §3.6.1 and §6.3.
+
+    Four channels: the two halo bundles at one index per **physical link**, the L3 staging fill
+    and the L3 drain. The site order inside a timestep is **not negotiable** — put north, put
+    south, get north ghost, get south ghost, both puts `is_async`, both gets `depends_on = ()` —
+    because a token from a put into its own get would serialise the exchange into a rendezvous
+    and reintroduce the deadlock VF §C's E1 verdict cleared it of.
+
+    **The pair is seeded, not just `cur`.** §3.6.1 stages plane `lo` into `cur`; §6.3's coverage
+    paragraph then says of the drain that "the value written back is the one that was staged
+    in", which is a claim about *every* plane and so about *both* buffers — the drain puts the
+    strip whole, so the read-only boundary columns and the domain-edge ghost rows of whichever
+    buffer holds plane `t+1` are written back to L3. `next` is never a `get` target, so a
+    `StoreNode` copy of the staged strip is what gives it those values; without it the boundary
+    of every second plane is whatever the alloc happened to hold, and the Dirichlet boundary is
+    not read-only at all. Recorded in `design/PROGRESS-B.md`, phase P5.
+    """
+    strip = strip_geometry(mapping, delivery, herd)
+    tensor = next(t for t in tensor_plan(mapping) if t.name == strip.operand)
+    strides = _row_major(tensor.shape)
+    coord = herd.coords[0]
+    bundle = bundle_name(mapping, 0)
+    drain = row_drain_name(strip.time_axis)
+    fill_name = staging_channel_name(strip.operand, "In")
+    out_name = staging_channel_name(strip.operand, "Out")
+    names = compute_names(mapping)
+    bindings = dict(mapping.kernel.bindings)
+    statement = _statement(mapping)
+    slab = _origins(mapping, lambda d: herd.coords[d])
+    origins = tuple(_add(slab[axis], _const(-width))
+                    for axis, width in zip(strip.axes, strip.halos))
+    local = _row_major(strip.shape)
+    exchange_k = strip.dims.index(strip.exchange_dim)
+
+    def band(start: int, size: int) -> Region:
+        """One slab of the L1 strip: `size` rows at `start` along the exchanged dim."""
+        offsets = [ZERO] * len(strip.shape)
+        sizes = list(strip.shape)
+        offsets[exchange_k], sizes[exchange_k] = _const(start), size
+        return Region(offsets=tuple(offsets), sizes=tuple(sizes), strides=local)
+
+    def l3(plane: Expr, ghost: bool) -> Region:
+        """One strip of the L3 tensor at `plane`, for the PE the bundle loop is standing on.
+
+        `ghost` is the fill: the staged slab reaches `halo` elements outside the owned box on
+        **every** dim, which is what gives `t = lo`'s first update its boundary values with no
+        prologue put. The drain is the same box narrowed to the owned extent along the exchanged
+        dim only — the strip is put back whole, so the read-only columns travel with it (§6.3's
+        coverage paragraph).
+        """
+        base = _origins(mapping, lambda _d: bundle)
+        offsets: list[Any] = [ZERO] * len(tensor.shape)
+        sizes = [1] * len(tensor.shape)
+        offsets[strip.time_dim] = plane
+        for k, dim in enumerate(strip.dims):
+            owned = not ghost and k == exchange_k
+            offsets[dim] = base[strip.axes[k]] if owned else _add(base[strip.axes[k]],
+                                                                  _const(-strip.halos[k]))
+            sizes[dim] = strip.owned if owned else strip.shape[k]
+        return Region(offsets=tuple(offsets), sizes=tuple(sizes), strides=strides)
+
+    def step(index: Expr, phase: int, order: int) -> tuple[Any, ...]:
+        """One timestep: put both boundaries, get both ghosts, update, drain the new plane."""
+        source, destination = (CUR, NEXT) if phase == 0 else (NEXT, CUR)
+        elements = {axis: (_add(slab[axis], _var(name))
+                           if _tile_factor(mapping, axis) is not None else _var(name))
+                    for axis, name in names.items()}
+        elements[strip.time_axis] = index
+
+        def rewrite(load: Load) -> Load:
+            return Load(*_in_strip(strip, elements, origins, load.subscripts, bindings,
+                                   source, destination))
+
+        target, subscripts = _in_strip(strip, elements, origins,
+                                       kernel_subscripts(mapping, statement.target), bindings,
+                                       source, destination)
+        body: tuple[Any, ...] = (StoreNode(buffer_id=target, subscripts=subscripts,
+                                           expr=_rewrite_loads(statement.expr, rewrite)),)
+        nest = [axis for axis in statement.axes if axis != strip.time_axis]
+        for position in reversed(range(len(nest))):
+            axis, name = nest[position], names[nest[position]]
+            if _tile_factor(mapping, axis) is not None:
+                low, high = ZERO, _const(_tile_extent(mapping, axis))
+            else:
+                kernel_axis = _kernel_axis(mapping, axis)
+                low, high = (_resolve(kernel_axis.lo, bindings),
+                             _resolve(kernel_axis.hi, bindings))
+            body = (LoopPlan(axis=name, lo=low, hi=high,
+                             step=_resolve(_kernel_axis(mapping, axis).step, bindings),
+                             kind=_kind(loops, name), depth=1 + position, body=body),)
+        return (
+            _site(strip.north, "put", order, "herd", indices=(_var(coord, 1, -1),),
+                  buffer=source, region=band(strip.halo, strip.halo),
+                  guard=Guard(coord=coord, relation=">", value=ZERO), is_async=True),
+            _site(strip.south, "put", order + 1, "herd", indices=(_var(coord),),
+                  buffer=source, region=band(strip.owned, strip.halo),
+                  guard=Guard(coord=coord, relation="<", value=_const(strip.pes - 1)),
+                  is_async=True),
+            _site(strip.north, "get", order + 2, "herd", indices=(_var(coord),),
+                  buffer=source, region=band(strip.owned + strip.halo, strip.halo),
+                  guard=Guard(coord=coord, relation="<", value=_const(strip.pes - 1))),
+            _site(strip.south, "get", order + 3, "herd", indices=(_var(coord, 1, -1),),
+                  buffer=source, region=band(0, strip.halo),
+                  guard=Guard(coord=coord, relation=">", value=ZERO)),
+            body[0],
+            _site(out_name, "put", order + 5, "herd", indices=(_var(coord),),
+                  buffer=destination, region=band(strip.halo, strip.owned)),
+        )
+
+    segment: list[Any] = [_bundle_nest(
+        mapping, herd.grid, lambda d: bundle_name(mapping, d), loops, 0,
+        (_site(fill_name, "put", 0, "segment", indices=(_var(bundle),), buffer=strip.operand,
+               region=l3(_const(strip.lo), True)),))[0]]
+    segment.append(herd)
+    segment.append(_bundle_nest(
+        mapping, herd.grid, lambda d: bundle_name(mapping, d), loops, 0,
+        (LoopPlan(axis=drain, lo=_const(strip.lo), hi=_const(strip.hi), step=ONE,
+                  kind=_kind(loops, drain), depth=1,
+                  body=(_site(out_name, "get", 0, "segment", indices=(_var(bundle),),
+                              buffer=strip.operand,
+                              region=l3(_var(drain, 1, strip.plane), False)),)),))[0])
+
+    herd_body: list[Any] = list(buffers)
+    herd_body.append(_site(fill_name, "get", len(herd_body), "herd", indices=(_var(coord),),
+                           buffer=CUR, region=EMPTY_REGION))
+    copy: tuple[Any, ...] = (StoreNode(buffer_id=NEXT,
+                                       subscripts=tuple(_var(names[a]) for a in strip.axes),
+                                       expr=Load(CUR, tuple(_var(names[a])
+                                                            for a in strip.axes))),)
+    for position in reversed(range(len(strip.axes))):
+        name = names[strip.axes[position]]
+        copy = (LoopPlan(axis=name, lo=ZERO, hi=_const(strip.shape[position]), step=ONE,
+                         kind=_kind(loops, name), depth=position, body=copy),)
+    herd_body.append(copy[0])
+    steps, _phase = swap_loop(strip.time_axis, strip.lo, strip.hi,
+                             _kind(loops, strip.time_axis), 0, step, base=len(herd_body))
+    herd_body += list(steps)
+
+    geometry = {fill_name: (herd.grid, strip.dtype), out_name: (herd.grid, strip.dtype),
+                strip.north: ((strip.pes - 1,), strip.dtype),
+                strip.south: ((strip.pes - 1,), strip.dtype)}
+    by_channel: dict[str, list[ChannelSite]] = {}
+    for node in list(_flatten(tuple(segment))) + list(_flatten(tuple(herd_body))):
+        if isinstance(node, ChannelSite):
+            by_channel.setdefault(node.channel, []).append(node)
+    channels = tuple(sorted(
+        (ChannelPlan(name=name, size=size, broadcast_shape=None, channel_type=None,
+                     chain_direction=None, dtype=dtype, sites=tuple(by_channel[name]))
+         for name, (size, dtype) in geometry.items()), key=lambda c: c.name))
     return channels, tuple(segment), tuple(herd_body)
 
 

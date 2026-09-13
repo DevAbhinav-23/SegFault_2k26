@@ -1,0 +1,12 @@
+{
+  "_pipeline_aie": "builtin.module(air-place-herds{num-rows=6 num-cols=4 row-anchor=2 col-anchor=0},air-to-aie{device=npu1})",
+  "_pipeline_broadcast": "builtin.module(air-dependency,air-broadcast-detection)",
+  "_pipeline_pingpong": "builtin.module(air-dependency,air-label-scf-for-to-ping-pong{device=npu1})",
+  "broadcast_pattern_count": 0,
+  "lock_init_histogram": {
+    "0": 8,
+    "1": 2,
+    "2": 6
+  },
+  "pingpong_unroll": 0
+}

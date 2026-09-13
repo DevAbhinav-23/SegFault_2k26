@@ -1,0 +1,3841 @@
+{
+  "buffers": [
+    {
+      "__type__": "BufferPlan",
+      "bytes": 640,
+      "dtype": "f32",
+      "level": "L1",
+      "loop_depth": 0,
+      "name": "cur",
+      "operand": "U",
+      "ping_pong_candidate": false,
+      "scope": "herd.private",
+      "shape": [
+        10,
+        16
+      ]
+    },
+    {
+      "__type__": "BufferPlan",
+      "bytes": 640,
+      "dtype": "f32",
+      "level": "L1",
+      "loop_depth": 0,
+      "name": "next",
+      "operand": "U",
+      "ping_pong_candidate": false,
+      "scope": "herd.private",
+      "shape": [
+        10,
+        16
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "broadcast_shape": null,
+      "chain_direction": null,
+      "channel_type": null,
+      "dtype": "f32",
+      "name": "ToNorth",
+      "sites": [
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToNorth.put.0@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 0,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToNorth.get.2@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 2,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 9
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToNorth.put.6@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 6,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToNorth.get.8@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 8,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 9
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToNorth.put.5@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 5,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToNorth.get.7@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 7,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 9
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        }
+      ],
+      "size": [
+        1
+      ]
+    },
+    {
+      "broadcast_shape": null,
+      "chain_direction": null,
+      "channel_type": null,
+      "dtype": "f32",
+      "name": "ToSouth",
+      "sites": [
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToSouth.put.1@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 1,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 8
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToSouth.get.3@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 3,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToSouth.put.7@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 7,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 8
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToSouth.get.9@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 9,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToSouth.put.6@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 6,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 8
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToSouth.get.8@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 8,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        }
+      ],
+      "size": [
+        1
+      ]
+    },
+    {
+      "broadcast_shape": null,
+      "chain_direction": null,
+      "channel_type": null,
+      "dtype": "f32",
+      "name": "UIn",
+      "sites": [
+        {
+          "__type__": "ChannelSite",
+          "buffer": "U",
+          "channel": "UIn",
+          "depends_on": [],
+          "guard": null,
+          "id": "UIn.put.0@segment",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "pi_bundle",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 0,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "pi_bundle",
+                    8
+                  ]
+                ],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              10,
+              16
+            ],
+            "strides": [
+              288,
+              16,
+              1
+            ]
+          },
+          "scope": "segment"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "UIn",
+          "depends_on": [],
+          "guard": null,
+          "id": "UIn.get.2@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 2,
+          "region": {
+            "offsets": [],
+            "sizes": [],
+            "strides": []
+          },
+          "scope": "herd"
+        }
+      ],
+      "size": [
+        2
+      ]
+    },
+    {
+      "broadcast_shape": null,
+      "chain_direction": null,
+      "channel_type": null,
+      "dtype": "f32",
+      "name": "UOut",
+      "sites": [
+        {
+          "__type__": "ChannelSite",
+          "buffer": "U",
+          "channel": "UOut",
+          "depends_on": [],
+          "guard": null,
+          "id": "UOut.get.0@segment",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "pi_bundle",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 0,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "t_drain",
+                    1
+                  ]
+                ],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "pi_bundle",
+                    8
+                  ]
+                ],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              8,
+              16
+            ],
+            "strides": [
+              288,
+              16,
+              1
+            ]
+          },
+          "scope": "segment"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "UOut",
+          "depends_on": [],
+          "guard": null,
+          "id": "UOut.put.5@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 5,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              8,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "UOut",
+          "depends_on": [],
+          "guard": null,
+          "id": "UOut.put.11@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 11,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              8,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "UOut",
+          "depends_on": [],
+          "guard": null,
+          "id": "UOut.put.10@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 10,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              8,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        }
+      ],
+      "size": [
+        2
+      ]
+    }
+  ],
+  "delivery": [
+    [
+      "U",
+      "STATIONARY",
+      null,
+      true
+    ]
+  ],
+  "herd": {
+    "__type__": "HerdPlan",
+    "at": null,
+    "coords": [
+      "tx"
+    ],
+    "grid": [
+      2
+    ],
+    "name": "jacobi_herd",
+    "shape": [
+      2
+    ]
+  },
+  "herd_body": [
+    {
+      "__type__": "BufferPlan",
+      "bytes": 640,
+      "dtype": "f32",
+      "level": "L1",
+      "loop_depth": 0,
+      "name": "cur",
+      "operand": "U",
+      "ping_pong_candidate": false,
+      "scope": "herd.private",
+      "shape": [
+        10,
+        16
+      ]
+    },
+    {
+      "__type__": "BufferPlan",
+      "bytes": 640,
+      "dtype": "f32",
+      "level": "L1",
+      "loop_depth": 0,
+      "name": "next",
+      "operand": "U",
+      "ping_pong_candidate": false,
+      "scope": "herd.private",
+      "shape": [
+        10,
+        16
+      ]
+    },
+    {
+      "__type__": "ChannelSite",
+      "buffer": "cur",
+      "channel": "UIn",
+      "depends_on": [],
+      "guard": null,
+      "id": "UIn.get.2@herd",
+      "indices": [
+        {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "tx",
+              1
+            ]
+          ],
+          "const": 0
+        }
+      ],
+      "is_async": false,
+      "kind": "get",
+      "order": 2,
+      "region": {
+        "offsets": [],
+        "sizes": [],
+        "strides": []
+      },
+      "scope": "herd"
+    },
+    {
+      "__type__": "LoopPlan",
+      "axis": "i1",
+      "body": [
+        {
+          "__type__": "LoopPlan",
+          "axis": "j",
+          "body": [
+            {
+              "__type__": "StoreNode",
+              "buffer_id": "next",
+              "expr": {
+                "__type__": "Load",
+                "buffer_id": "cur",
+                "subscripts": [
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "i1",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "j",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  }
+                ]
+              },
+              "subscripts": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "i1",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "j",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                }
+              ]
+            }
+          ],
+          "depth": 1,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 16
+          },
+          "kind": "sequential",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        }
+      ],
+      "depth": 0,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 10
+      },
+      "kind": "sequential",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 1
+      }
+    },
+    {
+      "__type__": "LoopPlan",
+      "axis": "t",
+      "body": [
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToNorth.put.0@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 0,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToSouth.put.1@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 1,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 8
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToNorth.get.2@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 2,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 9
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToSouth.get.3@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 3,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "LoopPlan",
+          "axis": "i1",
+          "body": [
+            {
+              "__type__": "LoopPlan",
+              "axis": "j",
+              "body": [
+                {
+                  "__type__": "StoreNode",
+                  "buffer_id": "next",
+                  "expr": {
+                    "__type__": "BinOp",
+                    "lhs": {
+                      "__type__": "Const",
+                      "dtype": "f32",
+                      "text": "0.2",
+                      "value": 0.2
+                    },
+                    "op": "*",
+                    "rhs": {
+                      "__type__": "BinOp",
+                      "lhs": {
+                        "__type__": "BinOp",
+                        "lhs": {
+                          "__type__": "BinOp",
+                          "lhs": {
+                            "__type__": "BinOp",
+                            "lhs": {
+                              "__type__": "Load",
+                              "buffer_id": "cur",
+                              "subscripts": [
+                                {
+                                  "__type__": "Expr",
+                                  "coeffs": [
+                                    [
+                                      "i1",
+                                      1
+                                    ]
+                                  ],
+                                  "const": 1
+                                },
+                                {
+                                  "__type__": "Expr",
+                                  "coeffs": [
+                                    [
+                                      "j",
+                                      1
+                                    ]
+                                  ],
+                                  "const": 0
+                                }
+                              ]
+                            },
+                            "op": "+",
+                            "rhs": {
+                              "__type__": "Load",
+                              "buffer_id": "cur",
+                              "subscripts": [
+                                {
+                                  "__type__": "Expr",
+                                  "coeffs": [
+                                    [
+                                      "i1",
+                                      1
+                                    ]
+                                  ],
+                                  "const": 0
+                                },
+                                {
+                                  "__type__": "Expr",
+                                  "coeffs": [
+                                    [
+                                      "j",
+                                      1
+                                    ]
+                                  ],
+                                  "const": 0
+                                }
+                              ]
+                            }
+                          },
+                          "op": "+",
+                          "rhs": {
+                            "__type__": "Load",
+                            "buffer_id": "cur",
+                            "subscripts": [
+                              {
+                                "__type__": "Expr",
+                                "coeffs": [
+                                  [
+                                    "i1",
+                                    1
+                                  ]
+                                ],
+                                "const": 2
+                              },
+                              {
+                                "__type__": "Expr",
+                                "coeffs": [
+                                  [
+                                    "j",
+                                    1
+                                  ]
+                                ],
+                                "const": 0
+                              }
+                            ]
+                          }
+                        },
+                        "op": "+",
+                        "rhs": {
+                          "__type__": "Load",
+                          "buffer_id": "cur",
+                          "subscripts": [
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "i1",
+                                  1
+                                ]
+                              ],
+                              "const": 1
+                            },
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "j",
+                                  1
+                                ]
+                              ],
+                              "const": -1
+                            }
+                          ]
+                        }
+                      },
+                      "op": "+",
+                      "rhs": {
+                        "__type__": "Load",
+                        "buffer_id": "cur",
+                        "subscripts": [
+                          {
+                            "__type__": "Expr",
+                            "coeffs": [
+                              [
+                                "i1",
+                                1
+                              ]
+                            ],
+                            "const": 1
+                          },
+                          {
+                            "__type__": "Expr",
+                            "coeffs": [
+                              [
+                                "j",
+                                1
+                              ]
+                            ],
+                            "const": 1
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "subscripts": [
+                    {
+                      "__type__": "Expr",
+                      "coeffs": [
+                        [
+                          "i1",
+                          1
+                        ]
+                      ],
+                      "const": 1
+                    },
+                    {
+                      "__type__": "Expr",
+                      "coeffs": [
+                        [
+                          "j",
+                          1
+                        ]
+                      ],
+                      "const": 0
+                    }
+                  ]
+                }
+              ],
+              "depth": 2,
+              "hi": {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 15
+              },
+              "kind": "sequential",
+              "lo": {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              "step": {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              }
+            }
+          ],
+          "depth": 1,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 8
+          },
+          "kind": "sequential",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "UOut",
+          "depends_on": [],
+          "guard": null,
+          "id": "UOut.put.5@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 5,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              8,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToNorth.put.6@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 6,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToSouth.put.7@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": true,
+          "kind": "put",
+          "order": 7,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 8
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "ToNorth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": "<",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 1
+            }
+          },
+          "id": "ToNorth.get.8@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 8,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 9
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "next",
+          "channel": "ToSouth",
+          "depends_on": [],
+          "guard": {
+            "coord": "tx",
+            "relation": ">",
+            "value": {
+              "__type__": "Expr",
+              "coeffs": [],
+              "const": 0
+            }
+          },
+          "id": "ToSouth.get.9@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": -1
+            }
+          ],
+          "is_async": false,
+          "kind": "get",
+          "order": 9,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        },
+        {
+          "__type__": "LoopPlan",
+          "axis": "i1",
+          "body": [
+            {
+              "__type__": "LoopPlan",
+              "axis": "j",
+              "body": [
+                {
+                  "__type__": "StoreNode",
+                  "buffer_id": "cur",
+                  "expr": {
+                    "__type__": "BinOp",
+                    "lhs": {
+                      "__type__": "Const",
+                      "dtype": "f32",
+                      "text": "0.2",
+                      "value": 0.2
+                    },
+                    "op": "*",
+                    "rhs": {
+                      "__type__": "BinOp",
+                      "lhs": {
+                        "__type__": "BinOp",
+                        "lhs": {
+                          "__type__": "BinOp",
+                          "lhs": {
+                            "__type__": "BinOp",
+                            "lhs": {
+                              "__type__": "Load",
+                              "buffer_id": "next",
+                              "subscripts": [
+                                {
+                                  "__type__": "Expr",
+                                  "coeffs": [
+                                    [
+                                      "i1",
+                                      1
+                                    ]
+                                  ],
+                                  "const": 1
+                                },
+                                {
+                                  "__type__": "Expr",
+                                  "coeffs": [
+                                    [
+                                      "j",
+                                      1
+                                    ]
+                                  ],
+                                  "const": 0
+                                }
+                              ]
+                            },
+                            "op": "+",
+                            "rhs": {
+                              "__type__": "Load",
+                              "buffer_id": "next",
+                              "subscripts": [
+                                {
+                                  "__type__": "Expr",
+                                  "coeffs": [
+                                    [
+                                      "i1",
+                                      1
+                                    ]
+                                  ],
+                                  "const": 0
+                                },
+                                {
+                                  "__type__": "Expr",
+                                  "coeffs": [
+                                    [
+                                      "j",
+                                      1
+                                    ]
+                                  ],
+                                  "const": 0
+                                }
+                              ]
+                            }
+                          },
+                          "op": "+",
+                          "rhs": {
+                            "__type__": "Load",
+                            "buffer_id": "next",
+                            "subscripts": [
+                              {
+                                "__type__": "Expr",
+                                "coeffs": [
+                                  [
+                                    "i1",
+                                    1
+                                  ]
+                                ],
+                                "const": 2
+                              },
+                              {
+                                "__type__": "Expr",
+                                "coeffs": [
+                                  [
+                                    "j",
+                                    1
+                                  ]
+                                ],
+                                "const": 0
+                              }
+                            ]
+                          }
+                        },
+                        "op": "+",
+                        "rhs": {
+                          "__type__": "Load",
+                          "buffer_id": "next",
+                          "subscripts": [
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "i1",
+                                  1
+                                ]
+                              ],
+                              "const": 1
+                            },
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "j",
+                                  1
+                                ]
+                              ],
+                              "const": -1
+                            }
+                          ]
+                        }
+                      },
+                      "op": "+",
+                      "rhs": {
+                        "__type__": "Load",
+                        "buffer_id": "next",
+                        "subscripts": [
+                          {
+                            "__type__": "Expr",
+                            "coeffs": [
+                              [
+                                "i1",
+                                1
+                              ]
+                            ],
+                            "const": 1
+                          },
+                          {
+                            "__type__": "Expr",
+                            "coeffs": [
+                              [
+                                "j",
+                                1
+                              ]
+                            ],
+                            "const": 1
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "subscripts": [
+                    {
+                      "__type__": "Expr",
+                      "coeffs": [
+                        [
+                          "i1",
+                          1
+                        ]
+                      ],
+                      "const": 1
+                    },
+                    {
+                      "__type__": "Expr",
+                      "coeffs": [
+                        [
+                          "j",
+                          1
+                        ]
+                      ],
+                      "const": 0
+                    }
+                  ]
+                }
+              ],
+              "depth": 2,
+              "hi": {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 15
+              },
+              "kind": "sequential",
+              "lo": {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              "step": {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              }
+            }
+          ],
+          "depth": 1,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 8
+          },
+          "kind": "sequential",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        },
+        {
+          "__type__": "ChannelSite",
+          "buffer": "cur",
+          "channel": "UOut",
+          "depends_on": [],
+          "guard": null,
+          "id": "UOut.put.11@herd",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "tx",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 11,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              8,
+              16
+            ],
+            "strides": [
+              16,
+              1
+            ]
+          },
+          "scope": "herd"
+        }
+      ],
+      "depth": 0,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 4
+      },
+      "kind": "sequential",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 2
+      }
+    },
+    {
+      "__type__": "ChannelSite",
+      "buffer": "cur",
+      "channel": "ToNorth",
+      "depends_on": [],
+      "guard": {
+        "coord": "tx",
+        "relation": ">",
+        "value": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        }
+      },
+      "id": "ToNorth.put.5@herd",
+      "indices": [
+        {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "tx",
+              1
+            ]
+          ],
+          "const": -1
+        }
+      ],
+      "is_async": true,
+      "kind": "put",
+      "order": 5,
+      "region": {
+        "offsets": [
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          },
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          }
+        ],
+        "sizes": [
+          1,
+          16
+        ],
+        "strides": [
+          16,
+          1
+        ]
+      },
+      "scope": "herd"
+    },
+    {
+      "__type__": "ChannelSite",
+      "buffer": "cur",
+      "channel": "ToSouth",
+      "depends_on": [],
+      "guard": {
+        "coord": "tx",
+        "relation": "<",
+        "value": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      "id": "ToSouth.put.6@herd",
+      "indices": [
+        {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "tx",
+              1
+            ]
+          ],
+          "const": 0
+        }
+      ],
+      "is_async": true,
+      "kind": "put",
+      "order": 6,
+      "region": {
+        "offsets": [
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 8
+          },
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          }
+        ],
+        "sizes": [
+          1,
+          16
+        ],
+        "strides": [
+          16,
+          1
+        ]
+      },
+      "scope": "herd"
+    },
+    {
+      "__type__": "ChannelSite",
+      "buffer": "cur",
+      "channel": "ToNorth",
+      "depends_on": [],
+      "guard": {
+        "coord": "tx",
+        "relation": "<",
+        "value": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      "id": "ToNorth.get.7@herd",
+      "indices": [
+        {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "tx",
+              1
+            ]
+          ],
+          "const": 0
+        }
+      ],
+      "is_async": false,
+      "kind": "get",
+      "order": 7,
+      "region": {
+        "offsets": [
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 9
+          },
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          }
+        ],
+        "sizes": [
+          1,
+          16
+        ],
+        "strides": [
+          16,
+          1
+        ]
+      },
+      "scope": "herd"
+    },
+    {
+      "__type__": "ChannelSite",
+      "buffer": "cur",
+      "channel": "ToSouth",
+      "depends_on": [],
+      "guard": {
+        "coord": "tx",
+        "relation": ">",
+        "value": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        }
+      },
+      "id": "ToSouth.get.8@herd",
+      "indices": [
+        {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "tx",
+              1
+            ]
+          ],
+          "const": -1
+        }
+      ],
+      "is_async": false,
+      "kind": "get",
+      "order": 8,
+      "region": {
+        "offsets": [
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          }
+        ],
+        "sizes": [
+          1,
+          16
+        ],
+        "strides": [
+          16,
+          1
+        ]
+      },
+      "scope": "herd"
+    },
+    {
+      "__type__": "LoopPlan",
+      "axis": "i1",
+      "body": [
+        {
+          "__type__": "LoopPlan",
+          "axis": "j",
+          "body": [
+            {
+              "__type__": "StoreNode",
+              "buffer_id": "next",
+              "expr": {
+                "__type__": "BinOp",
+                "lhs": {
+                  "__type__": "Const",
+                  "dtype": "f32",
+                  "text": "0.2",
+                  "value": 0.2
+                },
+                "op": "*",
+                "rhs": {
+                  "__type__": "BinOp",
+                  "lhs": {
+                    "__type__": "BinOp",
+                    "lhs": {
+                      "__type__": "BinOp",
+                      "lhs": {
+                        "__type__": "BinOp",
+                        "lhs": {
+                          "__type__": "Load",
+                          "buffer_id": "cur",
+                          "subscripts": [
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "i1",
+                                  1
+                                ]
+                              ],
+                              "const": 1
+                            },
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "j",
+                                  1
+                                ]
+                              ],
+                              "const": 0
+                            }
+                          ]
+                        },
+                        "op": "+",
+                        "rhs": {
+                          "__type__": "Load",
+                          "buffer_id": "cur",
+                          "subscripts": [
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "i1",
+                                  1
+                                ]
+                              ],
+                              "const": 0
+                            },
+                            {
+                              "__type__": "Expr",
+                              "coeffs": [
+                                [
+                                  "j",
+                                  1
+                                ]
+                              ],
+                              "const": 0
+                            }
+                          ]
+                        }
+                      },
+                      "op": "+",
+                      "rhs": {
+                        "__type__": "Load",
+                        "buffer_id": "cur",
+                        "subscripts": [
+                          {
+                            "__type__": "Expr",
+                            "coeffs": [
+                              [
+                                "i1",
+                                1
+                              ]
+                            ],
+                            "const": 2
+                          },
+                          {
+                            "__type__": "Expr",
+                            "coeffs": [
+                              [
+                                "j",
+                                1
+                              ]
+                            ],
+                            "const": 0
+                          }
+                        ]
+                      }
+                    },
+                    "op": "+",
+                    "rhs": {
+                      "__type__": "Load",
+                      "buffer_id": "cur",
+                      "subscripts": [
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "i1",
+                              1
+                            ]
+                          ],
+                          "const": 1
+                        },
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "j",
+                              1
+                            ]
+                          ],
+                          "const": -1
+                        }
+                      ]
+                    }
+                  },
+                  "op": "+",
+                  "rhs": {
+                    "__type__": "Load",
+                    "buffer_id": "cur",
+                    "subscripts": [
+                      {
+                        "__type__": "Expr",
+                        "coeffs": [
+                          [
+                            "i1",
+                            1
+                          ]
+                        ],
+                        "const": 1
+                      },
+                      {
+                        "__type__": "Expr",
+                        "coeffs": [
+                          [
+                            "j",
+                            1
+                          ]
+                        ],
+                        "const": 1
+                      }
+                    ]
+                  }
+                }
+              },
+              "subscripts": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "i1",
+                      1
+                    ]
+                  ],
+                  "const": 1
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "j",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                }
+              ]
+            }
+          ],
+          "depth": 2,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 15
+          },
+          "kind": "sequential",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        }
+      ],
+      "depth": 1,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 8
+      },
+      "kind": "sequential",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 1
+      }
+    },
+    {
+      "__type__": "ChannelSite",
+      "buffer": "next",
+      "channel": "UOut",
+      "depends_on": [],
+      "guard": null,
+      "id": "UOut.put.10@herd",
+      "indices": [
+        {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "tx",
+              1
+            ]
+          ],
+          "const": 0
+        }
+      ],
+      "is_async": false,
+      "kind": "put",
+      "order": 10,
+      "region": {
+        "offsets": [
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          },
+          {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          }
+        ],
+        "sizes": [
+          8,
+          16
+        ],
+        "strides": [
+          16,
+          1
+        ]
+      },
+      "scope": "herd"
+    }
+  ],
+  "launch_name": "jacobi",
+  "mapping": {
+    "axes": [
+      {
+        "depth": 0,
+        "extent": 5,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "T",
+              1
+            ]
+          ],
+          "const": 0
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        },
+        "name": "t",
+        "parent": null,
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      {
+        "depth": 1,
+        "extent": 2,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 2
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        },
+        "name": "i0",
+        "parent": "i",
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      {
+        "depth": 2,
+        "extent": 8,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 8
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 0
+        },
+        "name": "i1",
+        "parent": "i",
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      },
+      {
+        "depth": 3,
+        "extent": 14,
+        "hi": {
+          "__type__": "Expr",
+          "coeffs": [
+            [
+              "W",
+              1
+            ]
+          ],
+          "const": -1
+        },
+        "lo": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        },
+        "name": "j",
+        "parent": null,
+        "step": {
+          "__type__": "Expr",
+          "coeffs": [],
+          "const": 1
+        }
+      }
+    ],
+    "halo_footprint": [
+      [
+        "U",
+        [
+          1,
+          1
+        ]
+      ]
+    ],
+    "ker_pi": [
+      [
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1
+      ]
+    ],
+    "ker_pi_u": [
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ],
+    "kernel": {
+      "axes": [
+        {
+          "depth": 0,
+          "extent": 5,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [
+              [
+                "T",
+                1
+              ]
+            ],
+            "const": 0
+          },
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "name": "t",
+          "parent": null,
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        },
+        {
+          "depth": 1,
+          "extent": 16,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [
+              [
+                "H",
+                1
+              ]
+            ],
+            "const": 1
+          },
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          },
+          "name": "i",
+          "parent": null,
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        },
+        {
+          "depth": 2,
+          "extent": 14,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [
+              [
+                "W",
+                1
+              ]
+            ],
+            "const": -1
+          },
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          },
+          "name": "j",
+          "parent": null,
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        }
+      ],
+      "bindings": [
+        [
+          "H",
+          16
+        ],
+        [
+          "T",
+          5
+        ],
+        [
+          "W",
+          16
+        ]
+      ],
+      "dependences": [
+        {
+          "kind": "RAW",
+          "operand": "U",
+          "vector": [
+            1,
+            -1,
+            0
+          ]
+        },
+        {
+          "kind": "RAW",
+          "operand": "U",
+          "vector": [
+            1,
+            0,
+            -1
+          ]
+        },
+        {
+          "kind": "RAW",
+          "operand": "U",
+          "vector": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "kind": "RAW",
+          "operand": "U",
+          "vector": [
+            1,
+            0,
+            1
+          ]
+        },
+        {
+          "kind": "RAW",
+          "operand": "U",
+          "vector": [
+            1,
+            1,
+            0
+          ]
+        }
+      ],
+      "name": "jacobi",
+      "params": [
+        {
+          "dtype": "f32",
+          "is_written": true,
+          "name": "U",
+          "shape": [
+            6,
+            18,
+            "W"
+          ]
+        }
+      ],
+      "reduction": null,
+      "shape_params": [
+        "H",
+        "T",
+        "W"
+      ],
+      "source": "T = 5; H = W = 16                 # H, W are the INTERIOR extents; U carries the halo\n\n@sp.kernel\ndef jacobi(U: sp.f32[T + 1, H + 2, W]):\n    for t in range(0, T):\n        for i in range(1, H + 1):\n            for j in range(1, W - 1):\n                U[t + 1, i, j] = 0.2 * (U[t, i, j] + U[t, i - 1, j] + U[t, i + 1, j]\n                                        + U[t, i, j - 1] + U[t, i, j + 1])\n",
+      "statements": [
+        {
+          "axes": [
+            "t",
+            "i",
+            "j"
+          ],
+          "expr": {
+            "__type__": "BinOp",
+            "lhs": {
+              "__type__": "Const",
+              "dtype": "f32",
+              "text": "0.2",
+              "value": 0.2
+            },
+            "op": "*",
+            "rhs": {
+              "__type__": "BinOp",
+              "lhs": {
+                "__type__": "BinOp",
+                "lhs": {
+                  "__type__": "BinOp",
+                  "lhs": {
+                    "__type__": "BinOp",
+                    "lhs": {
+                      "__type__": "Load",
+                      "buffer_id": "U",
+                      "subscripts": [
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "t",
+                              1
+                            ]
+                          ],
+                          "const": 0
+                        },
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "i",
+                              1
+                            ]
+                          ],
+                          "const": 0
+                        },
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "j",
+                              1
+                            ]
+                          ],
+                          "const": 0
+                        }
+                      ]
+                    },
+                    "op": "+",
+                    "rhs": {
+                      "__type__": "Load",
+                      "buffer_id": "U",
+                      "subscripts": [
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "t",
+                              1
+                            ]
+                          ],
+                          "const": 0
+                        },
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "i",
+                              1
+                            ]
+                          ],
+                          "const": -1
+                        },
+                        {
+                          "__type__": "Expr",
+                          "coeffs": [
+                            [
+                              "j",
+                              1
+                            ]
+                          ],
+                          "const": 0
+                        }
+                      ]
+                    }
+                  },
+                  "op": "+",
+                  "rhs": {
+                    "__type__": "Load",
+                    "buffer_id": "U",
+                    "subscripts": [
+                      {
+                        "__type__": "Expr",
+                        "coeffs": [
+                          [
+                            "t",
+                            1
+                          ]
+                        ],
+                        "const": 0
+                      },
+                      {
+                        "__type__": "Expr",
+                        "coeffs": [
+                          [
+                            "i",
+                            1
+                          ]
+                        ],
+                        "const": 1
+                      },
+                      {
+                        "__type__": "Expr",
+                        "coeffs": [
+                          [
+                            "j",
+                            1
+                          ]
+                        ],
+                        "const": 0
+                      }
+                    ]
+                  }
+                },
+                "op": "+",
+                "rhs": {
+                  "__type__": "Load",
+                  "buffer_id": "U",
+                  "subscripts": [
+                    {
+                      "__type__": "Expr",
+                      "coeffs": [
+                        [
+                          "t",
+                          1
+                        ]
+                      ],
+                      "const": 0
+                    },
+                    {
+                      "__type__": "Expr",
+                      "coeffs": [
+                        [
+                          "i",
+                          1
+                        ]
+                      ],
+                      "const": 0
+                    },
+                    {
+                      "__type__": "Expr",
+                      "coeffs": [
+                        [
+                          "j",
+                          1
+                        ]
+                      ],
+                      "const": -1
+                    }
+                  ]
+                }
+              },
+              "op": "+",
+              "rhs": {
+                "__type__": "Load",
+                "buffer_id": "U",
+                "subscripts": [
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "t",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "i",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "j",
+                        1
+                      ]
+                    ],
+                    "const": 1
+                  }
+                ]
+              }
+            }
+          },
+          "kind": "assign",
+          "line": 8,
+          "op": null,
+          "reads": [
+            {
+              "is_write": false,
+              "matrix": [
+                [
+                  1,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1,
+                  0
+                ],
+                [
+                  0,
+                  0,
+                  1
+                ]
+              ],
+              "offsets": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                }
+              ],
+              "operand": "U"
+            },
+            {
+              "is_write": false,
+              "matrix": [
+                [
+                  1,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1,
+                  0
+                ],
+                [
+                  0,
+                  0,
+                  1
+                ]
+              ],
+              "offsets": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": -1
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                }
+              ],
+              "operand": "U"
+            },
+            {
+              "is_write": false,
+              "matrix": [
+                [
+                  1,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1,
+                  0
+                ],
+                [
+                  0,
+                  0,
+                  1
+                ]
+              ],
+              "offsets": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 1
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                }
+              ],
+              "operand": "U"
+            },
+            {
+              "is_write": false,
+              "matrix": [
+                [
+                  1,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1,
+                  0
+                ],
+                [
+                  0,
+                  0,
+                  1
+                ]
+              ],
+              "offsets": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": -1
+                }
+              ],
+              "operand": "U"
+            },
+            {
+              "is_write": false,
+              "matrix": [
+                [
+                  1,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1,
+                  0
+                ],
+                [
+                  0,
+                  0,
+                  1
+                ]
+              ],
+              "offsets": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [],
+                  "const": 1
+                }
+              ],
+              "operand": "U"
+            }
+          ],
+          "target": {
+            "is_write": true,
+            "matrix": [
+              [
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1
+              ]
+            ],
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 1
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "operand": "U"
+          }
+        }
+      ]
+    },
+    "l1_bytes": 1280,
+    "physical_herd": [
+      2
+    ],
+    "pi": [
+      [
+        0,
+        1,
+        0,
+        0
+      ]
+    ],
+    "pi_u": [
+      [
+        0,
+        1,
+        0
+      ]
+    ],
+    "r_space": [],
+    "r_time": [],
+    "repeats": [
+      1
+    ],
+    "schedule": {
+      "double_buffer": [
+        "U"
+      ],
+      "exchanges": [
+        {
+          "along": "i0",
+          "halo": 1,
+          "operand": "U"
+        }
+      ],
+      "grid": [
+        2
+      ],
+      "pipeline": [],
+      "place": [
+        "i0"
+      ],
+      "reductions": [],
+      "residency": [
+        [
+          "U",
+          "L1"
+        ]
+      ],
+      "sequential": [
+        "t"
+      ],
+      "skew": null,
+      "stationary": [],
+      "streams": [],
+      "target": "npu1",
+      "tiles": [
+        [
+          "i",
+          8
+        ]
+      ],
+      "windows": [
+        {
+          "dims": [
+            "i",
+            "j"
+          ],
+          "halo": [
+            1,
+            1
+          ],
+          "operand": "U"
+        }
+      ]
+    },
+    "sigma": [
+      [
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1
+      ],
+      [
+        0,
+        0,
+        1,
+        0
+      ]
+    ],
+    "stationary_ops": [
+      "U"
+    ]
+  },
+  "segment_body": [
+    {
+      "__type__": "LoopPlan",
+      "axis": "pi_bundle",
+      "body": [
+        {
+          "__type__": "ChannelSite",
+          "buffer": "U",
+          "channel": "UIn",
+          "depends_on": [],
+          "guard": null,
+          "id": "UIn.put.0@segment",
+          "indices": [
+            {
+              "__type__": "Expr",
+              "coeffs": [
+                [
+                  "pi_bundle",
+                  1
+                ]
+              ],
+              "const": 0
+            }
+          ],
+          "is_async": false,
+          "kind": "put",
+          "order": 0,
+          "region": {
+            "offsets": [
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [
+                  [
+                    "pi_bundle",
+                    8
+                  ]
+                ],
+                "const": 0
+              },
+              {
+                "__type__": "Expr",
+                "coeffs": [],
+                "const": 0
+              }
+            ],
+            "sizes": [
+              1,
+              10,
+              16
+            ],
+            "strides": [
+              288,
+              16,
+              1
+            ]
+          },
+          "scope": "segment"
+        }
+      ],
+      "depth": 0,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 2
+      },
+      "kind": "unrolled",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 1
+      }
+    },
+    {
+      "__type__": "HerdPlan",
+      "at": null,
+      "coords": [
+        "tx"
+      ],
+      "grid": [
+        2
+      ],
+      "name": "jacobi_herd",
+      "shape": [
+        2
+      ]
+    },
+    {
+      "__type__": "LoopPlan",
+      "axis": "pi_bundle",
+      "body": [
+        {
+          "__type__": "LoopPlan",
+          "axis": "t_drain",
+          "body": [
+            {
+              "__type__": "ChannelSite",
+              "buffer": "U",
+              "channel": "UOut",
+              "depends_on": [],
+              "guard": null,
+              "id": "UOut.get.0@segment",
+              "indices": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "pi_bundle",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                }
+              ],
+              "is_async": false,
+              "kind": "get",
+              "order": 0,
+              "region": {
+                "offsets": [
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "t_drain",
+                        1
+                      ]
+                    ],
+                    "const": 1
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "pi_bundle",
+                        8
+                      ]
+                    ],
+                    "const": 1
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [],
+                    "const": 0
+                  }
+                ],
+                "sizes": [
+                  1,
+                  8,
+                  16
+                ],
+                "strides": [
+                  288,
+                  16,
+                  1
+                ]
+              },
+              "scope": "segment"
+            }
+          ],
+          "depth": 1,
+          "hi": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 5
+          },
+          "kind": "sequential",
+          "lo": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 0
+          },
+          "step": {
+            "__type__": "Expr",
+            "coeffs": [],
+            "const": 1
+          }
+        }
+      ],
+      "depth": 0,
+      "hi": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 2
+      },
+      "kind": "unrolled",
+      "lo": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 0
+      },
+      "step": {
+        "__type__": "Expr",
+        "coeffs": [],
+        "const": 1
+      }
+    }
+  ],
+  "segment_name": "jacobi_seg",
+  "summary": {
+    "channels": [
+      [
+        "ToNorth",
+        [
+          1
+        ],
+        null
+      ],
+      [
+        "ToSouth",
+        [
+          1
+        ],
+        null
+      ],
+      [
+        "UIn",
+        [
+          2
+        ],
+        null
+      ],
+      [
+        "UOut",
+        [
+          2
+        ],
+        null
+      ]
+    ],
+    "herd_logical": [
+      2
+    ],
+    "herd_physical": [
+      2
+    ],
+    "l1_budget": 65536,
+    "l1_bytes": 1280,
+    "lines": [
+      "U: stationary (declared)",
+      "U: stationary (spatial), resident for the whole run",
+      "herd: logical (2,) physical (2,) repeats (1,)",
+      "reduction (tiled axes): R_time = {}, R_space = {}",
+      "  cur (10, 16) f32 = 640 B",
+      "  next (10, 16) f32 = 640 B",
+      "L1: 1280 of 65536 bytes",
+      "  ToNorth size=(1,)",
+      "  ToSouth size=(1,)",
+      "  UIn size=(2,)",
+      "  UOut size=(2,)"
+    ],
+    "reduction_split": [
+      "{}",
+      "{}"
+    ],
+    "repeats": [
+      1
+    ],
+    "residency": [
+      [
+        "U",
+        "resident for the whole run"
+      ]
+    ]
+  },
+  "tensors": [
+    {
+      "__type__": "BufferPlan",
+      "bytes": 6912,
+      "dtype": "f32",
+      "level": "L3",
+      "loop_depth": 0,
+      "name": "U",
+      "operand": "U",
+      "ping_pong_candidate": false,
+      "scope": "tensor",
+      "shape": [
+        6,
+        18,
+        16
+      ]
+    }
+  ]
+}

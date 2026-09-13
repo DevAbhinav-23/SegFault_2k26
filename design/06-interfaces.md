@@ -559,6 +559,13 @@ The `<variant>` vocabulary is closed: `base` (the workload's default schedule) a
 re-placed variant). The eight goldens are therefore `w1.base.*`, `w1.flip.*`, `w2.base.*`,
 `w3.base.*`, each for `npu1` and `npu2` where the kind is target-specific.
 
+*(Erratum, 2026-09-13, phase P5: `odd` joins `base` and `flip` — `w2.odd.<target>.plan.json`,
+W2's `T = 5` variant. It is a **plan** golden only, deliberately: the module differs from
+`w2.base` by the peeled tail alone, which `test_E_peel_is_plan_driven` asserts on the text
+directly, so a second module golden would freeze the same fact twice and diff twice. The
+summary is target-specific for the same reason W1's is — `<workload>.<variant>.<target>
+.summary.txt`, the B-P14 ruling.)*
+
 Rules:
 1. Goldens are regenerated only by `pytest --update-goldens`, which rewrites every golden and
    prints a diff summary. A PR that changes a golden must say why in its message.

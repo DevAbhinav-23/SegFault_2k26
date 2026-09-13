@@ -357,7 +357,9 @@ Every halo index expression lands in `[0, PI-1)` on the branch where it is emitt
 
 **`UIn` stages plane 0 once**, before the `t` loop: PE `tx` gets `U[0, tx·HS : tx·HS+HS+2, :]`
 into `cur` — its `HS` owned rows **plus both ghost rows**, so `t = 0`'s first update has its
-boundary values without a prologue put.
+boundary values without a prologue put. `next` is then seeded from `cur` by a `StoreNode` copy,
+because the drain below writes the staged boundary back on **every** plane and the planes
+alternate between the two strips (§6.3's erratum; the transfer count stays `UIn[k] = 1/1`).
 
 **`UOut` drains every plane the kernel writes.** One put per PE per timestep, immediately after
 the update, region `U[t+1, tx·HS+1 : (tx+1)·HS+1, :]`, `size=[PI]`. This is the edit G-10 asked
@@ -614,6 +616,22 @@ coordinate; a site in the segment body is one node.
 
 **Channel edges**: for every put node and every get node whose `(channel, concrete index)` match
 after fan-out expansion, a directed edge put → get.
+
+*(Erratum, 2026-09-13, phase P5.)* That all-pairs rule over-approximates a channel, which is a
+**FIFO**: the k-th get receives the k-th put and waits on that one, not on every put the index
+will ever see. The over-approximation is harmless while one body holds one transfer per index,
+and it stops being harmless once §3.6.1's `swap_loop` puts two timesteps in one body — W2's own
+halo then reports a four-edge cycle
+`put_n(phase 1, PE 1) → get_n(phase 0, PE 0) → put_s(phase 1, PE 0) → get_s(phase 0, PE 1)`
+built entirely out of edges pairing a *later* put with an *earlier* get, which is a dependency
+no execution has. Note that this paragraph's own argument below is made **within a timestep**,
+and the unroll is what breaks that framing. So: when both sides have the same number of nodes
+and each side is one coordinate's own program order, the k-th put is zipped to the k-th get —
+the exact semantics, and strictly fewer edges; otherwise (several producers into one index, or a
+body shape that splits one side and not the other, as W3's guarded `WestIn` does) the pairing is
+not defined and the all-pairs rule stands. `m4_selfcheck._pairs` is the two-branch function, and
+the halo reversed to `[GET, GET, PUT, PUT]` still raises `CHANNEL-CYCLE` under it, on both the
+synthetic fixture and W2's real plan.
 
 **Program-order edges — the exact rule**, because "program order" is ambiguous across a scope
 boundary and getting it wrong either misses a cycle or invents one:
@@ -1148,6 +1166,7 @@ each way; the index tables of §3.6.1 still apply verbatim.
 ```
 0  BufferPlan cur ; BufferPlan next
 1  ChannelSite(get, "UIn", indices=(tx,), buffer="cur", region=empty, scope="herd")
+1a LoopPlan i1 (0..HS+2) -> LoopPlan j (0..W) -> StoreNode(next[i1,j] = next <- cur)
 2  LoopPlan(axis="t", 0..4 step 2, kind="sequential", depth=0, body=[
 3      STEP(src=cur,  dst=next, t_off=0)     # orders 0..5 below
 4      STEP(src=next, dst=cur,  t_off=1) ])
@@ -1158,11 +1177,30 @@ STEP(src, dst, t_off) =
   1  put  ToSouth[tx]   <- src[HS:HS+1, :]  guard tx < PI-1,     is_async=True
   2  get  ToNorth[tx]   -> src[HS+1:HS+2,:] guard tx < PI-1,     depends_on=()
   3  get  ToSouth[tx-1] -> src[0:1, :]      guard tx > 0,        depends_on=()
-  4  LoopPlan i (1..HS+1) -> LoopPlan j (1..W-1) ->
-         StoreNode(dst[i,j] = 0.2*(src[i,j]+src[i-1,j]+src[i+1,j]+src[i,j-1]+src[i,j+1]))
+  4  LoopPlan i1 (0..HS) -> LoopPlan j (1..W-1) -> StoreNode(
+         dst[i1+1,j] = 0.2*(src[i1+1,j]+src[i1,j]+src[i1+2,j]+src[i1+1,j-1]+src[i1+1,j+1]))
   5  put  UOut[tx] <- dst[1:HS+1, :]
          region on the L3 side = U[t + t_off + 1, tx*HS+1 : (tx+1)*HS+1, :]
 ```
+
+*(Erratum, 2026-09-13, phase P5, two edits, both forced by the general machinery this section
+is supposed to describe.)*
+
+*Line 1a — the pair is **seeded**, not just `cur`.* The coverage paragraph below says of the
+drain that "the value written back is the one that was staged in". That is a claim about every
+plane, and the planes alternate between the two strips, so both have to carry the staged
+read-only boundary; `next` is never a `get` target, so a `StoreNode` copy is what gives it those
+values. Without it the boundary columns of every second plane — and the domain-edge ghost rows
+of PE `0` and PE `PI-1`, which no neighbour ever fills — are whatever the alloc happened to
+hold, and the Dirichlet boundary is not read-only at all. It is the same device the accumulator
+zeroing and the cascade accumulate use: an arithmetic node M4 synthesises because no kernel
+statement corresponds to it.
+
+*Line 4 — the nest is `i1 ∈ [0, HS)` with the ghost offset in the subscript.* The loop is named
+by the post-tiling axis it realises (B-P18), and `_compute_nest`'s rule for a tiled axis is
+`lo = 0, hi = <tile extent>`; `l1_subscripts` then puts the halo back, giving `dst[i1+1, j]`.
+The earlier `i (1..HS+1)` with `dst[i,j]` is the same set of rows written the other way round,
+and it is the one form the general machinery cannot produce.
 
 The update at order 4 is the **kernel's** five-term `0.2 ×` stencil
 (`03-lld-M1-frontend.md` §6.2). The earlier four-term `0.25 ×` form in this section was a

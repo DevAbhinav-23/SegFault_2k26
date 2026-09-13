@@ -1,11 +1,11 @@
 """Level U — the AIR emitter. Spec: design/03-lld-M5-emitter.md §7, design/04-test-plan.md §2.
 
 The W1 cases are driven by the hand-written W1 `MappingPlan` literal
-(`tests/fixtures/plans/w1_plan.py`); the W3 cases are driven by the plan M4 **derives**, since
-no W3 literal exists. The rows of M5 §7 that need W1-flip or W2 are not here: those plans do not
-exist yet, and `design/PROGRESS-B.md` records which they are.
+(`tests/fixtures/plans/w1_plan.py`); the W2 and W3 cases are driven by the plans M4 **derives**,
+since no literal exists for either. Only the rows that need W1-flip are missing: that plan does
+not exist yet, and `design/PROGRESS-B.md` records which they are.
 
-Written by B at P1 together with `spatial/m5_emit.py`; extended at P4 with W3.
+Written by B at P1 together with `spatial/m5_emit.py`; extended at P4 with W3, P5 with W2.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import pytest
 
 from spatial import m4_mapping as m4, m5_emit, m6_tools as m6
 from spatial.model import BranchNode, EmissionError, LoopPlan, MappingPlan
-from tests.fixtures.mappings import w3_legal
+from tests.fixtures.mappings import w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers import determinism
 from tests.helpers.diagnostics import assert_diagnostic
@@ -47,6 +47,21 @@ def w3_text(target: str = "npu1") -> str:
     if target not in _W3_TEXTS:
         _W3_TEXTS[target] = m5_emit.emit(m4.plan(w3_legal.legal(target)), target).mlir
     return _W3_TEXTS[target]
+
+
+_W2_TEXTS: dict[str, str] = {}
+
+
+def w2_text(target: str = "npu1") -> str:
+    """The emitted W2 module text for `target`, emitted once per process."""
+    if target not in _W2_TEXTS:
+        _W2_TEXTS[target] = m5_emit.emit(m4.plan(w2_legal.legal(target)), target).mlir
+    return _W2_TEXTS[target]
+
+
+def emit_w2_text(target: str = "npu1") -> str:
+    """Module-level and picklable, so `determinism.in_fresh_process` can call it (FR-E10)."""
+    return m5_emit.emit(m4.plan(w2_legal.legal(target)), target).mlir
 
 
 def emit_w3_text(target: str = "npu1") -> str:
@@ -516,22 +531,55 @@ def _indent(line: str) -> int:
 
 
 @pytest.mark.fr("FR-E1")
+@pytest.mark.parametrize("workload", ["w2", "w3"])
 @pytest.mark.parametrize("target", ["npu1", "npu2"])
-def test_E1_herd_arity(target):
+def test_E1_herd_arity(target, workload):
     """A 1-D herd body takes **one** positional coordinate; the tile space is 2-D (finding N-10).
 
     `_positional_arity` counts declared positional parameters (`_trace.py:725-731`), so a `*args`
     body would read as arity 0 and `air.api` would reject it — which is why M5 declares `body(c0)`
     and `body(c0, c1)` rather than one variadic function. What reaches the IR is always a 2-D
-    tile space, with the second extent 1 on a rank-1 herd.
+    tile space, with the second extent 1 on a rank-1 herd. §7's row names W2 (`grid(2)`); W3
+    (`grid(4)`) is the same rule at another extent.
     """
-    plan = m4.plan(w3_legal.legal(target))
+    fixture, extent = {"w2": (w2_legal, "2"), "w3": (w3_legal, "4")}[workload]
+    plan = m4.plan(fixture.legal(target))
+    body = {"w2": w2_text, "w3": w3_text}[workload](target)
     assert plan.herd.coords == ("tx",)
-    herd = next(line for line in w3_text(target).splitlines() if "air.herd" in line)
+    herd = next(line for line in body.splitlines() if "air.herd" in line)
     assert re.search(r"tile \(%\w+, %\w+\) in \(%\w+=%(\w+), %\w+=%(\w+)\)", herd), herd
     extents = re.search(r"in \(%\w+=%(\w+), %\w+=%(\w+)\)", herd).groups()
-    constants = dict(re.findall(r"%(\w+) = arith\.constant (\d+) : index", w3_text(target)))
-    assert [constants[name] for name in extents] == ["4", "1"]
+    constants = dict(re.findall(r"%(\w+) = arith\.constant (\d+) : index", body))
+    assert [constants[name] for name in extents] == [extent, "1"]
+
+
+@pytest.mark.fr("FR-M4", "FR-L14")
+def test_E_peel_is_plan_driven():
+    """`T = 5`'s text is the loop `step 2` to `4` plus one straight-line `STEP`, and `T` drains.
+
+    M5 has no parity test of its own — line 20 of §6.3's `if T is odd` is the **plan** already
+    holding or not holding the peeled nodes (§3.6.1 line 8), and the emitter walks whatever is
+    in `plan.herd_body`. The lint below is that claim: M5's source names neither `%` nor `odd`.
+    """
+    even, odd = w2_text(), m5_emit.emit(m4.plan(w2_legal.legal("npu1", T=5)), "npu1").mlir
+    loop = re.compile(r"scf\.for %\w+ = %(\w+) to %(\w+) step %(\w+)")
+    constants = dict(re.findall(r"%(\w+) = arith\.constant (\d+) : index", odd))
+    timestep = [m.groups() for m in loop.finditer(odd)
+                if constants.get(m.group(3)) == "2"]
+    assert len(timestep) == 1, "one timestep loop, unrolled by two"
+    assert [constants[name] for name in timestep[0]] == ["0", "4", "2"]
+
+    # `T` drains in total: 2 per trip inside the loop, plus the peeled one after it
+    assert odd.count("air.channel.put  @UOut[") == 3          # two in the loop, one peeled
+    assert even.count("air.channel.put  @UOut[") == 2
+    assert odd.count("air.channel.get  @UOut[") == 2          # one per PE, in the drain loop
+    drains = [m.groups() for m in loop.finditer(odd) if constants.get(m.group(3)) == "1"
+              and constants.get(m.group(2)) == "5"]
+    assert len(drains) == 2, "one plane drain per PE, air.sequential(0, T)"
+    # the peeled STEP is four more guarded sites and one more update nest than the even text
+    assert odd.count("scf.if") == even.count("scf.if") + 4 == 12
+    assert odd.count("arith.mulf") == even.count("arith.mulf") + 1 == 3
+    assert not re.search(r"\bT\s*%\s*2\b|\bodd\b|\bparity\b", SOURCE), "M5 has no parity test"
 
 
 @pytest.mark.fr("FR-M5")

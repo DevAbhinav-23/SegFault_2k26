@@ -20,8 +20,8 @@ from pathlib import Path
 import pytest
 
 from spatial import m4_mapping as m4, m4_selfcheck as selfcheck
-from spatial.model import (BinOp, ChannelPlan, Const, Dtype, Expr, Load, LoopPlan, MappingError,
-                           Select, StoreNode, StreamClause, to_json)
+from spatial.model import (BinOp, ChannelPlan, Const, Dtype, Expr, Guard, Load, LoopPlan,
+                           MappingError, Select, StoreNode, StreamClause, to_json)
 from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers import determinism, plan_interp
@@ -36,8 +36,8 @@ SOURCES = {name: Path(module.__file__).read_text(encoding="utf-8")
 """M4's own source, for the import lint (invariant I-1, FR-S20)."""
 
 
-WORKLOADS = {"w1": w1_legal, "w3": w3_legal}
-"""The workloads whose whole plan M4 builds in this cut (the flip and W2 land at P5/P6)."""
+WORKLOADS = {"w1": w1_legal, "w2": w2_legal, "w3": w3_legal}
+"""The workloads whose whole plan M4 builds in this cut (the flip lands at P6)."""
 
 
 def plan_json(target: str = "npu1", workload: str = "w1") -> str:
@@ -175,9 +175,10 @@ def test_M7_buffer_plan():
 
 
 @pytest.mark.fr("FR-M7")
-def test_M7_scope_never_shared():
+@pytest.mark.parametrize("workload", sorted(WORKLOADS), ids=sorted(WORKLOADS))
+def test_M7_scope_never_shared(workload):
     """No plan scope is `"herd.shared"` (it raises, `_trace.py:1405-1414`) or per-core."""
-    plan = m4.plan(w1_legal.legal())
+    plan = m4.plan(WORKLOADS[workload].legal())
     scopes = {b.scope for b in plan.buffers + plan.tensors}
     assert scopes == {"herd.private", "tensor"}
 
@@ -236,7 +237,19 @@ def test_M8_channel_plan_complete():
 
 @pytest.mark.fr("FR-M8")
 def test_M8_regions():
-    """`A2L1`'s put region is `((pi_bundle*32, k0), (32,16), (64,1))` — §3.4's worked example."""
+    """`A2L1`'s put region is `((pi_bundle*32, k0), (32,16), (64,1))` — §3.4's worked example.
+
+    §7's row also names W2's `ToNorth` put: `((1,0),(1,W),(W,1))` on the `(HS+2, W)` strip — the
+    L1 half of §3.4's "a partial L1 region (the halo rows) is the same computation against the
+    buffer shape".
+    """
+    halo = m4.plan(w2_legal.legal())
+    north = next(s for c in halo.channels if c.name == "ToNorth" for s in c.sites
+                 if s.kind == "put")
+    assert (north.region.offsets, north.region.sizes, north.region.strides) == (
+        (Expr((), 1), Expr((), 0)), (1, 16), (16, 1))
+    assert north.buffer == "cur" and north.region.sizes[1] == 16
+
     sites = {(c.name, s.kind): s for c in m4.plan(w1_legal.legal()).channels for s in c.sites}
     put = sites[("A2L1", "put")]
     assert put.region == w1_plan.A_PUT.region
@@ -500,14 +513,17 @@ def test_M4_wavefront_l1_subscripts():
 @pytest.mark.fr("FR-M7")
 @pytest.mark.parametrize(("name", "mapping", "expected"), [
     ("w1", w1_legal.legal(), 12288),
+    ("w2", w2_legal.legal(), 1280),
     ("w3", w3_legal.legal(), 240),
-], ids=["w1", "w3"])
+], ids=["w1", "w2", "w3"])
 def test_M4_l1_agrees_with_m3(name, mapping, expected):
     """The plan's L1 total is `LegalMapping.l1_bytes` plus the protocol buffers M4 adds (§7).
 
-    W1 is `12288 == 12288` — it synthesises no protocol buffer. W3 is `240 == 232 + 8`:
-    `edge_in` and `edge_out` are M4's, carry no `operand`, and are the only allowed difference
-    from what M3 charged (`02-hld.md` §7, §3.3 note 4).
+    W1 is `12288 == 12288` — it synthesises no protocol buffer. W2 is `1280 == 1280`: the halo
+    adds **no** buffer of its own, and `double_buffer("U")` is the `cur`/`next` pair itself, not
+    a doubling on top of it (R-W2-4, D-5's second meaning). W3 is `240 == 232 + 8`: `edge_in`
+    and `edge_out` are M4's, carry no `operand`, and are the only allowed difference from what
+    M3 charged (`02-hld.md` §7, §3.3 note 4).
     """
     plan = m4.plan(mapping)
     staged = [b for b in plan.buffers if b.operand is not None]
@@ -516,7 +532,213 @@ def test_M4_l1_agrees_with_m3(name, mapping, expected):
     assert plan.summary.l1_budget == 65536
     extra = sum(b.bytes for b in plan.buffers if b.operand is None)
     assert expected == mapping.l1_bytes + extra
-    assert (mapping.l1_bytes, extra) == {"w1": (12288, 0), "w3": (232, 8)}[name]
+    assert (mapping.l1_bytes, extra) == {"w1": (12288, 0), "w2": (1280, 0),
+                                         "w3": (232, 8)}[name]
+    if name == "w2":                                    # R-W2-4: DEPTH 0, so PP() is False
+        assert m4.depth(mapping, "U") == 0 and not m4.ping_pong(mapping, "U")
+        assert "U" in mapping.schedule.double_buffer
+        assert [(b.name, b.shape, b.ping_pong_candidate) for b in plan.buffers] == [
+            ("cur", (10, 16), False), ("next", (10, 16), False)]
+
+
+# --------------------------------------------------------------------------------------------
+# FR-M4 — the halo exchange protocol (§3.6.1, §6.3) — W2
+# --------------------------------------------------------------------------------------------
+
+HS, WIDTH = 8, 16
+"""W2's per-PE owned rows and full staged width at the fixture's `PI = 2` (`03-lld-M3` §6.3)."""
+
+
+def w2_plan(T: int = 4, PI: int = 2, target: str = "npu1"):
+    """The derived W2 plan, at the fixture's `T`/`PI` or a variant."""
+    return m4.plan(w2_legal.legal(target, T=T, PI=PI))
+
+
+def _steps(plan) -> list[tuple]:
+    """Every `STEP` of a W2 plan as a six-node tuple, in execution order.
+
+    §6.3's herd body is `cur, next, UIn.get, <seed copy>, t-loop[STEP, STEP][, peeled STEP]`,
+    so the loop is at index 4 and anything after it is the odd-`T` peel.
+    """
+    loop = plan.herd_body[4]
+    out = [loop.body[0:6], loop.body[6:12]]
+    if len(plan.herd_body) > 5:
+        out.append(tuple(plan.herd_body[5:]))
+    return out
+
+
+@pytest.mark.fr("FR-M4")
+def test_M4_halo_protocol():
+    """The per-`STEP` site list, in order, with its flags — §3.6.1's "not negotiable" order.
+
+    `PUT(north) → PUT(south) → GET(north ghost) → GET(south ghost) → <update> → PUT(UOut)`,
+    both boundary puts `is_async=True`, **both** ghost gets with `depends_on == ()`: a token
+    from a put into its own get would serialise the exchange into a rendezvous and reintroduce
+    the deadlock VF §C's E1 verdict cleared it of (and `test_I_w2_no_put_get_token_edge`
+    measures that the lowering agrees).
+    """
+    plan = w2_plan()
+    assert len(plan.herd_body) == 5, [type(n).__name__ for n in plan.herd_body]
+    for phase, step in enumerate(_steps(plan)):
+        source, destination = ("cur", "next") if phase == 0 else ("next", "cur")
+        assert [(s.kind, s.channel) for s in step if hasattr(s, "channel")] == [
+            ("put", "ToNorth"), ("put", "ToSouth"), ("get", "ToNorth"), ("get", "ToSouth"),
+            ("put", "UOut")]
+        assert type(step[4]).__name__ == "LoopPlan", "the update nest sits at order 4"
+        assert [s.order for s in step[:4]] == [step[0].order + k for k in range(4)]
+        assert step[5].order == step[0].order + 5
+        assert [s.is_async for s in step[:4]] == [True, True, False, False]
+        assert all(s.depends_on == () for s in step[:4] + (step[5],))
+        assert [s.buffer for s in step[:4]] == [source] * 4
+        assert step[5].buffer == destination, "the drain reads the plane just computed"
+        assert all(s.scope == "herd" for s in step[:4] + (step[5],))
+
+
+@pytest.mark.fr("FR-M4")
+def test_M4_halo_indices():
+    """§3.6.1's index table verbatim: one bundle index per **physical link**, guards included."""
+    plan = w2_plan()
+    channels = {c.name: c for c in plan.channels}
+    assert [c.name for c in plan.channels] == ["ToNorth", "ToSouth", "UIn", "UOut"]
+    assert channels["ToNorth"].size == channels["ToSouth"].size == (2 - 1,)
+    assert channels["UIn"].size == channels["UOut"].size == (2,)
+    assert all(c.broadcast_shape is None and c.channel_type is None for c in plan.channels)
+    north, south = _steps(plan)[0][0], _steps(plan)[0][1]
+    ghost_n, ghost_s = _steps(plan)[0][2], _steps(plan)[0][3]
+    assert (north.indices, north.guard) == ((Expr({"tx": 1}, -1),),
+                                            Guard("tx", ">", Expr((), 0)))
+    assert (ghost_n.indices, ghost_n.guard) == ((Expr({"tx": 1}),),
+                                                Guard("tx", "<", Expr((), 1)))
+    assert (south.indices, south.guard) == ((Expr({"tx": 1}),), Guard("tx", "<", Expr((), 1)))
+    assert (ghost_s.indices, ghost_s.guard) == ((Expr({"tx": 1}, -1),),
+                                                Guard("tx", ">", Expr((), 0)))
+    # the four L1 regions: top owned row out, bottom owned row out, south ghost in, north ghost in
+    assert [s.region.offsets[0].const for s in (north, south, ghost_n, ghost_s)] == [
+        1, HS, HS + 1, 0]
+    assert all(s.region.sizes == (1, WIDTH) for s in (north, south, ghost_n, ghost_s))
+    # and the geometry is derived, not tabulated: PI = 4 gives 3 links and 6 owned rows
+    strip = m4.strip_geometry(w2_legal.legal("npu1", T=4, PI=4), plan.delivery,
+                              m4.resolve_herd(w2_legal.legal("npu1", T=4, PI=4)))
+    assert (strip.pes, strip.owned, strip.halo, strip.shape) == (4, 4, 1, (6, 16))
+
+
+@pytest.mark.fr("FR-M4", "FR-K3")
+def test_M4_stencil_is_five_point():
+    """The update is the **kernel's** five-term `0.2 ×` stencil, in source association.
+
+    `BinOp("*", Const 0.2, <5-term sum>)` with the five `Load`s at `(0,0), (−1,0), (1,0),
+    (0,−1), (0,1)` of the written element — M4 rebuilds no arithmetic, it rewrites
+    `Statement.expr`'s loads into the strip (**B-P19**).
+    """
+    nest = _steps(w2_plan())[0][4]
+    assert (nest.axis, nest.lo, nest.hi) == ("i1", Expr((), 0), Expr((), HS))
+    assert (nest.body[0].axis, nest.body[0].lo, nest.body[0].hi) == ("j", Expr((), 1),
+                                                                    Expr((), WIDTH - 1))
+    store = nest.body[0].body[0]
+    assert isinstance(store, StoreNode) and store.buffer_id == "next"
+    assert store.subscripts == (Expr({"i1": 1}, 1), Expr({"j": 1}))
+    assert isinstance(store.expr, BinOp) and store.expr.op == "*"
+    assert store.expr.lhs == Const(value=0.2, text="0.2", dtype=Dtype.f32)
+    loads, node = [], store.expr.rhs               # the sum is left-nested: ((((a+b)+c)+d)+e)
+    while isinstance(node, BinOp):
+        assert node.op == "+"
+        loads.append(node.rhs)
+        node = node.lhs
+    loads.append(node)
+    loads.reverse()
+    assert len(loads) == 5 and all(load.buffer_id == "cur" for load in loads)
+    write = store.subscripts
+    assert [tuple(l.subscripts[d].const - write[d].const for d in (0, 1)) for l in loads] == [
+        (0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
+
+
+@pytest.mark.fr("FR-M4", "FR-K3")
+@pytest.mark.parametrize("T", [4, 5])
+def test_M4_drains_every_plane(T):
+    """`UOut` drains **every** plane the kernel writes: planes `1..T` × rows `1..H` (§6.3).
+
+    Draining only the final strip would make `test_sem_coverage` fail by construction — the
+    union of the written index sets would be one plane against the kernel's `T` (G-10). The
+    drained box is a superset of the write domain in the **column** direction only, because the
+    strip is put back whole; §6.3's coverage paragraph is that sentence.
+    """
+    plan = w2_plan(T=T)
+    get = next(s for c in plan.channels if c.name == "UOut" for s in c.sites
+               if s.scope == "segment")
+    drained = [plan_interp.region_indices(get.region, {"t_drain": t, "pi_bundle": p})
+               for t in range(T) for p in range(2)]
+    union = set().union(*drained)
+    assert sum(len(part) for part in drained) == len(union) == T * 16 * WIDTH   # no overlap
+    assert {point[0] for point in union} == set(range(1, T + 1))
+    assert {point[1] for point in union} == set(range(1, 16 + 1))
+    assert {point[2] for point in union} == set(range(WIDTH))                  # the whole width
+    # one *transfer* per timestep per PE: two sites inside a two-phase trip, plus the peel
+    puts = [s for c in plan.channels if c.name == "UOut" for s in c.sites if s.scope == "herd"]
+    assert len(puts) == 2 + T % 2
+    assert all(row["puts"] == row["gets"] == T for row in selfcheck.balance_table(plan)
+               if row["channel"] == "UOut")
+
+
+@pytest.mark.fr("FR-M4", "FR-L14")
+def test_M4_odd_T_peel():
+    """`T = 5`: the loop runs `0..4 step 2` and one straight-line `STEP` follows it (R-W2-2).
+
+    The peel is an M4 decision, not an M5 one: `air.sequential` has no `iter_args`
+    (`_loop.py:180`), so the swap cannot be loop-carried and the parity has to be resolved in
+    plan space. Because the drain is **inside** each `STEP` there is no `<live>` buffer to
+    choose — the peeled `STEP(cur → next)` drains plane `T` itself.
+    """
+    plan = w2_plan(T=5)
+    loop = plan.herd_body[4]
+    assert (loop.axis, loop.lo, loop.hi, loop.step) == ("t", Expr((), 0), Expr((), 4),
+                                                        Expr((), 2))
+    assert loop.kind == "sequential" and loop.depth == 0
+    peel = plan.herd_body[5:]
+    assert [type(node).__name__ for node in peel] == [
+        "ChannelSite", "ChannelSite", "ChannelSite", "ChannelSite", "LoopPlan", "ChannelSite"]
+    assert [node.order for node in peel if hasattr(node, "order")] == [5, 6, 7, 8, 10]
+    # the peeled STEP is built by the same `trip` as an in-loop one, so its update nest keeps
+    # the in-loop `depth = 1` although it now sits at body top level. `depth` is recorded and
+    # never emitted (`06-interfaces.md` §5.5), and W3's peel has carried the same since P4.
+    assert peel[4].depth == 1
+    assert peel[0].buffer == "cur" and peel[5].buffer == "next", "the peel is a phase-0 STEP"
+    for row in selfcheck.balance_table(plan):
+        assert (row["puts"], row["gets"]) == ((1, 1) if row["channel"] == "UIn" else (5, 5)), row
+
+
+@pytest.mark.fr("FR-M4")
+def test_M4_even_T_no_peel():
+    """`T = 4`: nothing follows the loop, and each PE makes exactly four `UOut` puts."""
+    plan = w2_plan(T=4)
+    assert len(plan.herd_body) == 5, "no peeled tail"
+    assert (plan.herd_body[4].hi, plan.herd_body[4].step) == (Expr((), 4), Expr((), 2))
+    puts = [s for c in plan.channels if c.name == "UOut" for s in c.sites if s.scope == "herd"]
+    assert len(puts) == 2, "two sites, two trips: four transfers per PE"
+    for row in selfcheck.balance_table(plan):
+        assert (row["puts"], row["gets"]) == ((1, 1) if row["channel"] == "UIn" else (4, 4)), row
+
+
+@pytest.mark.fr("FR-M4")
+def test_M4_halo_seeds_both_strips():
+    """`next` is seeded from `cur`, because §6.3's drain writes the staged boundary back.
+
+    §3.6.1 stages plane `lo` into `cur` alone. §6.3's coverage paragraph then says of the drain
+    that *"the value written back is the one that was staged in"* — a claim about **every**
+    plane, and the planes alternate between the two strips, so both have to carry the staged
+    read-only boundary. `next` is never a `get` target, so a `StoreNode` copy is what gives it
+    those values; without it every second plane's boundary columns are whatever the alloc held.
+    Recorded in `design/PROGRESS-B.md`, phase P5.
+    """
+    plan = w2_plan()
+    copy = plan.herd_body[3]
+    assert (copy.axis, copy.lo, copy.hi) == ("i1", Expr((), 0), Expr((), HS + 2))
+    inner = copy.body[0]
+    assert (inner.axis, inner.lo, inner.hi) == ("j", Expr((), 0), Expr((), WIDTH))
+    assert inner.body[0] == StoreNode(buffer_id="next",
+                                      subscripts=(Expr({"i1": 1}), Expr({"j": 1})),
+                                      expr=Load("cur", (Expr({"i1": 1}), Expr({"j": 1}))))
+    assert plan.herd_body[2].channel == "UIn" and plan.herd_body[2].buffer == "cur"
+    assert plan.herd_body[2].region == m4.EMPTY_REGION, "the whole strip, ghosts included"
 
 
 # --------------------------------------------------------------------------------------------
@@ -539,6 +761,8 @@ def test_M11_summary_golden(workload, target):
                   kind="text")
     expected = {"w1": ("C: stationary (declared)", "A: multicast along py (derived)",
                        "B: multicast along px (derived)"),
+                "w2": ("U: stationary (declared)",
+                       "U: stationary (spatial), resident for the whole run"),
                 "w3": ("S: forward along px (declared)", "q: multicast along px (derived)",
                        "r: stationary (derived)")}[workload]
     for line in expected:
@@ -652,8 +876,7 @@ def test_M4_reside_l2():
 
 @pytest.mark.parametrize(("mapping", "phrase"), [
     (w1flip_legal.legal(), "§3.6"),
-    (w2_legal.legal(), "§3.6.1"),
-], ids=["flip-cascade", "w2-halo"])
+], ids=["flip-cascade"])
 def test_M4_unbuilt_protocols_fail_legibly(mapping, phrase):
     """A protocol this cut does not build fails as a `MappingError` naming the phase (§5).
 

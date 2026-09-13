@@ -549,8 +549,8 @@ Lines 30-32 are the other half of D-14. The plan contains **no whole-tile store*
 18                STEP(src=cur,  dst=next, t_off=0)              # expanded below
 19                STEP(src=next, dst=cur,  t_off=1)
 20              if T is odd:  STEP(src=cur, dst=next, t_off=0)   # PEELED tail, plan-space decision
-21          for t in range(T):                                   # PYTHON loop over planes
-22            for p in range(2):
+21          for p in range(2):                                   # PYTHON loop: a bundle index
+22            for t in air.sequential(0, T):                     # air.sequential: t is not one
 23              uout.get(U[t+1, p*8+1 : p*8+9, 0:16], indices=[p])
 24  module := launch.build("npu1")
 
@@ -581,6 +581,21 @@ kernel writes and the oracle can be compared over the whole write domain
 Line 20's `if` is **not** a branch in M5's source — it is the plan already containing or not
 containing the peeled `STEP` nodes (`03-lld-M4-mapping.md` §3.6.1 line 8). M5 walks whatever is
 in `plan.herd_body`, and with the per-`STEP` drain there is no `<live>` buffer to choose either.
+
+*(Erratum, 2026-09-13, ruling **R-W2-1**: lines 21-23 drew both drain loops as Python loops,
+which contradicts §3.5's `LOOP_KIND` the same way §6.4's lines 31-35 did for W3. `p` is a channel
+bundle index and is **unrolled**; `t` is not, so the plane drain is `air.sequential(0, T)` with
+the L3 region offset `t+1` over the sequential IV. The `UIn` staging above stays one unrolled
+`pi_bundle` loop of `PI` puts. Measured: the emitted npu1 module carries two `scf.for` drain
+loops, one per PE, and the `scf.if … else {}` shape of the guarded sites below is reproduced
+exactly.)*
+
+*(Erratum, 2026-09-13, phase P5: the herd body carries one more node than line 16 shows — a
+`StoreNode` nest copying the staged strip into `next`. §6.3's coverage paragraph says of the
+drain that "the value written back is the one that was staged in", which is a claim about every
+plane and therefore about **both** halves of the swap pair; `next` is never a `get` target, so
+without the copy the read-only boundary columns of every second plane are whatever the alloc
+held. `03-lld-M4-mapping.md` §6.3 carries the same erratum.)*
 
 s1-s4 are the FR-M4 order, `is_async=True` on both puts and `dependency=None` on both gets. The
 probe shows what that lowers to:

@@ -27,7 +27,7 @@ import pytest
 
 from spatial import m4_mapping as m4
 from spatial.model import Expr
-from tests.fixtures.mappings import w1_legal, w3_legal
+from tests.fixtures.mappings import w1_legal, w2_legal, w3_legal
 from tests.helpers import plan_interp
 
 TARGETS = ("npu1", "npu2")
@@ -293,3 +293,159 @@ def test_sem_coverage_w3(target):
     tensors = w3_inputs()
     out = plan_interp.run(plan, tensors)
     assert set(map(tuple, np.argwhere(out["S"] != 0))) <= union
+
+
+# --------------------------------------------------------------------------------------------
+# W2 — the halo exchange. Spec: design/04-test-plan.md §3.4, §4, §8 item 5. Added by B at P5.
+# --------------------------------------------------------------------------------------------
+
+H = WIDTH = 16
+HS, PI = 8, 2
+TOL = 1e-5
+"""`02-hld.md` §7.2: the update multiplies by `0.2`, so `f32` rounding is not associative and
+W2's diff uses `tol = 1e-5` where W1, W1-flip and W3 are exact (`04-test-plan.md` §8 item 5)."""
+
+
+def w2_inputs(T: int, seed: int = 0) -> dict[str, np.ndarray]:
+    """W2's fixture data: plane 0 integer-valued `f32`, Dirichlet rows and columns included."""
+    U = np.zeros((T + 1, H + 2, WIDTH), dtype=np.float32)
+    U[0] = np.random.default_rng(seed).integers(-8, 8, (H + 2, WIDTH)).astype(np.float32)
+    return {"U": U}
+
+
+def jacobi(U: np.ndarray, T: int) -> np.ndarray:
+    """The oracle of `04-test-plan.md` §4: a two-loop numpy Jacobi, written here and nowhere else.
+
+    It is deliberately not the kernel and not the plan. **The boundary is carried forward**: rows
+    `0`/`H+1` and columns `0`/`W-1` are the read-only Dirichlet boundary (`02-hld.md` §7.2), so
+    plane `t+1` starts as plane `t` and only the interior is recomputed. That is the same fact
+    §6.3's coverage paragraph states from the other side — "the value written back is the one
+    that was staged in" — and it is why the plan seeds **both** halves of the swap pair.
+    """
+    E = U.copy()
+    for t in range(T):
+        E[t + 1] = E[t]
+        for i in range(1, H + 1):
+            for j in range(1, WIDTH - 1):
+                E[t + 1, i, j] = np.float32(0.2) * (E[t, i, j] + E[t, i - 1, j] + E[t, i + 1, j]
+                                                    + E[t, i, j - 1] + E[t, i, j + 1])
+    return E
+
+
+@pytest.mark.fr("FR-K3", "FR-M4")
+@pytest.mark.parametrize("T", [4, 5])
+@pytest.mark.parametrize("target", TARGETS)
+def test_sem_compute_nodes_w2(target, T):
+    """Interpreting W2's plan reproduces the two-loop Jacobi within `1e-5`, both parities.
+
+    The interpreter's round-robin scheduler is what makes put-before-get progress: at `t = 0`
+    PE 0 puts its south boundary and then **blocks** on its north ghost get until PE 1 has put
+    — which PE 1 does before blocking on its own. A `deadlock` here would mean the plan is
+    wrong, never that the scheduler needs fixing.
+    """
+    tensors = w2_inputs(T)
+    expected = jacobi(tensors["U"], T)
+    out = plan_interp.run(m4.plan(w2_legal.legal(target, T=T)), tensors)["U"]
+    assert out.dtype == np.float32
+    error = np.abs(out[1:, 1:H + 1, 1:WIDTH - 1] - expected[1:, 1:H + 1, 1:WIDTH - 1]).max()
+    assert error <= TOL, f"max abs error {error} over planes 1..{T}"
+    assert np.abs(out[1:, 1:H + 1, 1:WIDTH - 1]).max() > 0, "an all-zero result would pass"
+    # the read-only columns travel with the strip: every drained plane carries plane 0's
+    plane0 = w2_inputs(T)["U"][0]
+    for column in (0, WIDTH - 1):
+        assert np.array_equal(out[1:, 1:H + 1, column],
+                              np.broadcast_to(plane0[1:H + 1, column], (T, H)))
+    # rows 0 and H+1 are never drained — the drain covers rows 1..H — so they stay as staged
+    assert not out[1:, 0].any() and not out[1:, H + 1].any()
+    assert np.array_equal(out[0], plane0), "plane 0 is read-only and is never written back"
+
+
+@pytest.mark.fr("FR-K3")
+def test_sem_compute_nodes_w2_is_the_plan_not_the_kernel():
+    """A corrupted `StoreNode` changes the answer — the test above is not vacuous."""
+    from dataclasses import replace
+
+    from spatial.model import Const, Dtype
+
+    plan = m4.plan(w2_legal.legal())
+    loop = plan.herd_body[4]
+    nest = loop.body[4]
+    broken = replace(nest, body=(replace(nest.body[0], body=(
+        replace(nest.body[0].body[0], expr=Const(value=0.0, text="0.0", dtype=Dtype.f32)),)),))
+    corrupted = replace(plan, herd_body=plan.herd_body[:4] + (
+        replace(loop, body=loop.body[:4] + (broken,) + loop.body[5:]),))
+    out = plan_interp.run(corrupted, w2_inputs(4))["U"]
+    expected = jacobi(w2_inputs(4)["U"], 4)
+    assert not np.allclose(out[1:, 1:H + 1, 1:WIDTH - 1],
+                           expected[1:, 1:H + 1, 1:WIDTH - 1], atol=TOL)
+
+
+@pytest.mark.fr("FR-K3", "FR-M8")
+@pytest.mark.parametrize("target", TARGETS)
+def test_sem_access_regions_w2(target):
+    """Every W2 L3 region is the `AccessMap` image of the subdomain it claims (§3.4 item 1).
+
+    `UIn` stages PE `p`'s owned rows **plus both ghost rows** of plane 0 — the union of the read
+    accesses' images over that PE's rows, which is what makes `t = 0`'s first update correct with
+    no prologue put. `UOut` drains the write access's image over the same rows at plane `t+1`,
+    widened to the whole staged width because the strip is put back whole (§6.3).
+    """
+    mapping = w2_legal.legal(target)
+    plan = m4.plan(mapping)
+    sites = {(c.name, s.kind): s for c in plan.channels for s in c.sites if s.scope == "segment"}
+    reads = mapping.kernel.statements[0].reads
+    write = mapping.kernel.statements[0].target
+    for p in range(PI):
+        rows = range(1 + p * HS, 1 + (p + 1) * HS)
+        subdomain = {"t": range(1), "i": rows, "j": range(1, WIDTH - 1)}
+        staged = plan_interp.region_indices(sites[("UIn", "put")].region, {"pi_bundle": p})
+        assert staged == set().union(*(image(mapping, access, subdomain) for access in reads)) \
+            | {(0, i, j) for i in (rows[0] - 1, rows[-1] + 1) for j in (0, WIDTH - 1)} \
+            | {(0, i, j) for i in rows for j in (0, WIDTH - 1)}
+        for t in range(4):
+            drained = plan_interp.region_indices(sites[("UOut", "get")].region,
+                                                 {"t_drain": t, "pi_bundle": p})
+            written = image(mapping, write, {"t": range(t, t + 1), "i": rows,
+                                             "j": range(1, WIDTH - 1)})
+            assert written < drained, "the strip is put whole, so the columns are a superset"
+            assert drained - written == {(t + 1, i, j) for i in rows for j in (0, WIDTH - 1)}
+    assert sites[("UIn", "put")].region.sizes == (1, HS + 2, WIDTH)
+    assert sites[("UOut", "get")].region.sizes == (1, HS, WIDTH)
+    # the L1 end of a whole-strip transfer is the empty region
+    assert next(s for c in plan.channels if c.name == "UIn" for s in c.sites
+                if s.scope == "herd").region.offsets == ()
+
+
+@pytest.mark.fr("FR-K3", "FR-M8")
+@pytest.mark.parametrize("T", [4, 5])
+@pytest.mark.parametrize("target", TARGETS)
+def test_sem_coverage_w2(target, T):
+    """The drained regions partition planes `1..T` × rows `1..H`: no gap, no overlap (§3.4 item 3).
+
+    Two assertions, and the second is where W2 differs from W1 and W3: the plan's **claimed**
+    drain domain is planes `1..T` × rows `1..H` × **all** `W` columns, and the kernel's write
+    domain is the same box narrowed to columns `1..W-2`. The claim is a strict superset in the
+    column direction only, because the strip is put back whole and the two boundary columns carry
+    back the values that were staged in — `03-lld-M4-mapping.md` §6.3's coverage paragraph is
+    that sentence, and `test_sem_compute_nodes_w2` checks the values themselves.
+    """
+    mapping = w2_legal.legal(target, T=T)
+    plan = m4.plan(mapping)
+    get = next(s for c in plan.channels if c.name == "UOut" for s in c.sites
+               if s.scope == "segment")
+    drained = [plan_interp.region_indices(get.region, {"t_drain": t, "pi_bundle": p})
+               for t in range(T) for p in range(PI)]
+    union: set[tuple[int, ...]] = set().union(*drained)
+    claimed = {(t, i, j) for t in range(1, T + 1) for i in range(1, H + 1)
+               for j in range(WIDTH)}
+    assert sum(len(part) for part in drained) == len(union) == len(claimed)   # (a) no overlap
+    assert union == claimed
+    write = mapping.kernel.statements[0].target
+    domain = {"t": range(T), "i": range(1, H + 1), "j": range(1, WIDTH - 1)}
+    written = image(mapping, write, domain)
+    assert written < union, (                                                # (b) the claim
+        "the claimed drain domain is a strict superset of the kernel's write domain in the "
+        "column direction only: the strip is put back whole, so columns 0 and W-1 of every "
+        "drained plane carry back the staged read-only boundary (03-lld-M4-mapping.md §6.3)")
+    assert union - written == {(t, i, j) for t in range(1, T + 1) for i in range(1, H + 1)
+                               for j in (0, WIDTH - 1)}
