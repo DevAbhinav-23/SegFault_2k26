@@ -516,7 +516,7 @@ count_mismatched: int, total: int)` — every count names its denominator.
 | Kind | Path | Comparison |
 |---|---|---|
 | AIR module text | `tests/golden/<workload>.<variant>.<target>.air.mlir` | **byte for byte** |
-| Mapping summary | `tests/golden/<workload>.<variant>.summary.txt` | byte for byte |
+| Mapping summary | `tests/golden/<workload>.<variant>.<target>.summary.txt` | byte for byte |
 | Mapping plan | `tests/golden/<workload>.<variant>.plan.json` | canonical JSON (sorted keys, 2-space indent, `\n` line ends), compared as parsed objects |
 | Pass-inspection facts | `tests/golden/<workload>.<variant>.ir_facts.json` | a small object: `{"pingpong_unroll": 2, "broadcast_pattern_count": 0, "cascade_channels": 0, "lock_init_histogram": {...}}` — the facts we assert about post-pass IR, so the test does not depend on the whole IR text |
 

@@ -559,3 +559,104 @@ literal is B's own hand transcription of `03-lld-M4-mapping.md` §6.1, and a D6 
 assert `m4.plan(...) == w1_plan.plan()`); that the emitted module computes GEMM (no device, and
 `04-test-plan.md` §3.4 is explicit that the oracle link is structural, not executed); that
 anything holds for W1-flip, W2 or W3.
+
+---
+
+# Phase P2 — M4, the W1 path from `LegalMapping` to `MappingPlan`
+
+*2026-09-13. Branch `role-b`. `spatial/m4_mapping.py`'s ten passes, general machinery with one
+protocol builder; `m4.plan(w1_legal.legal(t)) == w1_plan.plan(t)` for both targets, and M5 turns
+that plan into the existing W1 goldens byte for byte. **Nothing here was pushed.***
+
+## Landed
+
+| # | What | Where |
+|---|---|---|
+| 1 | `m4.plan` — the ten passes of M4 §3.1 in their fixed order, each a module-level pure function: `preconditions`, `resolve_herd`, `tensor_plan`, `classify`, `buffer_plan`, `channel_plan` (via `l3_region`), `loop_plan`, `protocol`, `summary` (+ `residency`), `self_check`, then return | `spatial/m4_mapping.py`, 1 231 lines |
+| 2 | General machinery, not W1 shapes: `tile_shape` from the `AccessMap` and the tile factors (§3.3 note 1); `classify` in `UCoord` over `pi_u`/`ker_pi_u` with `root()` via `Axis.parent`, including the CASCADE row and the declared override; `multicast_geometry`, `l3_region`, `loop_kind`, `tensor_plan` (reads before writes, shapes through `bindings`), `residency`/`temporal_axes`/`moved_axes` per §3.9 lines 1-8, `reduction_split` | same |
+| 3 | Exact integer linear algebra in **pure Python** over `Fraction` — `_rref`, `_rank`, `_in_span`, `kernel_basis` (§3.2's `KERNEL_BASIS`). `numpy` is not imported: nothing here needs a float | same |
+| 4 | One protocol builder: §6.1's fill / compute / drain. `exchange`, `forward` and a non-empty `r_space` raise `NotImplementedError` naming the phase; §3.1's `PLAN` wrapper re-raises every non-`SpatialError` as a `MappingError` with `details["internal_exception"]` (§5) | same |
+| 5 | `reside(x="L2")` → a **real** `MappingError(PROTOCOL-UNSUPPORTED)` whose clause is `reside(U="L2")` (§3.3 note 5, FR-S12) | same |
+| 6 | §4's preconditions asserted: `physical_herd` divides `grid` with those `repeats` and is within the target cap (`_trace.py:88-91`), `len(pi) == len(grid)` of rank 1-2, `l1_bytes ≤ 65536`, `rank(r_space) ≤ 1` with an A/C operator, declared halo ≥ derived footprint. Each names the two values and the section | same |
+| 7 | Two internal-consistency checks that make a spec sentence true **by check**: every `ChannelSite.order` is its index in the body holding it (§5.2 at v4), and `MappingPlan.buffers` is the order the herd body allocates them (§5.6) | same |
+| 8 | `m4.self_check` — the P3 stub: a pass-through returning `None`, at its final import path, called by `plan()` on its own result. **Replaced in P3** by §3.7-§3.8 (P1' balance, P2b acyclicity, bundle indices, ping-pong shape, the DMA-channel budget) | `spatial/m4_selfcheck.py` |
+| 9 | 25 unit cases — the M4 §7 rows this phase can honour, plus the acceptance and the import lint | `tests/unit/test_m4_mapping.py` |
+| 10 | `test_W1_legal_to_text[npu1\|npu2]` — gate **G2**'s B half: `LegalMapping` → `m4.plan` → `m5.emit` → the existing `w1.base.<target>.air.mlir` golden | `tests/integration/test_golden.py` |
+| 11 | **B-P14 closed** (architect ruling): the summary golden is per target. `w1.base.summary.txt` → `w1.base.npu1.summary.txt` (`git mv`), `w1.base.npu2.summary.txt` generated, `06-interfaces.md` §8's row and `00-README.md` §4's change log carry the erratum | `tests/golden/`, `design/` |
+
+## Verified (command → result)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `.venv/bin/python -m pytest` | **448 passed, 4 deselected** in 1.55 s (was 420 passed, 4 deselected); 1.67 s wall. Budget NFR-3 is 180 s |
+| 2 | `PYTHONHASHSEED=1 … -m pytest` / `PYTHONHASHSEED=2 … -m pytest` | 448 passed, 4 deselected both times (1.55 s / 1.58 s); `diff` of the two 448-line `-vv` id/outcome lists is empty |
+| 3 | `.venv/bin/python -m pytest -m slow` | **4 passed**, 448 deselected, 3.24 s — unchanged by this phase |
+| 4 | `.venv/bin/python -c "import spatial.m4_mapping, spatial.m4_selfcheck, sys; print('air' in sys.modules, 'spatial.m5_emit' in sys.modules)"` | `False False` (FR-S20, I-1) |
+| 5 | `m4.plan(w1_legal.legal(t)) == w1_plan.plan(t)` for `t ∈ {npu1, npu2}` | **True**, and `to_json` of the two is equal — field for field, on the first run, with **no edit to the literal** |
+| 6 | `m5.emit(m4.plan(...), t).mlir` vs `tests/golden/w1.base.<t>.air.mlir` | byte for byte for both targets |
+| 7 | `git status --porcelain tests/golden` after `pytest --update-goldens` | only the intended rename and the one new npu2 summary; `w1.base.*.air.mlir`, `*.plan.json` and `*.ir_facts.json` unchanged |
+
+## The RESIDENCY algorithm's own output for W1 (§3.9 lines 1-8, verbatim)
+
+```
+A: multicast along py, re-fetched per k0
+B: multicast along px, re-fetched per k0
+C: stationary (spatial), resident for the whole run
+```
+
+`T = (k0,)` — `i0` and `j0` are placed, `i1`/`j1`/`k1` run inside the tile — and
+`M_A · e_k ≠ 0`, `M_B · e_k ≠ 0`, `M_C · e_k = 0`. The flip's half is checked at the function
+level in the same test: `residency(flip, "B") == "resident for the whole run"` and
+`residency(flip, "A") == "re-fetched per i0"`, which is FR-K2's claim.
+
+## Reconciliation with the W1 literal
+
+**None was needed.** The derived plan equalled `tests/fixtures/plans/w1_plan.py` field for field
+at the first run, so no literal field was changed, no golden was regenerated beyond the B-P14
+rename and the new per-target file, and `w1.base.<target>.plan.json` is byte-identical. Every
+P0c reading the literal recorded — `LoopPlan.depth` counting enclosing loops, `ChannelSite.order`
+as the index in its body, an `Expr` naming the `LoopPlan.axis` that binds it, `buffers` in
+allocation order — is now a rule in the code, and two of them are *asserted* rather than
+believed (landed row 7).
+
+## Spec readings taken, where the documents disagree
+
+| # | Reading | Why, and what it is worth |
+|---|---|---|
+| 1 | **A `stationary` clause marks the row `declared` unless the operand is the reduction target.** | §3.2's pseudocode marks only `stream`/`exchange` rows declared (lines 19-21), which makes the flip's `B` *derived* — but §7's `test_M1_trichotomy_flip` and §6.2's summary both require `("B", STATIONARY, None, **True**)` / `B: stationary (declared)`. Meanwhile §6.1, FR-M11's acceptance and the committed golden require W1's `C: stationary (**derived**)` although `stationary("C")` is equally declared. No rule in the documents produces both. The carve-out chosen is the only one with a reason behind it: the accumulator's PE-locality follows from `r_space == {}` (with `R_time = R` no partial sum ever leaves the PE), so the clause is redundant there, while on the flip the clause is the only thing that names `B`. **Affects the `declared` flag only, never the delivery.** Recorded as **B-P17** for the architect |
+| 2 | **An `exchange` clause does not replace a delivery row.** | §3.2 line 20 lumps `exchanges` with `streams`, but `Delivery` has no halo member and §6.3 prints W2's delivery as two facts — `U: STATIONARY strip (derived); halo exchange along px, width 1 (declared)`. `classify` therefore ignores `exchanges`, and the halo is a *protocol* selected in `protocol()`. This is also load-bearing for reachability: if `classify` raised for W2, FR-S12's `test_M4_reside_l2` — a W2 schedule — could never reach §3.3 line 11a |
+| 3 | **`DEPTH` drops its delivery half and keeps its residency half.** | §3.3 line 28 reads "`MULTICAST` or `FORWARD` **and** re-fetched per trip", which puts the flip's `a` at depth 0 — but §6.2's own table gives `a` `loop_depth 1` and `ping_pong_candidate = True`, and it is `STATIONARY`. Implemented as: a **read** operand is depth 1 iff a temporal outer tile axis moves its tile, and a written accumulator is always 0 (it is allocated once and drained). Reproduces §6.1's and §6.2's buffer tables both |
+| 4 | **Bundle and drain loop names are `f"p{root(place[d])}_bundle"` and `f"{root(place[d])}_drain"`.** | `06-interfaces.md` §5.5's footnote says `<operand>_bundle` / `<operand>_drain`, which matches **neither** worked example: §6.1 prints `pi_bundle`, `pj_bundle`, `i_drain`, `j_drain` and §6.2 writes the flip's bundle index `pk`. The implemented rule reproduces both. Recorded as **B-P18** |
+| 5 | **Compute-nest loop names are positional over `Statement.axes`** — `m`, `n`, `t`, and the zeroing nest's `m0`, `n0`. | §6.1 prints them for W1 and §6.2 prints the same three for the flip **including its untiled `j`** (a `0..64` loop named `n`), so the name cannot be the axis's own name. §6.3 and §6.4 print W2's and W3's nests with the kernel axis names (`i`, `j`) instead, which this rule does not reproduce — a P4/P5 decision, logged as **B-P18** |
+| 6 | **`KernelModel` records no expression tree, so only the accumulate form can be rebuilt.** | §2.4's `Statement` carries `kind`, `target`, `reads`, `op` and nothing else. M4 can therefore build `acc[...] = acc[...] + <product of the reads>` — exactly what §6.1 shows — and **cannot** build W2's `0.2 * (five-term sum)` (§7's `test_M4_stencil_is_five_point`) or W3's `max`/`Select` recurrence (§6.4) from the model as frozen. This is a **contract gap**, not an implementation gap: the fix is an `ExprNode` on `Statement` (a v5 change) or M1 handing M4 the tree some other way, and it must be settled before P4. Recorded as **B-P19** |
+| 7 | **Every mapping diagnostic this phase raises is `PROTOCOL-UNSUPPORTED`.** | §5 names no code for a §4 precondition failure, and none for the wrapper's re-raise; §6.3's mapping stage has exactly five codes and M0 enforces the set (I67). The same least-bad spelling as M5's P1 reading 1 (B-P13) is used: `PROTOCOL-UNSUPPORTED` with `details["internal_consistency"]` or `details["internal_exception"]`, `clause="plan()"`, and a `fix` that asks for a bug report rather than blaming a clause the user wrote. Recorded as **B-P20** |
+| 8 | **The rendered reduction split unions `r_time` and `r_space` and re-splits over the post-tiling axes by placedness.** | §3.9 line 10's paragraph requires exactly that — printing `r_time` bare gives the flip `R_time = {}`, which is false. W1 renders `span{e_k0, e_k1}` / `{}`, which is what §6.1 and the golden carry |
+| 9 | **A read-only operand is filled, a written one is drained, and the accumulator is never filled.** | §3.5 lines 7-10 say "if written: drain; if read: fill". W1's `C` is read *and* written in the source (`+=`), yet §6.1 has no `C2L1`: the accumulator is initialised by the zeroing `LoopPlan`. An operand that is genuinely both (W2's `U`) needs both and is not built |
+| 10 | **`_PHYSICAL_CAP` duplicates `_trace.py:88-91` inside M4.** | §4's precondition is "within the target cap", and M4 may not import `air` (I-1) or reach into the test fixtures. Four lines, cited; skipped when `target == "auto"`, which M6 resolves |
+
+## Not done, and why
+
+| # | Item | Reason |
+|---|---|---|
+| 1 | §3.7-§3.8 — P1' balance, P2b acyclicity, the two structural checks, the DMA-channel budget | **P3.** `m4.self_check` is the pass-through stub above; it accepts every plan, including the six corrupted-plan negatives of §7, which are therefore **not** written yet |
+| 2 | §3.6.1 halo (W2), §3.6.2 wavefront (W3), §3.6.3 cascade (the flip) | P4/P5/P6. Each raises, and `test_M4_unbuilt_protocols_fail_legibly` asserts the code, the clause and the phase for all three inputs |
+| 3 | The M4 §7 rows those builders carry — `test_M4_halo_protocol`, `test_M4_balanced`, `test_M4_drains_every_plane`, `test_M4_stencil_is_five_point`, `test_M4_halo_indices`, `test_M4_odd_T_peel`, `test_M4_even_T_no_peel`, `test_M5_*`, `test_M6_cascade_*`, `test_M9_*`, `test_M10_*`, `test_M11_bundle_index_iv`, `test_M11_pingpong_shape`, `test_P3_*`, `test_M4_tensor_order_rejected` | They are **absent**, not skipped; this row is the list |
+| 4 | The full-plan halves of `test_M1_trichotomy_flip` and `test_M3_stream_override` | Both are asserted at `classify()` level, which is the half that exists |
+
+## Open / blockers
+
+| # | Item | Detail |
+|---|---|---|
+| **B-P14** | **CLOSED** | The summary golden is `<workload>.<variant>.<target>.summary.txt`. Rename done, npu2 generated, §8 and the change log carry the erratum; no `CONTRACT_VERSION` bump |
+| **B-P17** | `declared` for a `stationary` clause | Reading 1. Needs a one-line ruling in §3.2 before the flip's summary golden is frozen |
+| **B-P18** | Two naming rules the documents spell three ways | Readings 4 and 5. §5.5's `<operand>_bundle` footnote, and the compute-nest names in §6.3/§6.4 |
+| **B-P19** | `Statement` carries no expression tree | Reading 6. **Blocks P4/P5**: W2's stencil and W3's recurrence cannot be rebuilt from the frozen `KernelModel`. A contract question, and the one item here that is not B's to settle alone |
+| **B-P20** | No mapping code for an internal-consistency failure | Reading 7, the twin of B-P13 |
+| **B-P5** | **CLOSED** | `assert_golden`'s compare path has been exercised since P1 and is exercised again here by both summary goldens and the two `air.mlir` goldens |
+| **B-P10**, **B-P12**, **B-P13**, **B-P15**, **B-P16**, **B-O8** | unchanged | — |
+| **v4 signatures** | unchanged | A and C have still not signed `CONTRACT_VERSION = 4` |
+
+**Not verified in this phase**: that any plan but W1's is right — the other three raise by
+construction; that `self_check` catches anything at all (it is a pass-through); that the emitted
+module computes GEMM (no device, `04-test-plan.md` §3.4 keeps the oracle link structural); and
+every `NotImplementedError` path beyond the three inputs the tests drive through it.

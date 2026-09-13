@@ -1,12 +1,12 @@
 """Level G — the golden pipeline. Spec: design/04-test-plan.md §3.1, design/06-interfaces.md §8.
 
-W1 only: the other three variants need M4, or plan literals that do not exist yet
-(`design/PROGRESS-B.md`, phase P1).
+W1 only: the other three variants need the protocol builders of M4 §3.6, which land in
+P4/P5/P6 (`design/PROGRESS-B.md`).
 
 A golden is valid **only for the pinned wheel** (FR-T6), so a pin mismatch **skips** every test
 here with the reason rather than failing it (§8 rule 2).
 
-Written by B at P1; C owns `tests/helpers/golden.py` itself.
+Written by B at P1, extended at P2 with the M4 path; C owns `tests/helpers/golden.py`.
 """
 
 from __future__ import annotations
@@ -15,8 +15,9 @@ import json
 
 import pytest
 
-from spatial import m5_emit, m6_tools as m6
+from spatial import m4_mapping as m4, m5_emit, m6_tools as m6
 from spatial.model import ToolchainError, to_json
+from tests.fixtures.mappings import w1_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers.golden import assert_golden
 
@@ -44,19 +45,32 @@ def test_golden_w1(target):
     assert_golden(f"w1.base.{target}.plan.json", json.loads(to_json(plan)), kind="json")
 
 
+@pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.fr("FR-M11")
-def test_golden_w1_summary():
-    """The rendered summary (FR-M11).
+def test_golden_w1_summary(target):
+    """The rendered summary (FR-M11), **per target** — the B-P14 ruling.
 
-    One file, as `06-interfaces.md` §8 names it (`<workload>.<variant>.summary.txt`, no
-    target) — so it is written for `npu1` only: W1's summary carries the herd's *physical*
-    shape and repeats, which differ between the targets, and §8's path has nowhere to say
-    which. `w1.base.npu2.plan.json` carries the npu2 rendering of the same lines, so nothing
-    is unwitnessed. Recorded in `design/PROGRESS-B.md` as a §8 / §3.1 naming conflict.
+    `06-interfaces.md` §8's target-less `<workload>.<variant>.summary.txt` could not hold both
+    targets: W1's summary carries the herd's *physical* shape and repeats, which differ between
+    npu1 and npu2. The architect ruled the path gains `<target>`; §8 carries the erratum.
     """
     require_pin()
-    summary = w1_plan.plan("npu1").summary
-    assert_golden("w1.base.summary.txt", "\n".join(summary.lines) + "\n", kind="text")
+    summary = w1_plan.plan(target).summary
+    assert_golden(f"w1.base.{target}.summary.txt", "\n".join(summary.lines) + "\n", kind="text")
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-E7", "FR-M12")
+def test_W1_legal_to_text(target):
+    """Gate G2's B half: `LegalMapping` → M4 → M5 → the compiled module's own golden text.
+
+    The literal plan is M4's stand-in no longer: the text M5 emits from the plan M4 *derives*
+    is byte for byte the `w1.base.<target>.air.mlir` golden that the hand-written literal
+    produced, which is the whole of `m4.plan` + `m5.emit` against one file.
+    """
+    require_pin()
+    result = m5_emit.emit(m4.plan(w1_legal.legal(target)), target)
+    assert_golden(f"w1.base.{target}.air.mlir", result.mlir, kind="text")
 
 
 def test_golden_skips_on_pin_mismatch(monkeypatch):
