@@ -2,6 +2,12 @@
 
 The `--update-goldens` guards of §3.1 are here; the fixture fixtures (§3.3), the time budget
 (§3.6) and the network gate (§3.7) land in a later phase.
+
+`FR_MARKERS` and its `pytest_collection_modifyitems` hook were **added by B at P7** so that
+`tests/integration/test_traceability.py` (M7 §6.3) can see the *whole* suite: the default
+`addopts` deselect `slow` and `requires_device` items inside pytest's own
+`pytest_collection_modifyitems`, which runs **after** this `tryfirst` one, so the index is
+complete before anything is filtered. **Person C still owns this file.**
 """
 
 import os
@@ -18,6 +24,24 @@ _MARKERS = (
     ("requires_device", "needs XRT and /dev/accel*"),
     ("fr", "fr('FR-...', ...): the requirement(s) this test accepts"),
 )
+
+
+FR_MARKERS: list[tuple[str, tuple[str, ...]]] = []
+"""`(nodeid, fr ids)` for every item collected this session, `slow` and `requires_*` included.
+
+Read by `tests/integration/test_traceability.py`. Empty until a collection has happened, and
+complete only for a whole-suite collection — the gate skips itself when pytest was given an
+explicit path, because a partial collection cannot prove coverage.
+"""
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Record every collected item's `fr(...)` ids **before** `-m` deselects anything."""
+    FR_MARKERS.clear()
+    for item in items:
+        ids = tuple(fr for mark in item.iter_markers("fr") for fr in mark.args)
+        FR_MARKERS.append((item.nodeid, ids))
 
 
 def pytest_addoption(parser):

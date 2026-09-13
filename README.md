@@ -6,6 +6,9 @@ Read [`hackathon/HANDOFF.md`](hackathon/HANDOFF.md) first. Ownership: [`design/0
 
 Python is pinned to **3.12**; the toolchain is pinned in [`design/07-environment.md`](design/07-environment.md) §1.
 
+Branch **`role-b`** carries Person B's implementation (M0, M4, M5, M6's off-device half) and
+`CONTRACT_VERSION = 5`; `main` may lag until it is fast-forwarded.
+
 ```bash
 uv venv --python python3.12 --seed .venv
 .venv/bin/python -m pip install --no-index --find-links vendor/wheels 'mlir_air[aie]' pytest

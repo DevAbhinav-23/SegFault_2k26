@@ -21,7 +21,7 @@ import pytest
 
 from spatial import m4_mapping as m4, m5_emit, m6_tools as m6
 from spatial.model import BranchNode, EmissionError, LoopPlan, MappingPlan
-from tests.fixtures.mappings import w1flip_legal, w2_legal, w3_legal
+from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers import determinism
 from tests.helpers.diagnostics import assert_diagnostic
@@ -82,6 +82,11 @@ def emit_w3_text(target: str = "npu1") -> str:
 def emit_w1_text(target: str = "npu1") -> str:
     """Module-level and picklable, so `determinism.in_fresh_process` can call it (FR-E10)."""
     return m5_emit.emit(w1_plan.plan(target), target).mlir
+
+
+def emit_flip_text(target: str = "npu1") -> str:
+    """Module-level and picklable, so `determinism.in_fresh_process` can call it (FR-E10)."""
+    return m5_emit.emit(m4.plan(w1flip_legal.legal(target)), target).mlir
 
 
 def air_in_sys_modules_after_importing_m5() -> bool:
@@ -477,6 +482,27 @@ def test_sequential_emits_scf_for(target):
     assert any(isinstance(n, LoopPlan) and n.kind == "unrolled" for n in plan.segment_body)
 
 
+@pytest.mark.parametrize("target", ["npu1", "npu2"])
+@pytest.mark.fr("FR-S14")
+def test_pipeline_is_hint(target):
+    """FR-S14's other half: `pipeline(ax)` is **recorded and read by nothing**.
+
+    Two W1 schedules differing only in `pipeline` — W1 declares `pipeline=("k0",)`
+    (`03-lld-M3-checker.md` §6.1) — must produce byte-identical AIR text. Asserted through the
+    **real** M4, not the plan literal, so the claim covers the mapper as well as the emitter:
+    if `pipeline` ever reached a `LoopPlan.kind`, a region or a name, the texts would diverge.
+
+    Written by B at P7; M5 §7 named this row and no test carried it.
+    """
+    mapping = w1_legal.legal(target)
+    assert mapping.schedule.pipeline == ("k0",), "the fixture must differ from the control"
+    without = replace(mapping, schedule=replace(mapping.schedule, pipeline=()))
+
+    with_hint = m5_emit.emit(m4.plan(mapping), target).mlir
+    assert with_hint == m5_emit.emit(m4.plan(without), target).mlir
+    assert with_hint == text(target), "and both are the golden W1 text"
+
+
 # --------------------------------------------------------------------------------------------
 # The precondition checks of M5 §5: our defect, never the user's
 # --------------------------------------------------------------------------------------------
@@ -609,13 +635,21 @@ def test_M5_uses_branch():
     assert re.search(r"arith\.cmpi eq, %\w+, %c3\w* : index", text)
 
 
-@pytest.mark.fr("FR-E2", "FR-D9")
+@pytest.mark.fr("FR-E2")
 def test_E_select_emitted():
     """The substitution score is `arith.select`, a **value**, with no `scf.if` in the `j` loop.
 
-    FR-D9: a conditional over buffer data is an expression. `ops.select` decides per element and
+    A conditional over buffer data is an *expression*: `ops.select` decides per element and
     evaluates both sides; `ops.branch` decides per core and runs one — the two halves of
     if-conversion, and picking the wrong one is what `_cond.py`'s table exists to prevent.
+
+    The marker used to read `fr("FR-E2", "FR-D9")`. **There is no FR-D9** (the D group is
+    FR-D1…D3): `03-lld-M5-emitter.md` §3.6 and `06-interfaces.md` §5.5 both cite
+    "`01-requirements.md` FR-D9" for the value-level conditional, and the requirement they mean
+    is **FR-S3 item 8**, whose *source* line is decision `D9`. That is A's grammar requirement,
+    accepted by `test_grammar_select_expr`, not by this test — so the id is dropped rather than
+    moved. Found by `test_traceability_no_marker_invents_an_fr` at P7; the two document
+    citations are **B-P27** in `design/PROGRESS-B.md`.
     """
     lines = w3_text().splitlines()
     starts = [i for i, line in enumerate(lines) if "arith.select" in line]
@@ -735,3 +769,26 @@ def test_E10_byte_identical_w3():
     """W3 twice in this process, and once in a fresh one under another PYTHONHASHSEED."""
     assert w3_text("npu1") == emit_w3_text("npu1") == determinism.in_fresh_process(
         emit_w3_text, "npu1")
+
+
+@pytest.mark.fr("FR-E10")
+def test_E10_byte_identical_w2():
+    """W2 twice in this process, and once in a fresh one under another PYTHONHASHSEED.
+
+    Added by B at P7: `04-test-plan.md` §8 item 3 wants **all four** variants byte-identical
+    across two seeds, and only W1 and W3 had a vehicle.
+    """
+    assert w2_text("npu1") == emit_w2_text("npu1") == determinism.in_fresh_process(
+        emit_w2_text, "npu1")
+
+
+@pytest.mark.fr("FR-E10", "FR-K2")
+def test_E10_byte_identical_flip():
+    """W1-flip twice in this process, and once in a fresh one under another PYTHONHASHSEED.
+
+    Added by B at P7 for the same reason as `test_E10_byte_identical_w2`. The cascade is the
+    variant most worth pinning: `chain_geometry` sorts a herd dimension and derives a direction,
+    and a set iteration order leaking into either would show up here and nowhere else.
+    """
+    assert flip_text("npu1") == emit_flip_text("npu1") == determinism.in_fresh_process(
+        emit_flip_text, "npu1")

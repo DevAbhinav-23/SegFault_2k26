@@ -129,7 +129,7 @@ def test_I_pingpong_transform(tmp_path):
 
 
 @pytest.mark.requires_air_opt
-@pytest.mark.parametrize("workload", ["w1", "w2", "w3"])
+@pytest.mark.parametrize("workload", ["w1", "w2", "w3", "flip"])
 @pytest.mark.fr("FR-E5")
 def test_I_broadcast_count(tmp_path, workload):
     """R-04's tripwire: declaring `broadcast_shape` bypasses the detector (D-4, VF §S9).
@@ -140,9 +140,13 @@ def test_I_broadcast_count(tmp_path, workload):
     at all, so the pass has nothing to find rather than nothing left to find. If any number ever
     changes, record the new one: it means `air-broadcast-detection` now walks something we emit,
     and the reason belongs in the commit message, not in a patched expectation.
+
+    `flip` was added by B at P7 so this one test carries `04-test-plan.md` §8 item 6's "for all
+    four variants" on its own; the flip's 0 was already frozen in its `ir_facts` golden.
     """
     _require_air_opt()
-    module = {"w1": w1_module, "w2": w2_module, "w3": w3_module}[workload](tmp_path)
+    module = {"w1": w1_module, "w2": w2_module,
+              "w3": w3_module, "flip": flip_module}[workload](tmp_path)
     facts = m6.ir_facts(str(module), "npu1", ["broadcast_pattern_count"], workdir=tmp_path)
     assert facts["broadcast_pattern_count"] == 0
     assert facts["_pipeline_broadcast"] == m6.PIPELINES["broadcast"].format(target="npu1")

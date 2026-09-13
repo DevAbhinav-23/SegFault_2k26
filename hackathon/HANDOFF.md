@@ -255,3 +255,298 @@ on the pinned interpreter (`design/07-environment.md` §1–§2); **sign `06-int
 write the three kernel sources — `kernels/w1_gemm.py`, `w2_jacobi.py`, `w3_sw.py` — verbatim from
 `design/03-lld-M8-kernels-demo.md` §3.1, §3.3 and §3.4. `design/05-work-breakdown.md` §2 D0 has
 the per-person task list.
+
+---
+
+## Person B implementation — state at 2026-09-13
+
+*Appended by Person B at close-out (phase P7). Full detail, phase by phase, is in
+[`../design/PROGRESS-B.md`](../design/PROGRESS-B.md); this section is the part someone who is
+not B needs. Branch **`role-b`**, **nothing pushed** — the architect verifies and pushes.*
+
+### State
+
+**M0, M4, M5 and the off-device half of M6 are built and verified; M1, M2, M3 and M6's device
+path are not.** On `role-b`: `spatial/model.py` at **`CONTRACT_VERSION = 5`** (33 dataclasses,
+78 enforced invariants, the 43-code catalogue, canonical JSON), `spatial/m4_mapping.py` (the ten
+passes of M4 §3.1 and all four protocol builders — fill/compute/drain, halo, wavefront,
+cascade), `spatial/m4_selfcheck.py` (P1′ balance, P2b acyclicity, the §3.7.3 structural
+invariants, the P3 DMA-channel budget), `spatial/m5_emit.py` (one public name, all thirteen
+§3.2 translation rows), and the off-device half of `spatial/m6_tools.py`. The M7 harness shell
+and its helpers (`conftest`, `golden`, `diagnostics`, `determinism`, `plan_interp`) were written
+by B to unblock the above and are **flagged in every file's docstring for Person C**.
+
+**All four variants run end to end on B's side** — `LegalMapping → m4.plan → m5.emit → AIR
+text → aircc`: W1 GEMM, the W1 weight-stationary flip, W2 Jacobi and W3 Smith-Waterman, on
+**both npu1 and npu2**. Gates **G2, G3, G4 and G5 are green on B's half only.**
+
+Tests: **611 passed, 1 skipped, 12 deselected in 12.4 s** (`pytest`), **12 passed in 5.9 s**
+(`pytest -m slow`), and the `PYTHONHASHSEED=1` vs `=2` `-vv` id/outcome diff over 612 lines is
+**empty**. The one skip is the traceability gate for A's and C's FR groups, and it prints the
+31 uncovered ids as its reason.
+
+**`main` does not have any of this.** `role-b` is ahead by the P0a–P7 commits; `main` is at the
+design set. Nothing has been pushed to either.
+
+**The load-bearing caveat.** Every `LegalMapping` in the suite is a **hand-written literal**
+transcribed from Person A's LLDs, because M1/M2/M3 do not exist. **No test here proves the
+legality checker will produce them.** That is the single largest open risk to G2–G5 as a chain,
+and it is not a risk B can close.
+
+### Decisions taken, with reasons
+
+1. **`CONTRACT_VERSION = 4`** (architect's ruling, P0d). Two additions, each forced by a
+   requirement rather than by convenience. **`HerdPlan ∈ PlanNode`**: M4 §6.1 printed a
+   `<HERD>` marker in `segment_body` that the frozen `PlanNode` union had no member for, so M5
+   would have had to *infer* where the herd opens — which is exactly what D-14 forbids. It is
+   now a node, at top level, equal to `MappingPlan.herd`. **`KernelModel.bindings`**: FR-M7's
+   `TENSOR_PLAN` needs concrete L3 shapes, and M1 §6.3 prints shapes like `("MQ+1","NR+1")`
+   that M0 rejects two ways; §2.1 now says normatively that a shape entry which is not a bare
+   NAME resolves to the int it evaluates to under `bindings` at capture.
+2. **`CONTRACT_VERSION = 5`** (three rulings, P2b). **`Statement.expr: ExprNode`** — the frozen
+   `Statement` carried `kind`, `target`, `reads` and `op` and nothing else, from which M4 can
+   rebuild `acc = acc + <product>` and **cannot** rebuild W2's five-point stencil or W3's
+   `max`/`Select` recurrence. It was a contract gap, not an implementation gap, and it blocked
+   W2 and W3 outright. M4 now rewrites the kernel's own tree load by load and synthesises no
+   arithmetic of its own except the accumulator zeroing and the cascade accumulate, neither of
+   which corresponds to a kernel statement.
+3. **Ruling R2 — `declared` means "a clause names this operand's delivery"**, not "the
+   derivation disagreed". The documents wanted W1's `C: stationary (derived)` *and* the flip's
+   `B: stationary (declared)` out of one rule, and no rule produced both; R2 makes it a fact
+   about the schedule, so W1 now renders `C: stationary (declared)` too. It moves one flag and
+   never the delivery — the `*.air.mlir` goldens were byte-identical across the change, which
+   is the check that proves it.
+4. **Ruling R3 — the loop-axis naming rule.** `p<root>_bundle`, `<axis>_drain`, `<axis>_source`
+   (added at P4 for W3's row loop), and a compute or zeroing nest named by the **post-tiling
+   axis it realises** (`i1`, `j1`, `k1`), never positionally. `06-interfaces.md` §5.5's old
+   `<operand>_bundle` footnote matched neither worked example.
+5. **Ruling R-W3-1 — W3 keeps its source and drain on `S`'s own boundary columns.** The
+   fallback of dropping `EastOut` and the tail PE's put was available and was **not taken**:
+   the source puts `S[i, 0:1]` and the drain gets `S[i, NR:NR+1]`, so `MappingPlan.tensors` is
+   exactly `(q, r, S)` and no synthetic tensor exists. It is a measurement, not an argument —
+   `aircc` runs `air-verify-hierarchy-locality{strict=true}` on the **placed** IR by default
+   (`tools/aircc/aircc.cpp:1213-1218`, `:264` is `cl::init(PIV_error)`), and both it and an
+   explicit run of that pass alone are clean.
+6. **W2's swap pair is seeded, not just `cur`.** M4 §3.6.1 stages plane `lo` into `cur` alone;
+   §6.3 then claims of **every** drained plane that "the value written back is the one that was
+   staged in". The planes alternate between `cur` and `next` and the drain puts the strip whole,
+   so three values would be undefined — the two Dirichlet columns, and the domain-edge ghost
+   rows whose guards are false exactly there — and the plan would write an alternating boundary
+   into L3 that no oracle matches. The plan therefore carries a `StoreNode` copy
+   `next[i1,j] = cur[i1,j]` right after the `UIn` get, the same device the accumulator zeroing
+   and the cascade accumulate already use. `UIn` stays 1 put / 1 get per index.
+7. **P2b channel edges are FIFO-paired.** §3.7.2's all-pairs rule — "every put node and every
+   get node whose `(channel, concrete index)` match" — reports a **cycle on W2's real plan**,
+   and every channel edge in that cycle pairs a *later* put with an *earlier* get, which a FIFO
+   never does. `_pairs` zips the k-th put to the k-th get where the pairing is defined and falls
+   back to all-pairs otherwise. It is strictly fewer edges, so it cannot turn a cyclic plan
+   acyclic where the pairing does not apply; the reversed halo still raises `CHANNEL-CYCLE`.
+8. **The packet-vs-circuit DMA rule was derived from measurement and then found in the source.**
+   `mlir/lib/Transform/AIRDmaToChannel.cpp:1598-1740`, pass option `shim-dma-channels-per-col`,
+   default 2 (`mlir/include/air/Transform/Passes.td:1808-1812`), wheel
+   `0.0.1.2026091204+ff95a9b`. Per segment and per direction the per-column shim pressure is
+   `#non-broadcast + Σ_span ceil(members_span / span)`; above 2, **every** L3-attached channel of
+   that direction becomes `npu_dma_packet`. Five probes reproduce it and the pass prints its own
+   arithmetic (`warning: auto-upgrading 3 input channels to dma_packet (per-column pressure 3
+   exceeds shim DMA limit of 2)`). **Labelled measured, not contractual** (R-19/R-21): it is a
+   pass option's default on a pinned wheel. That is why `03-lld-M4-mapping.md` §3.8 splits the
+   verdict — a circuit-switched overflow is a `DMA-CHANNELS` **error** (W2 at `PI = 4`), an
+   overflow only packet-capable channels cause is a **warning** (W3's three L3 inputs).
+9. **B-P23 — a self-check failure that can only be M4's own bug reuses `PROTOCOL-UNSUPPORTED`**,
+   with `details["internal_consistency"] = True`, `details["invariant"] = <§5.6 number>`, a
+   `reason` beginning `internal:` and a `fix` that asks for a bug report rather than blaming a
+   clause the user wrote. The honest spelling would be a dedicated code; `06-interfaces.md` §6.3
+   is frozen at 43 codes and M0 enforces the per-stage set, so the catalogue was not grown
+   mid-flight. The same reasoning applies to M5's `EMIT-AIR-API` (**B-P13**, **B-P20**).
+10. **B-P25 — the W2 fixture invariant.** *Planes `1..T` of the input `U` must carry plane 0's
+    boundary rows (`0`, `H+1`) and columns (`0`, `W-1`).* The plan carries plane 0's boundary
+    **forward**; the kernel text reads plane `t`'s **own** boundary out of the one rank-3 array.
+    The two agree exactly when the input's boundary is time-invariant, which is what "read-only
+    Dirichlet boundary" (`02-hld.md` §7.2) means for a one-array kernel. The old test fixture
+    violated it silently. **Person C must satisfy it in `make_fixture.py`.**
+11. **B-P26 — `PIPELINES["aie"]` is not usable on every module we emit.** W1's fails: its
+    `C2L3` bundle index goes through the `repeats` strip-mine `affine_map` (npu1 runs a 2×2
+    logical grid on a 1×2 physical herd), `air-to-aie` cannot fold it to a constant, and the
+    pipeline dies. `aircc` reaches `air-to-aie` with the dependency and dma-to-channel passes
+    already run; our pipeline does not. Consequence, recorded rather than worked around: two
+    `ir_facts` goldens each lost **one key** — `w1.base.npu1` lost `cascade_channels` and
+    `w3.base.npu1` lost `_pipeline_pingpong` — with **no measured number altered**. The cascade
+    fact is asserted on W3 (0) and the flip (3) instead. A GEMM with no cascade has nothing to
+    say about cascade flows.
+
+### Verified facts
+
+Re-measured in the close-out session of 2026-09-13 unless the row says otherwise. Every wall
+clock and every lowering count is **this machine, this pin** (R-19/R-21).
+
+**`aircc --device <target> --output-format=none`, eight runs, one at a time, scratch `--tmpdir`
+and `cwd` outside the repository.** `error:` lines counted on stderr, because the exit code
+alone is never trusted (FR-T5):
+
+| variant | npu1 | npu2 |
+|---|---|---|
+| W1 | exit **0**, **0** `error:`, 0.88 s | exit **0**, **0** `error:`, 0.31 s |
+| W1-flip | exit **0**, **0** `error:`, 0.56 s | exit **0**, **0** `error:`, 0.36 s |
+| W2 | exit **0**, **0** `error:`, 0.21 s | exit **0**, **0** `error:`, 0.21 s |
+| W3 | exit **0**, **0** `error:`, 0.30 s | exit **0**, **0** `error:`, 0.31 s |
+
+**Per variant:**
+
+* **W1.** `physical_herd` is `(1,2)` on npu1 and `(2,2)` on npu2, so npu1's text carries
+  `air.api`'s strip-mine loop and `#map1 = affine_map<()[s0, s1] -> (s0 * 2 + s1)>` and npu2's
+  does not — two core ELFs against four, which is what proves the npu2 compile is real and not
+  a short circuit. `ir_facts`: `pingpong_unroll 2`, `hoist_alloc_count 2`,
+  `broadcast_pattern_count 0`, `pingpong_iter_args 4`. The `air-opt` transform pipeline doubles
+  the K loop's step from 16 to 32 with 4 `!air.async.token` iter-args. **The emitted text is
+  byte-identical to a hand-written upstream-API probe of the same shape** (P1's probe oracle).
+* **W1-flip.** **9 `aie.flow`, 0 `aie.packet_flow`, 3 `aie.cascade_flow`** on both targets,
+  ascending: `(0,2)→(1,2)`, `(1,2)→(2,2)`, `(2,2)→(3,2)`, asserted as an exact line list. The
+  **2-D descending** variant compiles too — `(0,5)→(0,4)`, `(0,4)→(0,3)`, `(0,3)→(0,2)`.
+  `ir_facts`: `cascade_channels 3`, `pingpong_unroll 2`, `hoist_alloc_count **1**` (`b` is
+  hoisted above `i0` and never re-fetched, so there is one ping-pong candidate and `a` is it),
+  `broadcast_pattern_count 0`, `lock_init_histogram {0: 9, 1: 9}` — 18 locks over four cores.
+  The `npu_dma_stream` contingency of FR-K2 was **not** needed: `aircc` accepted `npu_cascade`
+  on both generations at the first attempt.
+* **W2.** **6 `aie.flow`, 0 `aie.packet_flow`** — `UIn` ×2, `UOut` ×2, `ToNorth`, `ToSouth` —
+  so every core sits at exactly 2 S2MM and 2 MM2S, which is §3.8's prediction measured.
+  `ir_facts`: `broadcast_pattern_count 0`, `pingpong_unroll 0` (the `cur`/`next` pair sits
+  outside the timestep loop, so there is no candidate loop), `lock_init_histogram
+  {0: 8, 1: 2, 2: 6}` — 16 locks over two cores. `PI = 4` is rejected by `m4.plan` with
+  `DMA-CHANNELS` naming PE `[1]` and the three circuit-switched inbound channels, **before**
+  `aircc` — which is measured to fail that shape with `'aie.connect' op … targets same dst`.
+* **W2, experiment E1.** `air-opt -pass-pipeline='builtin.module(air-dependency)'` on **our own
+  module**, then a mechanical walk of the token graph:
+  **no token edge joins a PE's halo put to its own get.** Phase 0's four ops all take the
+  timestep loop's iter-arg token; phase 1's all take the compute nest's token; the `scf.if`
+  results the puts yield are dead. The taint set is 8 values, the gets' dependency lists are two
+  values, the intersection is empty. The non-vacuity guard asserts each put's token *does* reach
+  its `air.wait_all` and its `scf.if` result. **E1 is answered for the dependency pass; it is
+  not a statement about run-time channel-slot stalls, which only a device closes.**
+* **W3.** `air-verify-hierarchy-locality` clean at `strict=false` **and** `strict=true`, run
+  explicitly rather than inferred from `aircc`'s exit code. `ir_facts`:
+  `broadcast_pattern_count 0`, `cascade_channels 0`, `lock_init_histogram
+  {0: 20, 1: 16, 2: 4}` — 40 locks over four cores. `scf.if` 4, `arith.select` **2**,
+  `arith.maxsi` 6.
+
+**Interpreter results** (`tests/helpers/plan_interp.py`, green this session). It executes the
+**plan**, not the emitted IR — D-9, and the honest-limits slide is unchanged:
+
+| variant | oracle | result |
+|---|---|---|
+| W1 | `A @ B`, `numpy.random.default_rng(0)` | **exactly equal**, both targets |
+| W1-flip | `A @ B`, integer-valued `f32` in `[-8, 8)` | **exactly equal**, both targets and the 2-D variant. Dropping only the cascade accumulate gives `A[:, 48:] @ B[48:, :]` — the tail PE's own slice — so the check is not vacuous |
+| W2 | two-loop numpy Jacobi, `T = 4` and `T = 5` | **max abs error 0.0** in all four runs (`tol` is `1e-5`); boundaries and every drained plane checked |
+| W3 | textbook two-loop Smith-Waterman DP, `MQ = 32` and the peeled `MQ = 31` | **exactly equal**; row 0 and column 0 stay zero, `q` and `r` untouched, `dtype == int32` |
+
+**Probe comparisons** (measured at P4/P5/P6, **not** re-run in the close-out session). Each
+compares our emitter's lowered output against a hand-written upstream-API probe of the same
+shape: **W3 vs `review/w3c.py`** — 8 circuit `aie.flow` **byte-identical** tile for tile and DMA
+channel for DMA channel, 4 `aie.core`, 40 `aie.lock` identical; 6 `aie.packet_flow` against the
+probe's 9, because `QIn`'s declared `broadcast_shape` makes one flow with two `packet_dest`s
+where the probe needs four. **W2 vs `q/pi2/w2_pi2.py`** — 6 `aie.flow` / 0 `aie.packet_flow` /
+2 cores / 8 `scf.if` / 7 gets all identical. **W1-flip vs `review/flip1d.py asc`** — 3
+`aie.cascade_flow` identical tile for tile, 9/0 flows, 4 cores, 18 locks, 11 puts / 4 gets, 4
+allocs, all identical. **Every remaining difference is a difference in the program, not in the
+routing** — a five-point stencil against a four-point one, a per-timestep drain against a single
+one, a declared multicast against a replicated put.
+
+**Error-code coverage, measured this session**: **12 of the catalogue's 43 codes are raised** —
+mapping **5/5**, emission **2/2**, toolchain **5/6** (only `TOOL-NO-DEVICE` is short, and it
+needs a device). The 31 unraised are clause 0/8, grammar 0/7 and legality 0/15 — every one of
+them M1/M2/M3's.
+
+### Open items, by owner
+
+**Person A**
+
+1. **Sign `06-interfaces.md` v4 and v5.** Neither has a signature.
+2. **M1 must emit `KernelModel.bindings`** (v4 — it already reads the integer bindings at
+   M1 §3.4 line 18) **and `Statement.expr`** (v5 — the tree M1 §6.1–§6.3 already prints). No
+   `KernelModel` constructs without either.
+3. **The four `LegalMapping` literals under `tests/fixtures/mappings/` are B's transcription of
+   A's LLDs and must be replaced by M3's output.** `test_M4_plan_equals_literal` then becomes
+   the D6 test M7 §3.8 names.
+4. **B-P10** — M1 §6.2's dependence list is not in M0's sort order (five lines to re-order).
+5. The clause, grammar and legality negatives: 30 of the 43 error codes are raised by nothing,
+   and `test_D1_schema` / `test_D3_catalogue_complete` do not exist. The `w2_zero_t` (`T = 0`)
+   `SWAP-PARITY` fixture is the one that keeps a legality code reachable.
+
+**Person C**
+
+1. **Review B's edits to `spatial/m6_tools.py`** — `ERROR_LINE` (widened by one `loc(...)`
+   alternative, because M6 §3.2's pattern as written matches **no** `aircc` diagnostic at all),
+   `PIPELINES["aie"]` (prefixed with `air-place-herds` using the geometry `aircc` itself
+   resolves, without which `lock_init_histogram` is unreadable), and
+   `EXTRACTORS["cascade_channels"]` (counts `aie.cascade_flow`, which is 3 where the
+   `npu_cascade` string is 4).
+2. **Replace the harness stubs** written by B: `tests/conftest.py`, `tests/helpers/golden.py`,
+   `diagnostics.py`, `determinism.py`, `plan_interp.py`, and the three test files whose
+   docstrings say "Person C owns this file". The traceability gate's `_UNBUILT` list is the one
+   line C deletes when A's and C's FRs are covered.
+3. **Honour B-P25 in `make_fixture.py`** (the W2 boundary invariant above).
+4. **Update the demo line**: `05-work-breakdown.md` §5 step 2 and the M8 demo screen now read
+   `C: stationary (declared)`, not `(derived)` — ruling R2. The channel line renders
+   `CascadeK size=(3,)`, a tuple, not `[3]`. **`demo/` is empty**; B has produced every line
+   steps 2 and 3 read off the screen, but the script is unwritten.
+5. **The device path**: `m6.has_device` / `run` / `diff` / `trace`, and every `requires_device`
+   test — there is currently **not one** in the suite.
+6. **B-P26**, **B-P29** (NFR-5 covers functions and classes; module-level constants need an AST
+   lint), **B-O8** (`str(module)` stability across an upgrade within the pin).
+
+**User / architect**
+
+1. **Fast-forward `main` to `role-b`.** Nothing has been pushed.
+2. **Sign v4 and v5 as B** — B's rows in `00-README.md` §4's signature block.
+3. Rule on **B-P12** (`ChannelSite.is_async` cannot be honoured — `air.api` has no asynchronous
+   form to select), **B-P13** / **B-P20** (no error code for an internal-consistency failure),
+   **B-P15** (M5 §7's `test_sequential_emits_scf_for` row is unimplementable as written),
+   **B-P27** (the LLDs cite an `FR-D9` that does not exist; they mean FR-S3 item 8), **B-P28**
+   (`00-README.md` §3's M0 row still says "not started"), **B-P30** (test-id drift), **B-P31**
+   (M4 §8 says M4 uses numpy; it does not), **B-P3** (the "four wheels" line).
+
+### How to resume
+
+```bash
+git checkout role-b
+uv venv --python python3.12 --seed .venv          # or reuse the existing .venv
+.venv/bin/python -m pip install --no-index --find-links vendor/wheels 'mlir_air[aie]' pytest
+.venv/bin/python -m pip install -e . --no-deps
+
+.venv/bin/python -m pytest                        # 611 passed, 1 skipped, 12 deselected, ~12 s
+source scripts/airenv.fish                        # bash/zsh: source scripts/airenv.sh
+.venv/bin/python -m pytest -m slow                # 12 passed, ~6 s — needs aircc on PATH
+```
+
+`scripts/airenv.{fish,sh}` is the only thing that puts `aircc`, `aiecc` and Peano on `PATH`;
+without it every `slow` test **skips with a reason** rather than failing. `vendor/wheels/` is
+git-ignored and ~644 MB — check it with `sha256sum -c vendor/wheels/SHA256SUMS`.
+
+**Goldens** live in `tests/golden/`: eight `*.air.mlir`, ten `*.plan.json`, eight
+`*.summary.txt`, four `*.ir_facts.json`. Regenerate with **`pytest --update-goldens`**, which
+has three guards and refuses outright (a) in CI, (b) when `check_pin()` says the installed
+toolchain is not the pinned one, and (c) when `tests/golden` has uncommitted changes — so the
+regeneration diff is the only diff. It also re-renders `tests/README.md`, the FR → test inverse
+index. **A golden is only valid for the pin**; a pin mismatch **skips** the golden tests rather
+than failing them.
+
+Person B's phase-by-phase record, every spec reading taken and every number measured, is
+`design/PROGRESS-B.md` — start at its **Status** block, then **§P7** for the definitions of
+done and the consolidated open-items table.
+
+### Not verified
+
+* **Anything on a device.** No hardware has been touched. The plan interpreter executes the
+  **plan**, never the emitted IR (D-9); `air-runner` is a timing model, not a correctness
+  oracle; every structural check is a proxy. Only a device run closes W1/W2/W3/flip numerics,
+  and the honest-limits slide is unchanged.
+* **Any other machine or any other wheel.** Every wall clock, every flow and lock count, and
+  the whole packet-vs-circuit rule are this machine at wheel `0.0.1.2026091204+ff95a9b`. The DMA
+  rule is a pass option's **default**, not a documented upstream guarantee (R-19, R-21).
+* **That the legality checker will produce the four `LegalMapping` literals** the whole suite
+  rests on. M1/M2/M3 do not exist.
+* **Shapes that raise by name rather than being built**: a rank-2 halo (`ToWest`/`ToEast`), a
+  halo at `PI ≥ 3`, a wavefront with a rank-2 herd or a row span other than 2, a cascade with a
+  chain axis of extent 2 or a reduction operator other than `+`, and `r_space` of rank > 1. Each
+  raises `NotImplementedError` naming the phase; none guesses.
+* Everything already marked `[UNVERIFIED]` in this document and in
+  `VERIFIED-AIR-FACTS.md` remains so.

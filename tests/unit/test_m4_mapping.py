@@ -908,13 +908,17 @@ def test_M6_cascade_bodies():
 
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("workload", sorted(WORKLOADS), ids=sorted(WORKLOADS))
-@pytest.mark.fr("FR-M11")
+@pytest.mark.fr("FR-M11", "FR-D2")
 def test_M11_summary_golden(workload, target):
     """The summary matches its golden byte for byte, per target (B-P14's ruling).
 
     The herd line carries the *physical* shape and the repeats, which differ between npu1 and
     npu2, so one target-less file cannot hold both: the path is
     `<workload>.<variant>.<target>.summary.txt`.
+
+    **FR-D2** rides along: its whole *Shall* clause is "see FR-M11", so this is the one test
+    that accepts it, and `03-lld-M7-tests.md` §6.3 names this pair as one of the three that
+    legitimately carry two ids. The marker was added at P7 by `test_traceability`.
     """
     summary = m4.plan(WORKLOADS[workload].legal(target)).summary
     assert_golden(f"{GOLDEN[workload]}.{target}.summary.txt", "\n".join(summary.lines) + "\n",

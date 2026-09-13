@@ -1,5 +1,24 @@
 # PROGRESS — Person B
 
+## Status (2026-09-13, close-out)
+
+**Person B's side is built and closed out on branch `role-b`, phases P0a–P7, nothing pushed.**
+`spatial/model.py` at `CONTRACT_VERSION = 5` (78 invariants, 43-code catalogue), `m4_mapping`
+(ten passes, four protocol builders), `m4_selfcheck` (P1′ balance, P2b acyclicity, the §3.7.3
+structural invariants, the P3 DMA budget), `m5_emit` (one public name, all thirteen §3.2 rows)
+and the **off-device half** of `m6_tools`, plus the M7 harness shell and helpers that unblocked
+them — all flagged for their real owners. All four variants run `LegalMapping → m4.plan →
+m5.emit → text` and compile: **`aircc` exit 0 with zero `error:` lines on npu1 and npu2 for
+W1, W1-flip, W2 and W3, re-measured 2026-09-13** (§P7). The suite is **611 passed, 1 skipped,
+12 deselected in 12.4 s** with `pytest -m slow` **12 passed in 5.9 s**; the two-seed `-vv`
+id/outcome diff is empty. Gates **G2–G5 are green on B's half only**: every `LegalMapping` in
+the suite is a hand-written literal, because M1/M2/M3 (A) do not exist, so **nothing here
+proves the checker will produce them** — that is the single largest open risk. Off-device
+throughout; no device has been touched. Read §P7 for the definitions of done item by item, the
+consolidated open-items table and who owns what next.
+
+---
+
 *State file for Person B's work. Phase **P0a — repository setup**, 2026-09-13. Scaffold, pinned
 toolchain, stubs. No module logic in this phase.*
 
@@ -1474,3 +1493,239 @@ column (`HerdPlan.at` stays `None`, R-03); that the packet/circuit split holds o
 (R-19/R-21); that a cascade with a chain axis of extent 2, a rank-3 herd, more than one
 accumulator, or a reduction operator other than `+` works — each raises by name rather than
 guessing, and only `+` has a plan behind it.
+
+---
+
+# Phase P7 — close-out: traceability, the definitions of done, hygiene, handoff
+
+*Person B, 2026-09-13. Branch `role-b`. No new module logic: the traceability gate for B's FR
+groups, every item of M4 §9, M5 §9 and `04-test-plan.md` §8 walked with evidence **re-measured
+in this session**, the NFR lint tests B owed, and the documents that tell the team where the
+state is. **Not pushed** — the architect verifies and pushes.*
+
+## Landed
+
+| # | What | Where |
+|---|---|---|
+| 1 | **The traceability gate**, generalised from M7 §6.3: the FR ids parsed out of `01-requirements.md` with §6.3's own regex, `(nodeid, fr ids)` for **every** collected item (`slow` and `requires_*` included), and five assertions — the declared count and its per-group split, no marker invents an FR, B's groups covered, the rest reported-and-skipped, and the rendered inverse index | `tests/integration/test_traceability.py` |
+| 2 | `FR_MARKERS` + a `tryfirst` `pytest_collection_modifyitems` hook, so the index is complete **before** the default `addopts` deselect anything. Docstring says B added it and C still owns the file | `tests/conftest.py` |
+| 3 | **`tests/README.md` is now the rendered inverse index** — 70 rows, one per FR, regenerated under `--update-goldens`. What the gate asserts is the *coverage* each row claims, not the test ids it lists, so A's and C's runs do not fail over a stale document | `tests/README.md` |
+| 4 | **`test_NFR5_docstrings`, `test_NFR2_deps`, `test_no_air_import_B_modules`** — 12 cases over B's four modules | `tests/unit/test_nfr.py` |
+| 5 | `import_closure(module_name)`, called through `in_fresh_process` so the child imports only a stdlib-only module and nothing pytest dragged in can mask a dependency (no `subprocess` outside the sanctioned helper) | `tests/helpers/determinism.py` |
+| 6 | **Four gaps found by the gate and closed** (below): the invented `FR-D9`, the missing `FR-D2` marker, `test_pipeline_is_hint`, and `test_E10_byte_identical` for W2 and the flip | `tests/unit/`, `tests/integration/` |
+| 7 | `test_I_broadcast_count` parametrised over the **flip** too, so `04-test-plan.md` §8 item 6's "all four variants" is one test | `tests/integration/test_ir_facts.py` |
+| 8 | Documents: `design/00-README.md` header + eight §3 rows; root `README.md`'s branch line; `spatial/__init__.py`'s stale "scaffold only" sentence; this section | — |
+
+## The four gaps the gate found, and what was done
+
+| # | Gap | Fix |
+|---|---|---|
+| 1 | `test_E_select_emitted` carried `fr("FR-E2", "FR-D9")` and **there is no FR-D9** — the D group is FR-D1…D3 | Dropped. `03-lld-M5-emitter.md` §3.6 and `06-interfaces.md` §5.5 both cite "`01-requirements.md` FR-D9" for the value-level conditional; the requirement they mean is **FR-S3 item 8**, whose *Source* line is decision `D9`. FR-S3 is A's grammar requirement, accepted by `test_grammar_select_expr`, so the id was **dropped rather than moved**. The two document citations are **B-P27** |
+| 2 | **FR-D2 had no test**, although `01-requirements.md` §8 and M7 §6.3 both say it delegates to FR-M11 and name `test_M11_summary_golden` as one of the three tests that legitimately carry two ids | `fr("FR-M11", "FR-D2")` added to `test_M11_summary_golden`. FR-D2's whole *Shall* clause is "see FR-M11", so this is the test that accepts it |
+| 3 | **`test_pipeline_is_hint` was absent** — M5 §7 names the row and FR-S14's acceptance clause names the test | Written: W1's schedule declares `pipeline=("k0",)`, so the control is `replace(schedule, pipeline=())`. Asserted through the **real** M4 on both targets, so the claim covers the mapper as well as the emitter, and both texts equal the W1 golden |
+| 4 | **`test_E10_byte_identical` covered W1 and W3 only**, while `04-test-plan.md` §8 item 3 wants all four variants byte-identical across two seeds | `test_E10_byte_identical_w2` and `test_E10_byte_identical_flip` written, with `emit_flip_text` as the picklable helper |
+
+Nothing else was missing: every FR of groups **M** (12) and **E** (10) and **FR-K1…K4**
+already had at least one test, and no other marker named a non-existent FR.
+
+## Traceability result (`pytest -rs`, this session)
+
+| Group | Covered | Owner | Gate |
+|---|---|---|---|
+| **M** (FR-M1…M12) | **12 / 12** | B | asserted — `test_traceability_B_groups_covered` |
+| **E** (FR-E1…E10) | **10 / 10** | B | asserted |
+| **K1…K4** | **4 / 4** | B (the plans), C (the end-to-end runs) | asserted |
+| S | 4 / 20 | A | reported, skipped |
+| L | 1 / 14 | A | reported, skipped |
+| T | 5 / 6 | C | reported, skipped |
+| D | **3 / 3** | A (the codes), B (FR-D2) | reported, skipped — no D id is uncovered |
+| K5 | 0 / 1 | C | reported, skipped |
+| **total** | **39 / 70** | | |
+
+The 31 uncovered, verbatim from the skip message: `FR-S1…S11`, `FR-S15…S19`, `FR-L1…L13`,
+`FR-T4`, `FR-K5`. Every one of them is M1/M2/M3 (A), the device path (C) or the honest-limits
+slide (C). The four S ids and one L id that *are* covered are covered by B's tests, which is
+why they are not in the list: `FR-S12` by `test_M4_reside_l2`, `FR-S13` by
+`test_no_buffer_resources_arg`, `FR-S14` by `test_sequential_emits_scf_for` and the new
+`test_pipeline_is_hint`, `FR-S20` by four import lints, `FR-L14` by the odd-`T` peel.
+
+## D2 — M4 §9's definition of done, item by item
+
+Every "evidence" cell was produced **in this session**; no number is carried over from an
+earlier phase without being re-measured.
+
+| # | Item | Status | Evidence (this session) |
+|---|---|---|---|
+| 1 | Every FR-M1…M12 has its §7 acceptance test passing | **met with caveat** | `test_traceability_B_groups_covered` passes: M 12/12. All 44 test names in M4 §7 resolve **except `test_M12_plan_stable`**, which is spelled `test_M4_plan_stable[w1\|w2\|w3\|flip]` and carries `fr("FR-M12")` — a name drift, **B-P30** |
+| 2 | All four plans pass `self_check`; plan JSON matches its golden | **met** | `test_M9_selfcheck_accepts{,_w2,_w3,_flip}` green; the **10** `*.plan.json` goldens byte for byte (`w1.base`, `w1.flip`, `w2.base`, `w2.odd`, `w3.base` × npu1/npu2). `pytest --update-goldens` then `git status --porcelain tests/golden` → **empty output** |
+| 3 | The six corrupted-plan negatives raise the right code with the right `details` | **met** | `test_M9_rejects_dropped_get`, `test_M9_rejects_extra_put_in_loop`, `test_M9_rejects_broadcast_underconsumed` (`BALANCE` ×3), `test_M11_bundle_index_iv` (`BUNDLE-INDEX-IS-IV`), `test_M11_pingpong_shape`, `test_M4_tensor_order_rejected` — the last two as `PROTOCOL-UNSUPPORTED` with `details["invariant"]` 4 and the B-P23 spelling. Plus `test_M10_cycle_rejected` (`CHANNEL-CYCLE`) and `test_M9_rejects_guarded_put_only` |
+| 4 | `test_M12_plan_stable` passes across two `PYTHONHASHSEED` values | **met** | `test_M4_plan_stable[w1\|w2\|w3\|flip]` (each re-derives the plan in a fresh interpreter under another seed), **and** the whole-suite check: `PYTHONHASHSEED=1` vs `=2`, `pytest -vv`, `diff` of the 612 id/outcome lines → **0 lines**; the only raw diff is the wall-time line (`12.46s` vs `12.41s`) |
+| 5 | M4's imports contain no `air` and no M5 (a lint test) | **met** | `test_M4_no_air_no_m5_import` (AST lint + fresh process) and the new `test_no_air_import_B_modules[spatial.m4_mapping]` / `test_NFR2_deps[spatial.m4_mapping]`: the fresh-interpreter import closure is **stdlib only** — not even `numpy` |
+| 6 | The W2 plan is correct for an even and an odd `T`, with the peel exercised | **met** | `test_M4_even_T_no_peel`, `test_M4_odd_T_peel`, `test_M4_drains_every_plane[4\|5]`, the `w2.base` and `w2.odd` plan goldens, and `test_sem_compute_nodes_w2[npu1\|npu2 × 4\|5]` against the numpy Jacobi at max abs error 0.0 |
+| 7 | The cascade chain's orientation is correct for a 1-D and a 2-D herd | **met** | `test_M6_cascade_orientation`; measured through `aircc` in this session's `pytest -m slow` (12 passed): 1-D **ascending** `(0,2)→(1,2)→(2,2)→(3,2)`, 2-D **descending** `(0,5)→(0,4)→(0,3)→(0,2)`, both asserted as exact `aie.cascade_flow` line lists |
+| 8 | Every `Diagnostic` M4 raises has all four message parts (`test_D1_schema`) | **met with caveat** | **`test_D1_schema` does not exist** — FR-D1's acceptance is a parametrised sweep over *every* negative in the suite and is **Person A's**. What holds instead: every M4/M5/M6 negative goes through `tests/helpers/diagnostics.assert_diagnostic`, which asserts code ∈ catalogue, stage agreement, a non-empty `reason` with no trailing full stop, a non-empty `fix`, a `clause` (or a `location` for `grammar`) and JSON-serialisable `details` — **39 call sites**, 19 of them M4's |
+| 9 | The `MappingSummary` for all four variants matches its golden byte for byte | **met** | `test_M11_summary_golden[w1\|w2\|w3\|flip × npu1\|npu2]` — **8** `*.summary.txt` goldens |
+| 10 | Every construct in §8's table is used and cited, or in the not-used list with its reason | **met with caveat** | M4 §8's table is the `air.api` closure the *plan commits M5 to*; the mechanical check is M5's `test_emitter_construct_closure` (M5's `air.*` names ⊆ §3.2's table, and eight required names present) plus `test_no_buffer_resources_arg`. **No test asserts M4 §8's own table**, and one line of it is wrong as built: §8 says "`numpy` for the integer linear algebra in §3.2", but M4 does it in pure Python over `Fraction` and never imports numpy — measured this session by `test_NFR2_deps`. LLD erratum, **B-P31** |
+
+**M4 §9: 7 met, 3 met with caveat, 0 not met.**
+
+## D2 — M5 §9's definition of done, item by item
+
+| # | Item | Status | Evidence (this session) |
+|---|---|---|---|
+| 1 | FR-E1…E10 each have their §7 acceptance test passing | **met** | `test_traceability_B_groups_covered`: E 10/10. All 28 test names in M5 §7 now resolve — `test_pipeline_is_hint` was the one absent and was written this session |
+| 2 | All four variants emit text `module.operation.verify()` accepts, for npu1 and npu2 | **met** | `build()` runs `module.operation.verify()` (`_compile.py:156-158`), so an emission that returns text has verified: **8 of 8** emissions succeeded in the `aircc` re-measurement below. Independently, `test_E7_text_roundtrip` re-parses the emitted text through `air-opt` at exit 0 with no `error:` line |
+| 3 | All eight module goldens match byte for byte; a pin mismatch **skips** rather than fails | **met** | `test_golden_w1`, `_w1_flip`, `_w2`, `_w3` × npu1/npu2 = **8** `*.air.mlir` goldens; every one calls `require_pin()` first, and `test_golden_skips_on_pin_mismatch` proves the skip |
+| 4 | All four variants pass `aircc --device <t> --output-format=none` with exit 0 **and** no `error:` line, both targets | **met** | Re-measured, one `aircc` at a time, `--tmpdir` and `cwd` in scratch — the table below. **8/8 exit 0, 8/8 zero `error:` lines** |
+| 5 | `ir_facts` W1: `pingpong_unroll == 2`, `hoist_alloc_count == 2`, `broadcast_pattern_count == 0`; flip: `cascade_channels == 3` | **met with caveat** | Re-extracted this session, all four variants against their goldens — the table below; every field matches. **Caveat 1**: the *flip's own* `hoist_alloc_count` is **1**, not 2 — `b` is allocated above the `i0` loop and never re-fetched, so `isPingPongCandidate` has one candidate and `a` is it. The golden records 1. **Caveat 2 (B-P26)**: `w1.base.npu1.ir_facts.json` no longer carries `cascade_channels` and `w3.base.npu1.ir_facts.json` no longer carries `_pipeline_pingpong`; `PIPELINES["aie"]` cannot lower W1 (its `repeats` strip-mine `affine_map` defeats `air-to-aie`'s constant folding), so the cascade fact is asserted on W3 (0) and the flip (3) instead |
+| 6 | `test_emitter_makes_no_decisions` and `test_emitter_construct_closure` both pass | **met** | Both green in the 611 |
+| 7 | `test_E10_byte_identical` passes across two `PYTHONHASHSEED` values | **met** | `test_E10_byte_identical`, `_w2`, `_w3`, `_flip` — **W2 and the flip were added this session**; each emits twice in-process and once in a fresh interpreter under another seed. Plus the whole-suite two-seed diff (item 4 of M4's table) |
+| 8 | Every `EmissionError` carries `air.api`'s text in `details["air_api_message"]`; no raw MLIR diagnostic or traceback reaches a top-level message | **met with caveat** | `test_E9_air_api_message_preserved`, `test_E9_error_carries_no_traceback`, and `assert_diagnostic(..., details_keys=("air_api_message", ...))` at every M5 negative. **Caveat**: `EMIT-VERIFY` is reached only through a **monkeypatched `build()`** (`test_E9_verify_surfaced`) — no plan we can construct reaches the real path, because M5's §5 preconditions fire first and every module we emit verifies (P1 note 3) |
+| 9 | `buffer_resources`, `func.call`, `link_with`, `<herd>.shared()` occur in no emitted text and in no M5 source | **met** | Re-grepped this session: **0** occurrences of each in `spatial/m5_emit.py`, and **0** files among the eight `tests/golden/*.air.mlir` containing any of them |
+| 10 | Every construct in §8's first table used and cited; every construct in the second table absent with its reason | **met** | `test_emitter_construct_closure` asserts the closure both ways; item 9 is the second table's mechanical half; `test_no_buffer_resources_arg` (FR-E4, shared with FR-S13) is the third |
+
+**M5 §9: 7 met, 3 met with caveat, 0 not met.**
+
+## D2 — `04-test-plan.md` §8, the ten-point "thoroughly tested" list
+
+**B's four items (3, 4, 6, 7):**
+
+| # | Item | Status | Evidence (this session) |
+|---|---|---|---|
+| 3 | All four variants produce byte-identical AIR text across two `PYTHONHASHSEED` runs, and match their goldens | **met** | The four `test_E10_byte_identical*` tests (W2 and flip added this session) + the whole-suite `-vv` diff: 0 differing id/outcome lines over 612 + the eight `*.air.mlir` goldens |
+| 4 | All four variants pass `aircc --device npu1` **and** `--device npu2` with no `error:` line | **met** | The re-measured table below: 8/8 exit 0, 8/8 zero `error:` lines. `m6.verdict` is what makes the `-m slow` tests a verdict rather than an exit code (FR-T5) |
+| 6 | The ping-pong IR fact (`unroll = 2`) is asserted for W1, and the broadcast-pattern count for all four variants | **met** | W1's `ir_facts` golden carries `pingpong_unroll: 2` and `test_I_pingpong_transform` measures the doubled step; `test_I_broadcast_count[w1\|w2\|w3\|flip]` — **the flip was added this session** — asserts 0 for all four, and each variant's facts golden carries it too |
+| 7 | The self-check negatives (`BALANCE` ×3, `CHANNEL-CYCLE`, `BUNDLE-INDEX-IS-IV`) all fire on corrupted plans | **met** | The six test ids in M4 item 3 above; every one asserted through `assert_diagnostic` with the numbers the LLD names |
+
+**The other six — which are not B's, and why:**
+
+| # | Item | Verdict | Owner and reason |
+|---|---|---|---|
+| 1 | Every FR has at least one test, and `test_traceability` passes | **not met** | **A and C.** 31 of 70 FRs have no test because M1/M2/M3, M6's device path and M8's fixtures do not exist. B's half *is* asserted and green; the full gate is `test_traceability_full_gate_reports_the_rest`, which skips with the exact list. C turns the skip into an assertion when A's and C's modules land — `_UNBUILT` in that file is the list to delete |
+| 2 | Every error code in §6.3 is raised by ≥ 1 test; no test raises an uncatalogued code | **not met** | **A.** Measured this session by running the suite in-process and reading `tests.helpers.diagnostics.RAISED_CODES`: **12 of 43** codes are raised — **mapping 5/5, emission 2/2, toolchain 5/6** (only `TOOL-NO-DEVICE` is short, and it needs a device). The 31 unraised are **clause 0/8, grammar 0/7, legality 0/15**, every one of them M1/M2/M3's. `test_D3_catalogue_complete` does not exist, and the `w2_zero_t` (`T = 0`) `SWAP-PARITY` fixture that keeps one legality code reachable is M3's |
+| 5 | W1, flip and W3 diff exactly (`tol = 0.0`) on CPU; W2 within `1e-5` | **not met as written** | **C.** The item names the CPU/device diff harness — `m6.run`/`m6.diff` (M6 §3.4-§3.6) and M8's `make_fixture.py` — and neither exists. The nearest thing that *is* green is B's plan interpreter: `C == A @ B` exactly for W1 and both flips, the textbook DP exactly for W3, max abs error **0.0** for W2 at `T = 4` and `T = 5`. It executes the **plan, not the emitted IR** (D-9), so it is not this item and must not be reported as it |
+| 8 | The default run finishes in under 3 minutes on a laptop CPU | **met in fact, gate not built** | Measured **12.44 s** this session against a 180 s budget (`pytest -m slow` a further 5.85 s). The *acceptance* is a CI clock gate plus `test_NFR3_budget` (M7 §3.6, §7.8) — **C's**, and absent |
+| 9 | Device tests either passing or skipped with a recorded reason | **not met** | **C, and it needs a device.** `pytest -m requires_device --collect-only` collects **nothing**: the mark is registered and no test carries it |
+| 10 | Every skipped test prints why it skipped | **met** | `pytest -rs`, this session: exactly **one** skip, with a reason — the list below |
+
+## The re-measured `aircc` table (2026-09-13, this session)
+
+Eight runs, **one at a time**, each with its own scratch `--tmpdir` and `cwd` outside the
+repository. `error:` lines are `grep -c 'error:'` over stderr — the exit code alone is never
+trusted (FR-T5).
+
+| variant | target | exit | `error:` lines | seconds |
+|---|---|---|---|---|
+| W1 | npu1 | **0** | **0** | 0.88 |
+| W1 | npu2 | **0** | **0** | 0.31 |
+| W1-flip | npu1 | **0** | **0** | 0.56 |
+| W1-flip | npu2 | **0** | **0** | 0.36 |
+| W2 | npu1 | **0** | **0** | 0.21 |
+| W2 | npu2 | **0** | **0** | 0.21 |
+| W3 | npu1 | **0** | **0** | 0.30 |
+| W3 | npu2 | **0** | **0** | 0.31 |
+
+Every figure is a wall clock on this one machine and is **not** a claim about any other
+(R-19/R-21 stand). `git status --porcelain` after the eight runs: unchanged — `aircc` wrote
+nothing into the repository (invariant I-5).
+
+## The re-extracted `ir_facts` (2026-09-13, this session)
+
+`m6.ir_facts` run over each variant's freshly emitted npu1 module, compared field by field
+against the committed golden.
+
+| variant | facts measured | golden match |
+|---|---|---|
+| `w1.base` | `broadcast_pattern_count 0`, `hoist_alloc_count 2`, `pingpong_iter_args 4`, `pingpong_unroll 2` | **yes** |
+| `w1.flip` | `broadcast_pattern_count 0`, `cascade_channels 3`, `hoist_alloc_count 1`, `lock_init_histogram {0: 9, 1: 9}`, `pingpong_unroll 2` | **yes** |
+| `w2.base` | `broadcast_pattern_count 0`, `lock_init_histogram {0: 8, 1: 2, 2: 6}`, `pingpong_unroll 0` | **yes** |
+| `w3.base` | `broadcast_pattern_count 0`, `cascade_channels 0`, `lock_init_histogram {0: 20, 1: 16, 2: 4}` | **yes** |
+
+## Suite measurements (2026-09-13, this session)
+
+| Measurement | Result |
+|---|---|
+| `.venv/bin/python -m pytest -rs` | **611 passed, 1 skipped, 12 deselected in 12.44 s** (NFR-3's budget is 180 s) |
+| `.venv/bin/python -m pytest -m slow -rs` | **12 passed, 612 deselected in 5.85 s**, **0 skips** — `aircc` and `air-opt` both resolvable here |
+| `PYTHONHASHSEED=1` vs `=2`, `pytest -vv` | 611 passed / 1 skipped both times; `diff` of the **612** id-and-outcome lines is **empty**; the only line in the raw `diff` is the wall-time summary |
+| `pytest -m requires_device --collect-only` | **nothing collected** |
+| `pytest --update-goldens` → `git status --porcelain tests/golden` | **empty** — no golden changed this phase; the only file `--update-goldens` rewrote is `tests/README.md` |
+| `git status --porcelain --ignored`, and an explicit `find` for `air_project`, `elfs_*`, `*.mlir`, `*.pdi`, `measured_stack_sizes*` outside `tests/golden` and `tests/fixtures` | **no stray** |
+
+## The skip list (`pytest -rs`, verbatim) — `04-test-plan.md` §8 item 10
+
+```
+SKIPPED [1] tests/integration/test_traceability.py:127: owned by A/C, not built yet: 31 of 44
+uncovered — ['FR-S1', 'FR-S2', 'FR-S3', 'FR-S4', 'FR-S5', 'FR-S6', 'FR-S7', 'FR-S8', 'FR-S9',
+'FR-S10', 'FR-S11', 'FR-S15', 'FR-S16', 'FR-S17', 'FR-S18', 'FR-S19', 'FR-L1', 'FR-L2',
+'FR-L3', 'FR-L4', 'FR-L5', 'FR-L6', 'FR-L7', 'FR-L8', 'FR-L9', 'FR-L10', 'FR-L11', 'FR-L12',
+'FR-L13', 'FR-T4', 'FR-K5']
+```
+
+(One physical line in the output; wrapped here.) **One skip, one reason, and it is the honest
+statement the D7 rehearsal reads aloud**: everything B built is tested, and the requirements
+nobody has built yet are named rather than hidden. `pytest -m slow -rs` reports **no** skip at
+all on this machine.
+
+## D3 — the `pdi` question
+
+`04-test-plan.md` §3.5 says "one variant additionally runs `pdi`". `test_W1_aircc_pdi` already
+exists (written at P1, `fr("FR-T2", "FR-T3")`, `slow` + `requires_aircc`) and produced
+`<tmp>/air.pdi` in this session's `pytest -m slow`. **Nothing was added**; three more `pdi`
+builds would freeze the same fact three more times.
+
+## Consolidated open items — every `B-P`/`B-O` entry in this file
+
+| id | Resolution or owner | Where recorded |
+|---|---|---|
+| **B-P1** | **superseded** — `pytest` exits 0 once tests exist | P0a → P0b |
+| **B-P2** | **closed** — `tests/__init__.py` added | P0a → P0b |
+| **B-P3** | **open**, cosmetic. `07-environment.md` §2 item 2 still says "the four wheels"; the block below it lists 16 | P0a. **Architect**, one word |
+| **B-P4** | **open** — toolchain installed on 1 of 3 machines | P0a. **C**, gate G1 |
+| **B-P5** | **closed** — `assert_golden`'s compare path exercised since P1 | P0b → P2 |
+| **B-P6** | **open, narrowed and now measured**: 12 of 43 codes are raised (mapping 5/5, emission 2/2, toolchain 5/6) | P0b → §P7 test-plan item 2. **A** (`test_D3_catalogue_complete`, the clause/grammar/legality corpus); **C** (`TOOL-NO-DEVICE`) |
+| **B-P7** | **closed** by `CONTRACT_VERSION = 4`: `HerdPlan ∈ PlanNode` | P0c → P0d |
+| **B-P8** | **closed** by v4 change 10: M6 §3.2's `ERROR_LINE` carries the `loc(...)` alternative | P0c → P0d |
+| **B-P9** | **closed** by v4 changes 3-4: `KernelModel.bindings`, and §2.1's shape rule | P0c → P0d |
+| **B-P10** | **open** — M1 §6.2's dependence list is not in M0's sort order; five lines to re-order | P0c. **A** |
+| **B-P11** | **closed** by v4 change 5: `ChannelSite.order` is per **body** | P0c → P0d |
+| **B-P12** | **open** — `ChannelSite.is_async` cannot be honoured; `air.api` has no asynchronous form to select and every put/get returns a `Token`. M4 sets it, M5 ignores it | P1. **Architect**: document it as intent in §5.2, or drop it at the next contract version |
+| **B-P13** | **open** — no error code for a broken *plan precondition*; `EMIT-AIR-API` + `details["internal_consistency"]` is the least-bad spelling under the frozen §6.3 | P1. **Architect**, after the freeze |
+| **B-P14** | **closed** — the summary golden is `<workload>.<variant>.<target>.summary.txt` | P1 → P2 |
+| **B-P15** | **open** — M5 §7's `test_sequential_emits_scf_for` row is unimplementable as written (a sequential loop's body is traced once whatever its trip count; `air.api` adds its own strip-mine `scf.for`). The test exists and is stricter | P1. **Architect**, an LLD row |
+| **B-P16** | **closed** at P4 — `BufferExpr.coerce` on the `Load` arm | P1 → P4 |
+| **B-P17** | **closed** by `CONTRACT_VERSION = 5` (R2): `declared` := a clause names this operand's delivery | P2 → P2b |
+| **B-P18** | **closed** by v5 (R3): `p<root>_bundle`, `<axis>_drain`, `<axis>_source`, compute nests named by the post-tiling axis | P2 → P2b, extended P4 |
+| **B-P19** | **closed** by v5: `Statement.expr` | P2 → P2b |
+| **B-P20** | **open** — the mapping twin of B-P13; applied as ruled at P3 (B-P23) | P2. **Architect**, after the freeze |
+| **B-P21** | **closed** at P3 — `02-hld.md:342` reads `C: stationary (declared)` | P2b → P3 |
+| **B-P22** | **closed** at P3 — the delivery block is the mechanical one-line-per-operand render | P2b → P3 |
+| **B-P23** | **applied as ruled** — an M4 self-check failure is `PROTOCOL-UNSUPPORTED` + `internal_consistency` + `invariant` + a bug-report `fix` | P3 |
+| **B-P24** | **closed** at P4 as R-W3-2 — a declared `along` is mapped to its PE axis | P3 → P4 |
+| **B-P25** | **open** — the W2 fixture invariant: planes `1..T` of the input `U` must carry plane 0's boundary rows and columns | P6. **C**, in `make_fixture.py`. The design document and `tests/integration/test_semantics.py` already satisfy it |
+| **B-P26** | **open** — `PIPELINES["aie"]` cannot lower W1 (its `repeats` strip-mine `affine_map` defeats `air-to-aie`); two `ir_facts` goldens dropped one key each, with no measured number altered | P6. **C** owns `m6_tools.py`. Nothing is blocked: no fact we freeze needs that pipeline on W1 |
+| **B-P27** *(new)* | **open** — `03-lld-M5-emitter.md` §3.6 and `06-interfaces.md` §5.5 both cite "`01-requirements.md` FR-D9"; **there is no FR-D9**. The requirement is **FR-S3 item 8**, whose *Source* line is decision `D9`. The test marker that believed the citation is fixed | §P7. **Architect** (`06-interfaces.md` is frozen) |
+| **B-P28** *(new)* | **open** — `design/00-README.md` §3's **M0 row still reads "not started"** although M0 was built by B at P0b. The brief's edit list for this phase was explicit about which rows to touch and M0 was not one, so it was left alone | §P7. **Architect**, one row |
+| **B-P29** *(new)* | **open** — NFR-5 is enforced for public **functions and classes** only. A module-level constant carries no runtime `__doc__`, so the `"""…"""` under `PIN`, `PIPELINES`, `CATALOGUE` and friends is a source convention no test can see; closing it needs an AST lint of the same shape as `test_NFR4_no_bare_raise` | §P7. **C** |
+| **B-P30** *(new)* | **open** — test-id drift between the LLDs and the suite: `test_M12_plan_stable` is `test_M4_plan_stable`; `test_D1_schema`, `test_D3_catalogue_complete`, `test_K5_scope_documented` and `test_NFR3_budget` are named in the documents and **do not exist** (all four A's or C's) | §P7. **Architect** for the rename, **A**/**C** for the four absent tests |
+| **B-P31** *(new)* | **open** — `03-lld-M4-mapping.md` §8 says M4 consumes "`numpy` for the integer linear algebra in §3.2". It does not: `_rref`/`_rank`/`_in_span`/`kernel_basis` are pure Python over `Fraction`, and `test_NFR2_deps` measures the import closure as stdlib-only | §P7. **Architect**, one clause |
+| **B-O4** | **answered for all four variants** — npu2 needs no `xfail`; `aircc` exits 0 with zero `error:` lines on both generations | P1 → §P7's table |
+| **B-O8** | **open** — whether `str(module)` is stable across an `--upgrade` within the pin. Byte-for-byte goldens plus `check_pin()`'s three `--update-goldens` guards are the standing answer | P1. **C**, Q-3 |
+| **v4, v5 signatures** | **open** — nobody has signed either. **A** must emit `KernelModel.bindings` (v4) and `Statement.expr` (v5); **C** must honour the `HerdPlan` marker and `C: stationary (declared)` | P0d, P2b. **All three** |
+
+## What is **not** B's, and is not done
+
+| # | Item | Owner |
+|---|---|---|
+| 1 | **M1, M2, M3.** Every `LegalMapping` in this suite is a hand-written literal transcribed from A's LLDs. **No test here proves the checker will produce them** — the single largest open risk to G2-G5 as a chain. `test_M4_plan_equals_literal` becomes the D6 test M7 §3.8 names once M3 exists | **A** |
+| 2 | `m6.has_device` / `run` / `diff` / `trace` (M6 §3.4-§3.6, §3.8), and the whole device path | **C** |
+| 3 | The M7 harness proper: the fixture fixtures (§3.3), the time budget (§3.6), the network gate (§3.7), the CI workflow (§3.9), and the NFR tests listed in §7.8 that are not in `tests/unit/test_nfr.py` | **C** |
+| 4 | M8: `make_fixture.py`, the three kernel sources in `kernels/`, the demo. **`demo/` is empty** — B has produced every line steps 2 and 3 of `05-work-breakdown.md` §5 read off the screen, and the script itself is unwritten | **A** (kernel sources), **C** (the rest) |
+| 5 | `test_K5_scope_documented` and `demo/honest_limits.md`, which is what makes FR-K5 the 70th covered requirement | **C** |
+| 6 | A device run. Everything above is off-device | **C** |
+
+**Not verified in this phase**: anything on a device; that these numbers hold on another machine
+or another wheel (every wall clock and every lowering count is this machine, this pin —
+R-19/R-21); that M1/M2/M3 will produce the four `LegalMapping` literals; that the emitted
+modules **compute** GEMM, Jacobi or Smith-Waterman on hardware — the interpreter interprets the
+**plan**, never the emitted IR (D-9), and the honest-limits slide is unchanged.

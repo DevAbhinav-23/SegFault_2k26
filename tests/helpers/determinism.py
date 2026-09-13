@@ -32,6 +32,26 @@ def _next_seed() -> str:
     return str((current + 7) % 4294967296)
 
 
+def import_closure(module_name: str) -> list[str]:
+    """Top-level module names importing `module_name` adds, minus the standard library.
+
+    Meant to be called through `in_fresh_process`, which is why it lives in this module and not
+    in a test file: the child imports only *this* module, which is stdlib-only, so nothing
+    pytest dragged in can mask a dependency. Added by B at P7 for `test_NFR2_deps`; C owns the
+    file. Raises if the target is already imported, because then the answer would be `[]` for
+    the wrong reason.
+    """
+    import importlib
+
+    if module_name in sys.modules:
+        raise RuntimeError(f"{module_name} is already imported; the closure would be empty")
+    before = {name.split(".")[0] for name in sys.modules}
+    importlib.import_module(module_name)
+    added = {name.split(".")[0] for name in sys.modules} - before
+    return sorted(name for name in added
+                  if not name.startswith("_") and name not in sys.stdlib_module_names)
+
+
 def in_fresh_process(fn, *args):
     """Run a module-level callable in a fresh interpreter under a different PYTHONHASHSEED."""
     payload = base64.b64encode(
