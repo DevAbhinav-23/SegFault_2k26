@@ -18,8 +18,9 @@ Stub written by B at P0c to unblock M4/M5; **Person A owns this file**.
 
 from __future__ import annotations
 
-from spatial.model import (AccessMap, Axis, Dependence, Dtype, ExchangeClause, KernelModel,
-                           LegalMapping, Param, ScheduleModel, Statement, WindowClause)
+from spatial.model import (AccessMap, Axis, BinOp, Const, Dependence, Dtype, ExchangeClause,
+                           KernelModel, LegalMapping, Load, Param, ScheduleModel, Statement,
+                           WindowClause)
 
 from tests.fixtures.mappings import ONE, ZERO, const, lin, resolve_physical, tile_axis
 
@@ -45,6 +46,24 @@ source (`03-lld-M1-frontend.md` §3.4 line 18), so the recorded text must agree 
 
 _I3 = ((1, 0, 0), (0, 1, 0), (0, 0, 1))
 """`M_U` — every access to `U` shares it (§6.2)."""
+
+
+def _read(di: int = 0, dj: int = 0) -> Load:
+    """`U[t, i + di, j + dj]` at kernel level: an `Expr` per array dim (§2.4 at v5)."""
+    return Load(buffer_id="U", subscripts=(lin("t"), lin("i", 1, di), lin("j", 1, dj)))
+
+
+def _stencil() -> BinOp:
+    """The statement's right-hand side: `0.2 * (five Loads, left-nested in source order)`.
+
+    Association follows Python's parser, so the sum is `((((a+b)+c)+d)+e)`; the five reads are
+    in the source order of `03-lld-M1-frontend.md` §6.2 — `(t,i,j)`, `(t,i-1,j)`, `(t,i+1,j)`,
+    `(t,i,j-1)`, `(t,i,j+1)` — the same order as `Statement.reads`.
+    """
+    total = _read()
+    for load in (_read(di=-1), _read(di=1), _read(dj=-1), _read(dj=1)):
+        total = BinOp(op="+", lhs=total, rhs=load)
+    return BinOp(op="*", lhs=Const(value=0.2, text="0.2", dtype=Dtype.f32), rhs=total)
 
 
 def kernel(T: int = 4) -> KernelModel:
@@ -78,6 +97,7 @@ def kernel(T: int = 4) -> KernelModel:
                     AccessMap("U", _I3, (ZERO, ZERO, const(-1)), False),
                     AccessMap("U", _I3, (ZERO, ZERO, const(1)), False),
                 ),
+                expr=_stencil(),
                 op=None,
                 axes=("t", "i", "j"),
                 line=8,

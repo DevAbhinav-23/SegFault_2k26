@@ -8,8 +8,9 @@ Stub written by B at P0c to unblock M4/M5; **Person A owns this file**.
 
 from __future__ import annotations
 
-from spatial.model import (AccessMap, Axis, Dependence, Dtype, KernelModel, LegalMapping, Param,
-                           ScheduleModel, Statement, StreamClause)
+from spatial.model import (AccessMap, Axis, BinOp, Const, Dependence, Dtype, KernelModel,
+                           LegalMapping, Load, MaxMin, Param, ScheduleModel, Select, Statement,
+                           StreamClause)
 
 from tests.fixtures.mappings import ONE, ZERO, const, lin, resolve_physical, tile_axis
 
@@ -31,6 +32,35 @@ def sw(q: sp.i32[MQ], r: sp.i32[NR], S: sp.i32[MQ + 1, NR + 1]):
 
 _I2 = ((1, 0), (0, 1))
 """`M_S` — every access to `S` shares it (§6.3)."""
+
+MATCH, MISMATCH, GAP = 2, -1, 1
+"""The module-level constants of SOURCE line 1, which `fn.__globals__` resolves (§3.5 R-e)."""
+
+
+def _i32(value: int) -> Const:
+    """A `Const` at the target param's dtype, carrying the source token (`-1` for MISMATCH)."""
+    return Const(value=value, text=str(value), dtype=Dtype.i32)
+
+
+def _expr() -> MaxMin:
+    """The recurrence of `03-lld-M1-frontend.md` §6.3, with `sub` forward-substituted (§3.5).
+
+    `max(0, S[i-1,j-1] + sub, S[i-1,j] - GAP, S[i,j-1] - GAP)` where
+    `sub = MATCH if q[i-1] == r[j-1] else MISMATCH` is the one `Select` (R-d).
+    """
+    return MaxMin(op="maximum", operands=(
+        _i32(0),
+        BinOp(op="+",
+              lhs=Load(buffer_id="S", subscripts=(lin("i", 1, -1), lin("j", 1, -1))),
+              rhs=Select(cmp_op="==",
+                         lhs=Load(buffer_id="q", subscripts=(lin("i", 1, -1),)),
+                         rhs=Load(buffer_id="r", subscripts=(lin("j", 1, -1),)),
+                         then=_i32(MATCH), otherwise=_i32(MISMATCH))),
+        BinOp(op="-", lhs=Load(buffer_id="S", subscripts=(lin("i", 1, -1), lin("j"))),
+              rhs=_i32(GAP)),
+        BinOp(op="-", lhs=Load(buffer_id="S", subscripts=(lin("i"), lin("j", 1, -1))),
+              rhs=_i32(GAP)),
+    ))
 
 
 def kernel() -> KernelModel:
@@ -68,6 +98,7 @@ def kernel() -> KernelModel:
                     AccessMap("S", _I2, (const(-1), ZERO), False),
                     AccessMap("S", _I2, (ZERO, const(-1)), False),
                 ),
+                expr=_expr(),
                 op=None,
                 axes=("i", "j"),
                 line=8,

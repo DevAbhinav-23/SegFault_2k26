@@ -20,7 +20,8 @@ from pathlib import Path
 import pytest
 
 from spatial import m4_mapping as m4
-from spatial.model import ChannelPlan, Dtype, MappingError, StreamClause, to_json
+from spatial.model import (BinOp, ChannelPlan, Const, Dtype, Expr, Load, LoopPlan, MappingError,
+                           StoreNode, StreamClause, to_json)
 from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
 from tests.helpers import determinism
@@ -54,11 +55,21 @@ def imports_after_importing_m4() -> tuple[bool, bool]:
 
 @pytest.mark.fr("FR-M1")
 def test_M1_trichotomy():
-    """W1: `A` multicasts along `py`, `B` along `px`, `C` is stationary — all derived."""
+    """W1: `A` multicasts along `py` and `B` along `px`, both derived; `C` is stationary.
+
+    `C`'s row is **declared**: `stationary("C")` names its delivery, and `declared` says a
+    clause named it, not that the derivation needed the clause (the ruling on **B-P17**). `A`
+    and `B` are named by no clause — `double_buffer` is not a delivery clause — so they stay
+    derived, and the summary's point survives: two derived rows and one declared.
+    """
     assert m4.classify(w1_legal.legal()) == (("A", "MULTICAST", "py", False),
                                              ("B", "MULTICAST", "px", False),
-                                             ("C", "STATIONARY", None, False))
+                                             ("C", "STATIONARY", None, True))
     assert m4.plan(w1_legal.legal()).delivery == w1_plan.DELIVERY
+    assert m4.declared_operands(w1_legal.legal()) == {"C"}
+    # an exchange() clause names its operand's delivery too, and a stream() clause does both
+    assert m4.declared_operands(w2_legal.legal()) == {"U"}
+    assert m4.declared_operands(w3_legal.legal()) == {"S"}
 
 
 @pytest.mark.fr("FR-M1")
@@ -112,7 +123,7 @@ def test_M3_stream_override():
     streamed = replace(mapping, schedule=replace(mapping.schedule, streams=(clause,)))
     rows = m4.classify(streamed)
     assert rows[0] == ("A", "FORWARD", "j0", True)
-    assert rows[1:] == (("B", "MULTICAST", "px", False), ("C", "STATIONARY", None, False))
+    assert rows[1:] == (("B", "MULTICAST", "px", False), ("C", "STATIONARY", None, True))
 
 
 # --------------------------------------------------------------------------------------------
@@ -218,6 +229,78 @@ def test_M8_regions():
     assert sites[("C2L3", "get")].region.strides == (64, 1)
 
 
+@pytest.mark.fr("FR-M8")
+def test_M4_loop_axis_names():
+    """`06-interfaces.md` §5.5 at v5: bundle, drain and compute names (the **B-P18** ruling).
+
+    A bundle-index loop is `p<root>_bundle`, a drain loop `<axis>_drain`, and a compute or
+    zeroing nest is named by the post-tiling axis it realises — never positional `m`/`n`/`t`.
+    The zeroing nest and the compute nest both realise `i1`/`j1`, so the name recurs in two
+    bodies, which M5 rebinds by name in order.
+    """
+    mapping = w1_legal.legal()
+    assert (m4.bundle_name(mapping, 0), m4.bundle_name(mapping, 1)) == ("pi_bundle", "pj_bundle")
+    assert (m4.drain_name(mapping, 0), m4.drain_name(mapping, 1)) == ("i_drain", "j_drain")
+    assert m4.compute_names(mapping) == {"i": "i1", "j": "j1", "k": "k1"}
+    # the flip's `j` is untiled, so the nest realises `j` itself; its bundle root is `k`
+    assert m4.compute_names(w1flip_legal.legal()) == {"i": "i1", "j": "j", "k": "k1"}
+    assert m4.bundle_name(w1flip_legal.legal(), 0) == "pk_bundle"
+    plan = m4.plan(mapping)
+    axes = [node.axis for node in _loops(plan.segment_body) + _loops(plan.herd_body)]
+    assert axes == ["pi_bundle", "k0", "pj_bundle", "k0", "i_drain", "j_drain",
+                    "i1", "j1", "k0", "i1", "j1", "k1"]
+
+
+def _loops(nodes):
+    """Every `LoopPlan` of a body, outermost first."""
+    out = []
+    for node in nodes:
+        if isinstance(node, LoopPlan):
+            out += [node] + _loops(node.body)
+    return out
+
+
+@pytest.mark.fr("FR-M8")
+def test_M4_compute_node_is_the_kernel_expression():
+    """The store's value is `Statement.expr`, rewritten load by load into L1 (**B-P19**).
+
+    W1's desugared accumulate `C[i,j] + A[i,k]*B[k,j]` becomes
+    `acc[i1,j1] + a[i1,k1]*b[k1,j1]`: M4 rebuilds no arithmetic of its own, so the shape of the
+    tree — and W2's `0.2 ×` sum and W3's `max`/`Select`, once their protocols land — is the
+    kernel's, which is the only source there is for either (§2.4 at CONTRACT_VERSION 5).
+    """
+    plan = m4.plan(w1_legal.legal())
+    i1, j1, k1 = Expr({"i1": 1}), Expr({"j1": 1}), Expr({"k1": 1})
+    assert _loops(plan.herd_body)[-1].body[0] == StoreNode(
+        buffer_id="acc", subscripts=(i1, j1),
+        expr=BinOp("+", Load("acc", (i1, j1)),
+                   BinOp("*", Load("a", (i1, k1)), Load("b", (k1, j1)))))
+    # the zeroing nest writes the element the compute nest then accumulates into
+    assert _loops(plan.herd_body)[1].body[0] == StoreNode(
+        buffer_id="acc", subscripts=(i1, j1), expr=Const(0.0, "0.0", Dtype.f32))
+
+
+@pytest.mark.fr("FR-M8")
+def test_M4_l1_subscripts_rule():
+    """`l1_subscripts` is the whole PE-relative rewrite, as a pure function (§3.4, FR-M8).
+
+    Dim `d`'s index is the kernel subscript with each axis replaced by the element coordinate
+    the nest realises, minus the staged slab's own origin along `d`. W1's placed `tx·TM` and
+    streamed `k0` cancel exactly; a ghost-padded row band (W2) and a whole-width column band
+    (W3) leave their own offset behind, which is the P4/P5 case this rule is general for.
+    """
+    elements = {"i": Expr({"tx": 8, "i1": 1}), "j": Expr({"j": 1})}
+    tile, ghost, whole = (Expr({"tx": 8}),), (Expr({"tx": 8}, -1),), (Expr(),)
+    assert m4.l1_subscripts((Expr({"i": 1}),), elements, tile, {}) == (Expr({"i1": 1}),)
+    assert m4.l1_subscripts((Expr({"i": 1}),), elements, ghost, {}) == (Expr({"i1": 1}, 1),)
+    assert m4.l1_subscripts((Expr({"i": 1}, -1),), elements, ghost, {}) == (Expr({"i1": 1}),)
+    assert m4.l1_subscripts((Expr({"j": 1}, 1),), elements, whole, {}) == (Expr({"j": 1}, 1),)
+    # a shape parameter in the subscript resolves through KernelModel.bindings first
+    assert m4.l1_subscripts((Expr({"W": 1}),), elements, whole, {"W": 16}) == (Expr((), 16),)
+    with pytest.raises(NotImplementedError, match="stages fewer dims"):
+        m4.l1_subscripts((Expr({"i": 1}), Expr({"j": 1})), elements, whole, {})
+
+
 # --------------------------------------------------------------------------------------------
 # FR-M11 — the summary and the residency block
 # --------------------------------------------------------------------------------------------
@@ -234,7 +317,7 @@ def test_M11_summary_golden(target):
     """
     summary = m4.plan(w1_legal.legal(target)).summary
     assert_golden(f"w1.base.{target}.summary.txt", "\n".join(summary.lines) + "\n", kind="text")
-    for line in ("C: stationary (derived)", "A: multicast along py (derived)",
+    for line in ("C: stationary (declared)", "A: multicast along py (derived)",
                  "B: multicast along px (derived)"):
         assert line in summary.lines
 

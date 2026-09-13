@@ -24,32 +24,28 @@ text is `sorted(...)` on an explicit key; no `id()`, no clock, no RNG.
 
 from __future__ import annotations
 
+from dataclasses import fields, replace
 from fractions import Fraction
 from math import lcm, prod
-from typing import Any
+from typing import Any, get_args
 
 from spatial.m4_selfcheck import self_check
-from spatial.model import (Axis, BinOp, BufferPlan, ChannelPlan, ChannelSite, Const, Diagnostic,
-                           Dtype, Expr, HerdPlan, LegalMapping, Load, LoopPlan, MappingError,
+from spatial.model import (Axis, BufferPlan, ChannelPlan, ChannelSite, Const, Diagnostic, Dtype,
+                           Expr, ExprNode, HerdPlan, LegalMapping, Load, LoopPlan, MappingError,
                            MappingPlan, MappingSummary, Param, Region, SpatialError, StoreNode)
 
 # --------------------------------------------------------------------------------------------
 # Constants
 # --------------------------------------------------------------------------------------------
 
+_EXPR_NODES: tuple[type, ...] = get_args(ExprNode)
+"""The `ExprNode` union's members, for the one tree rewrite M4 does (`06-interfaces.md` §5.5)."""
+
 PE_AXIS_NAME = ("px", "py")
 """The PE axis names, in `ScheduleModel.place` order (LLD §3.2)."""
 
 HERD_COORDS = ("tx", "ty")
 """The herd body's coordinate parameter names, in rank order (LLD §3.3 step 1)."""
-
-COMPUTE_NAMES = ("m", "n", "t", "u", "v", "w")
-"""Per-PE compute-loop names, one per axis of the statement, in `Statement.axes` order.
-
-LLD §6.1 prints `m`, `n`, `t` for W1's intra-tile nest and `m0`, `n0` for the zeroing nest, and
-§6.2 prints the same three names for the flip *including* its untiled `j` (a `0..64` loop named
-`n`), so the name is positional and is not the axis's own name.
-"""
 
 L1_BUDGET = 65536
 """`L1_BYTES` (`_trace.py:100`) — the budget `06-interfaces.md` §5.6 invariant 5 charges."""
@@ -407,40 +403,54 @@ def multicast_geometry(grid: tuple[int, ...], axis: int) -> tuple[tuple[int, ...
     return size, tuple(grid)
 
 
+def declared_operands(mapping: LegalMapping) -> frozenset[str]:
+    """The operands whose delivery a clause names (LLD §3.2, architect ruling on **B-P17**).
+
+    `stationary(a)`, `stream(a, ...)`, `forward(a, ...)` — sugar for `stream` — and
+    `exchange(a, ...)` each name the delivery of `a`. `declared` is a fact about the schedule,
+    not about whether the derivation would have agreed, so an operand a clause names is
+    `declared` whichever row `CLASSIFY` derives for it.
+    """
+    schedule = mapping.schedule
+    return (frozenset(schedule.stationary)
+            | {clause.operand for clause in schedule.streams}
+            | {clause.operand for clause in schedule.exchanges})
+
+
 def classify(mapping: LegalMapping) -> tuple[tuple[str, str, str | None, bool], ...]:
     """The reuse trichotomy, one row per operand, computed in `UCoord` (LLD §3.2, FR-M1).
 
-    A row is `(operand, Delivery, along PE axis, declared)`. `declared` is `True` when a clause
-    asked for that delivery: a `stream`/`forward` clause (lines 19-21), or a `stationary` clause
-    on an operand that is not the reduction target — see `design/PROGRESS-B.md`, phase P2.
+    A row is `(operand, Delivery, along PE axis, declared)`, with `declared` exactly
+    `declared_operands` above.
     """
     kernel = mapping.kernel
     schedule = mapping.schedule
     columns = len(kernel.axes)
     target = kernel.reduction.target if kernel.reduction is not None else None
+    named = declared_operands(mapping)
     rows: list[tuple[str, str, str | None, bool]] = []
     for param in sorted(kernel.params, key=lambda p: p.name):
         matrix = _access_matrix(mapping, param.name)
+        declared = param.name in named
         if param.name == target and mapping.r_space:
-            rows.append((param.name, "CASCADE", PE_AXIS_NAME[_cascade_axis(mapping)], False))
+            rows.append((param.name, "CASCADE", PE_AXIS_NAME[_cascade_axis(mapping)], declared))
             continue
         broadcast = [d for d in range(len(schedule.place))
                      if not any(_column(matrix, _ucol(mapping, _root(mapping, schedule.place[d]))))]
         if broadcast:
-            rows.append((param.name, "MULTICAST", PE_AXIS_NAME[broadcast[0]], False))
+            rows.append((param.name, "MULTICAST", PE_AXIS_NAME[broadcast[0]], declared))
         elif all(_in_span(mapping.ker_pi_u, vector)
                  for vector in kernel_basis(matrix, columns)):
-            rows.append((param.name, "STATIONARY", None,
-                         param.name in schedule.stationary and param.name != target))
+            rows.append((param.name, "STATIONARY", None, declared))
         else:
             rows.append((param.name, "FORWARD", PE_AXIS_NAME[_stream_axis(mapping, matrix)],
-                         False))
-    # FR-M3: a stream()/forward() clause replaces the derived row and marks it declared. An
-    # exchange() clause does not: `Delivery` has no halo member, and §6.3 keeps W2's derived
-    # `U: STATIONARY` beside its declared halo sentence (design/PROGRESS-B.md, phase P2).
-    declared = {clause.operand: clause for clause in schedule.streams}
-    return tuple((row[0], _PATTERN[declared[row[0]].pattern], declared[row[0]].along, True)
-                 if row[0] in declared else row for row in rows)
+                         declared))
+    # FR-M3: a stream()/forward() clause also *replaces* the derived row. An exchange() clause
+    # does not: `Delivery` has no halo member, and §6.3 keeps W2's derived `U: STATIONARY`
+    # beside its declared halo sentence (design/PROGRESS-B.md, phase P2).
+    override = {clause.operand: clause for clause in schedule.streams}
+    return tuple((row[0], _PATTERN[override[row[0]].pattern], override[row[0]].along, True)
+                 if row[0] in override else row for row in rows)
 
 
 def _cascade_axis(mapping: LegalMapping) -> int:
@@ -644,15 +654,19 @@ def _row_major(shape: tuple[int, ...]) -> tuple[int, ...]:
 def bundle_name(mapping: LegalMapping, pe_dim: int) -> str:
     """The segment-scope bundle loop for PE dim `pe_dim`: `pi_bundle`, `pj_bundle`, `pk_bundle`.
 
-    LLD §6.1 writes the index `pi`/`pj` and §6.2 writes `pk`, i.e. `p` + the **root** of the
-    placed axis; `06-interfaces.md` §5.5's `<operand>_bundle` footnote is the older spelling and
-    does not match either worked example (`design/PROGRESS-B.md`, phase P2).
+    `06-interfaces.md` §5.5 at `CONTRACT_VERSION = 5`: a bundle-index loop is `p<root>_bundle`,
+    where `root` is the untiled parent of the placed axis — the rule that closed **B-P18**.
     """
     return f"p{_root(mapping, mapping.schedule.place[pe_dim])}_bundle"
 
 
 def drain_name(mapping: LegalMapping, pe_dim: int) -> str:
-    """The segment-scope drain loop for PE dim `pe_dim`: `i_drain`, `j_drain` (LLD §6.1)."""
+    """The segment-scope drain loop for PE dim `pe_dim`: `i_drain`, `j_drain` (LLD §6.1).
+
+    §5.5's rule is `<axis>_drain`, naming the axis whose trips the loop enumerates. This cut's
+    drain walks the PE grid, so the axis is the root of the placed axis; the flip's drain walks
+    the temporal `i0` and is `i0_drain` (P6).
+    """
     return f"{_root(mapping, mapping.schedule.place[pe_dim])}_drain"
 
 
@@ -663,9 +677,16 @@ def streaming_axis(mapping: LegalMapping, operand: str) -> str | None:
 
 
 def compute_names(mapping: LegalMapping) -> dict[str, str]:
-    """Kernel axis → per-PE compute-loop name, positional over `Statement.axes`."""
-    return {axis: COMPUTE_NAMES[position]
-            for position, axis in enumerate(_statement(mapping).axes)}
+    """Kernel axis → the per-PE loop name that realises it (`06-interfaces.md` §5.5 at v5).
+
+    A compute or zeroing nest is named by the **post-tiling axis it realises**: the inner tile
+    handle `x1` where the axis is tiled, the axis itself where it is not — W1's `i1`, `j1`,
+    `k1`, the flip's `i1`, `j`, `k1`. The zeroing nest realises the same axes as the compute
+    nest, so it reuses the names; a `LoopPlan.axis` may recur in different bodies and M5 rebinds
+    by name in order (the rule that closed **B-P18**).
+    """
+    return {axis: (f"{axis}1" if _tile_factor(mapping, axis) is not None else axis)
+            for axis in _statement(mapping).axes}
 
 
 def _statement(mapping: LegalMapping):
@@ -712,7 +733,6 @@ def loop_plan(mapping: LegalMapping, buffers: tuple[BufferPlan, ...]) -> tuple[t
             kinds[axis] = loop_kind(axis, bundle_index=False)
     for name in compute_names(mapping).values():
         kinds[name] = loop_kind(name, bundle_index=False)
-        kinds[f"{name}0"] = loop_kind(f"{name}0", bundle_index=False)
     return tuple(sorted(kinds.items()))
 
 
@@ -916,6 +936,17 @@ def protocol(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, 
         _drain_loop(mapping, herd.grid, loops, sites[(f"{operand}2L3", "get")])
         for operand in drains)
 
+    streamed = [b for b in buffers if b.loop_depth >= 1]
+    axis = streaming_axis(mapping, streamed[0].operand) if streamed else None
+    if any(streaming_axis(mapping, b.operand) != axis for b in streamed):
+        raise NotImplementedError(
+            f"the streamed buffers {[b.name for b in streamed]} are re-fetched per "
+            f"different axes, so the herd body needs more than one streaming loop; {_LATER}")
+    elements, slab = compute_frame(mapping, herd, axis, names)
+    target = _statement(mapping).target
+    _, stored = _in_l1(mapping, by_operand, elements, slab, target.operand,
+                       kernel_subscripts(mapping, target))
+
     herd_body: list[Any] = []
     for buffer in buffers:
         if buffer.loop_depth >= 1:
@@ -924,15 +955,10 @@ def protocol(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, 
         if buffer.operand in fills:
             herd_body.append(sites[(f"{buffer.operand}2L1", "get")])
         if is_accumulator(mapping, buffer):
-            herd_body.append(_zero_nest(mapping, buffer, names, loops, 0))
-    streamed = [b for b in buffers if b.loop_depth >= 1]
-    nest = _compute_nest(mapping, by_operand, names, loops, 1 if streamed else 0)
+            herd_body.append(_zero_nest(mapping, buffer, names, loops, 0, stored))
+    nest = _compute_nest(mapping, by_operand, names, loops, 1 if streamed else 0,
+                         elements, slab, stored)
     if streamed:
-        axis = streaming_axis(mapping, streamed[0].operand)
-        if any(streaming_axis(mapping, b.operand) != axis for b in streamed):
-            raise NotImplementedError(
-                f"the streamed buffers {[b.name for b in streamed]} are re-fetched per "
-                f"different axes, so the herd body needs more than one streaming loop; {_LATER}")
         body = tuple(streamed)
         body += tuple(sites[(f"{b.operand}2L1", "get")] for b in streamed if b.operand in fills)
         herd_body.append(_tile_loop(mapping, axis, loops, 0, body + (nest,)))
@@ -1009,33 +1035,110 @@ def _drain_loop(mapping: LegalMapping, grid: tuple[int, ...],
     return _bundle_nest(mapping, grid, lambda d: drain_name(mapping, d), loops, 0, (get,))[0]
 
 
-def _subscripts(mapping: LegalMapping, access, names: dict[str, str],
-                suffix: str = "") -> tuple[Expr, ...]:
-    """One `Expr` per array dim: the compute-loop name indexing it, plus the access offset."""
-    bindings = dict(mapping.kernel.bindings)
-    out = []
-    for index, row in enumerate(access.matrix):
-        terms = [_var(names[mapping.kernel.axes[j].name] + suffix, value)
-                 for j, value in enumerate(row) if value]
-        out.append(_add(_resolve(access.offsets[index], bindings), *terms))
-    return tuple(out)
+def kernel_subscripts(mapping: LegalMapping, access) -> tuple[Expr, ...]:
+    """An `AccessMap` as one `Expr` per array dim, over kernel axis names — `M_a·x + c_a`.
+
+    It is the form `Statement.expr`'s `Load`s already carry (`06-interfaces.md` §2.4 at v5), so
+    the write access and the reads go through the same rewrite below.
+    """
+    return tuple(
+        _add(access.offsets[index],
+             *[_var(mapping.kernel.axes[j].name, value) for j, value in enumerate(row) if value])
+        for index, row in enumerate(access.matrix))
+
+
+def _substitute(expr: Expr, values: dict[str, Expr]) -> Expr:
+    """`expr` with every name `values` covers replaced by its expression."""
+    out = _const(expr.const)
+    for name, coeff in expr.coeffs:
+        value = values.get(name)
+        out = _add(out, _scale(value, coeff) if value is not None else _var(name, coeff))
+    return out
+
+
+def l1_subscripts(subscripts: tuple[Expr, ...], elements: dict[str, Expr],
+                  origin: tuple[Expr, ...], bindings: dict[str, int]) -> tuple[Expr, ...]:
+    """One kernel-level access rewritten PE-relative, into its L1 staging buffer (FR-M8).
+
+    Array dim `d` reads L3 at `subscripts[d]`, an `Expr` over kernel axis names, shape
+    parameters and constants. Substituting `elements` — the L3 element coordinate the compute
+    nest realises for each kernel axis — gives the index *this* PE's nest touches, and the
+    staged slab starts at `origin[d]` in the same coordinates, so the buffer-local index is the
+    difference: the placed and outer-tile contributions cancel exactly. W1's `A[i,k]` becomes
+    `a[i1,k1]`; a ghost-padded or column-local staging region shifts the result by its own halo
+    instead, which is what W2's `src[i1+1, j]` and W3's `p[j1]` will be (P4/P5).
+    """
+    if len(subscripts) != len(origin):
+        raise NotImplementedError(
+            f"the access has rank {len(subscripts)} and its staged slab rank {len(origin)}; a "
+            f"buffer that stages fewer dims than the access indexes (a plane of a rank-3 "
+            f"tensor, a row of a rank-2 one) needs the protocol's own staging map; {_LATER}")
+    return tuple(_add(_substitute(_resolve(subscript, bindings), elements),
+                      _scale(_resolve(origin[index], bindings), -1))
+                 for index, subscript in enumerate(subscripts))
+
+
+def compute_frame(mapping: LegalMapping, herd: HerdPlan, streaming: str | None,
+                  names: dict[str, str]) -> tuple[dict[str, Expr], dict[str, Expr]]:
+    """`(elements, slab)`, the two halves `l1_subscripts` needs, in herd-scope variables.
+
+    `elements[x]` is the L3 element coordinate the nest realises for kernel axis `x`: the tile
+    origin plus the inner loop variable where `x` is tiled, the loop variable itself where it is
+    not (an untiled axis's loop runs over the kernel's own range). `slab` is the per-axis origin
+    of this PE's staged slab, which `L3_REGION` turns into the per-dim origin of one operand.
+    """
+    slab = _origins(mapping, lambda d: herd.coords[d])
+    if streaming is not None:
+        slab[_root(mapping, streaming)] = _var(streaming)
+    elements = {axis: (_add(slab[axis], _var(name))
+                       if _tile_factor(mapping, axis) is not None else _var(name))
+                for axis, name in names.items()}
+    return elements, slab
+
+
+def _in_l1(mapping: LegalMapping, by_operand: dict[str | None, BufferPlan],
+           elements: dict[str, Expr], slab: dict[str, Expr], operand: str,
+           subscripts: tuple[Expr, ...]) -> tuple[str, tuple[Expr, ...]]:
+    """`(buffer name, PE-relative subscripts)` for one kernel-level access of `operand`."""
+    buffer = by_operand.get(operand)
+    if buffer is None:
+        raise NotImplementedError(
+            f"the statement reads {operand!r}, which this cut stages into no L1 buffer; its "
+            f"protocol builder {_LATER}")
+    origin = l3_region(mapping, operand, slab).offsets
+    return buffer.name, l1_subscripts(subscripts, elements, origin,
+                                      dict(mapping.kernel.bindings))
+
+
+def _rewrite_loads(node: Any, rewrite) -> Any:
+    """Rebuild an `ExprNode` tree with every `Load` replaced by `rewrite(load)` (§5.5)."""
+    if isinstance(node, Load):
+        return rewrite(node)
+    changed = {}
+    for field in fields(node):
+        value = getattr(node, field.name)
+        if isinstance(value, _EXPR_NODES):
+            changed[field.name] = _rewrite_loads(value, rewrite)
+        elif type(value) is tuple and all(isinstance(item, _EXPR_NODES) for item in value):
+            changed[field.name] = tuple(_rewrite_loads(item, rewrite) for item in value)
+    return replace(node, **changed) if changed else node
 
 
 def _zero_nest(mapping: LegalMapping, accumulator: BufferPlan, names: dict[str, str],
-               loops: tuple[tuple[str, str], ...], depth_: int) -> LoopPlan:
+               loops: tuple[tuple[str, str], ...], depth_: int,
+               subscripts: tuple[Expr, ...]) -> LoopPlan:
     """The accumulator zeroing: an ordinary `LoopPlan` of `StoreNode(Const 0)` (§5.5, §6.1).
 
-    It carries no `statement_index`, because no kernel statement corresponds to it; its loops
-    are the compute names with a `0` suffix, one per accumulator dim, which is what §6.1's
-    `m0`/`n0` are.
+    It carries no `statement_index`, because no kernel statement corresponds to it. Its loops
+    realise the same post-tiling axes as the compute nest and carry the same names (§5.5 at v5),
+    and it writes the same element of the accumulator that the compute nest then accumulates
+    into — hence the shared `subscripts`.
     """
     statement = _statement(mapping)
     zero = (Const(value=0.0, text="0.0", dtype=accumulator.dtype)
             if accumulator.dtype in (Dtype.f32, Dtype.f16, Dtype.bf16)
             else Const(value=0, text="0", dtype=accumulator.dtype))
-    body: tuple[Any, ...] = (StoreNode(buffer_id=accumulator.name,
-                                       subscripts=_subscripts(mapping, statement.target, names,
-                                                              "0"),
+    body: tuple[Any, ...] = (StoreNode(buffer_id=accumulator.name, subscripts=subscripts,
                                        expr=zero),)
     axes = [mapping.kernel.axes[j].name
             for row in statement.target.matrix for j, value in enumerate(row) if value]
@@ -1044,35 +1147,29 @@ def _zero_nest(mapping: LegalMapping, accumulator: BufferPlan, names: dict[str, 
             f"the accumulator {accumulator.name!r} has {len(accumulator.shape)} dim(s) indexed "
             f"by {axes}; a zeroing nest needs exactly one axis per dim; {_LATER}")
     for position in reversed(range(len(axes))):
-        axis = names[axes[position]] + "0"
+        axis = names[axes[position]]
         body = (LoopPlan(axis=axis, lo=ZERO, hi=_const(accumulator.shape[position]), step=ONE,
                          kind=_kind(loops, axis), depth=depth_ + position, body=body),)
     return body[0]
 
 
 def _compute_nest(mapping: LegalMapping, by_operand: dict[str | None, BufferPlan],
-                  names: dict[str, str], loops: tuple[tuple[str, str], ...],
-                  depth_: int) -> LoopPlan:
-    """The per-PE compute nest: one `air.sequential` per statement axis, over the tile."""
+                  names: dict[str, str], loops: tuple[tuple[str, str], ...], depth_: int,
+                  elements: dict[str, Expr], slab: dict[str, Expr],
+                  subscripts: tuple[Expr, ...]) -> LoopPlan:
+    """The per-PE compute nest: one `air.sequential` per statement axis, over the tile.
+
+    The store's value is the kernel's own expression tree (`Statement.expr`, §2.4 at v5) with
+    every kernel-level `Load` rewritten into its L1 buffer by `l1_subscripts`. M4 rebuilds no
+    arithmetic of its own — an accumulate arrives already desugared — which is what lets W2's
+    `0.2 × (five-term sum)` and W3's `max`/`Select` reach M5 at all (**B-P19**).
+    """
     statement = _statement(mapping)
-    if statement.kind != "accumulate" or statement.op != "+":
-        raise NotImplementedError(
-            f"the statement is a {statement.kind!r} with op {statement.op!r}; only the "
-            f"`acc[...] = acc[...] + <product of the reads>` accumulate form can be rebuilt "
-            f"from KernelModel, which records no expression tree (design/06-interfaces.md "
-            f"§2.4); {_LATER}")
-    reads = [Load(buffer_id=by_operand[access.operand].name,
-                  subscripts=_subscripts(mapping, access, names))
-             for access in statement.reads]
-    product: Any = reads[0]
-    for read in reads[1:]:
-        product = BinOp(op="*", lhs=product, rhs=read)
     target = by_operand[statement.target.operand]
-    subscripts = _subscripts(mapping, statement.target, names)
     body: tuple[Any, ...] = (StoreNode(
         buffer_id=target.name, subscripts=subscripts,
-        expr=BinOp(op="+", lhs=Load(buffer_id=target.name, subscripts=subscripts),
-                   rhs=product)),)
+        expr=_rewrite_loads(statement.expr, lambda load: Load(
+            *_in_l1(mapping, by_operand, elements, slab, load.buffer_id, load.subscripts)))),)
     bindings = dict(mapping.kernel.bindings)
     for position in reversed(range(len(statement.axes))):
         axis = statement.axes[position]

@@ -12,9 +12,15 @@ from __future__ import annotations
 
 import pytest
 
-from spatial.model import HerdPlan, LegalMapping, MappingPlan, from_json, to_json
+from dataclasses import fields
+from typing import get_args
+
+from spatial.model import (BinOp, Const, Dtype, Expr, ExprNode, HerdPlan, LegalMapping, Load,
+                           MappingPlan, MaxMin, Select, from_json, to_json)
 from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.fixtures.plans import w1_plan
+
+EXPR_NODES = get_args(ExprNode)
 
 MAPPINGS = {"w1": w1_legal, "w1flip": w1flip_legal, "w2": w2_legal, "w3": w3_legal}
 TARGETS = ("npu1", "npu2")
@@ -114,6 +120,25 @@ def _offsets(access):
     return tuple(o.const for o in access.offsets)
 
 
+def _loads(node):
+    """Every `Load` of an expression tree, in field order (`06-interfaces.md` §5.5)."""
+    if isinstance(node, Load):
+        return [node]
+    return [load
+            for field in fields(node)
+            for child in ((lambda v: v if type(v) is tuple else (v,))(getattr(node, field.name)))
+            if isinstance(child, EXPR_NODES)
+            for load in _loads(child)]
+
+
+def _subscripts_of(kernel, access):
+    """`M_a·x + c_a` per array dim — the form a `Statement.expr` `Load` carries (§2.4 at v5)."""
+    return (access.operand, tuple(
+        Expr({kernel.axes[j].name: value for j, value in enumerate(row) if value},
+             access.offsets[index].const)
+        for index, row in enumerate(access.matrix)))
+
+
 @pytest.fixture(params=sorted(MAPPINGS), ids=sorted(MAPPINGS))
 def workload(request):
     return request.param
@@ -197,6 +222,11 @@ def test_w1_accesses():
     assert reduction is not None
     assert (reduction.target, reduction.projection, reduction.space, reduction.op) \
         == ("C", ((1, 0, 0), (0, 1, 0)), ((0, 0, 1),), None)        # R = ker Sf = span{e_k}
+    # §2.4 at CONTRACT_VERSION 5: the accumulate's DESUGARED right-hand side,
+    # `C[i,j] + A[i,k] * B[k,j]`, over kernel-level operands
+    i, j, k = Expr({"i": 1}), Expr({"j": 1}), Expr({"k": 1})
+    assert statement.expr == BinOp("+", Load("C", (i, j)),
+                                   BinOp("*", Load("A", (i, k)), Load("B", (k, j))))
 
 
 def test_w1_flip_shares_the_kernel_text():
@@ -220,6 +250,14 @@ def test_w2_accesses():
         == ((0, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1))
     assert w2_legal.kernel().reduction is None
 
+    # §2.4 at v5: `0.2 * (five-term sum)`, the sum LEFT-nested as Python's parser reads it and
+    # the five reads in source order (§6.2's `(t,i,j) (t,i-1,j) (t,i+1,j) (t,i,j-1) (t,i,j+1)`)
+    def u(di=0, dj=0):
+        return Load("U", (Expr({"t": 1}), Expr({"i": 1}, di), Expr({"j": 1}, dj)))
+
+    assert statement.expr == BinOp("*", Const(0.2, "0.2", Dtype.f32), BinOp(
+        "+", BinOp("+", BinOp("+", BinOp("+", u(), u(di=-1)), u(di=1)), u(dj=-1)), u(dj=1)))
+
 
 def test_w3_accesses():
     """§6.3: `S` is assigned, not accumulated, so `reduction is None` and `R = {}`."""
@@ -236,6 +274,38 @@ def test_w3_accesses():
     assert by_operand["q"] == [(((1, 0),), (-1,))]
     assert by_operand["r"] == [(((0, 1),), (-1,))]
     assert w3_legal.kernel().reduction is None
+
+    # §2.4 at v5: the four-way `max` of §6.3, with `sub` forward-substituted into one `Select`
+    # and `MATCH`/`MISMATCH`/`GAP` resolved to their integers, each carrying its source token
+    def s(di, dj):
+        return Load("S", (Expr({"i": 1}, di), Expr({"j": 1}, dj)))
+
+    def i32(value):
+        return Const(value, str(value), Dtype.i32)
+
+    assert statement.expr == MaxMin("maximum", (
+        i32(0),
+        BinOp("+", s(-1, -1), Select("==", Load("q", (Expr({"i": 1}, -1),)),
+                                     Load("r", (Expr({"j": 1}, -1),)), i32(2), i32(-1))),
+        BinOp("-", s(-1, 0), i32(1)),
+        BinOp("-", s(0, -1), i32(1))))
+
+
+def test_statement_expr_loads_agree_with_the_access_maps(workload):
+    """Every `Load` of `Statement.expr` is one of that statement's own accesses (§2.4 at v5).
+
+    An `accumulate` carries the desugared right-hand side, so it reads its target as well: the
+    loads are the target followed by the reads in source order. An `assign`'s are exactly the
+    reads. Invariant I78 adds that every `Load` names a `Param`, asserted here per fixture.
+    """
+    kernel = MAPPINGS[workload].legal().kernel
+    names = {param.name for param in kernel.params}
+    for statement in kernel.statements:
+        accesses = statement.reads if statement.kind == "assign" \
+            else (statement.target,) + statement.reads
+        loads = [(load.buffer_id, tuple(load.subscripts)) for load in _loads(statement.expr)]
+        assert loads == [_subscripts_of(kernel, access) for access in accesses]
+        assert {operand for operand, _ in loads} <= names
 
 
 # --------------------------------------------------------------------------------------------
@@ -286,7 +356,7 @@ def test_w1_plan_constructs_and_round_trips(target):
     assert all(t.level == "L3" and t.scope == "tensor" for t in got.tensors)
     assert got.delivery == (("A", "MULTICAST", "py", False),
                             ("B", "MULTICAST", "px", False),
-                            ("C", "STATIONARY", None, False))
+                            ("C", "STATIONARY", None, True))    # stationary("C") names it
 
 
 @pytest.mark.parametrize("target", TARGETS)
@@ -304,7 +374,7 @@ def test_w1_plan_summary_first_six_lines():
     assert w1_plan.plan().summary.lines[:6] == (
         "A: multicast along py (derived)",
         "B: multicast along px (derived)",
-        "C: stationary (derived)",
+        "C: stationary (declared)",
         "A: multicast along py, re-fetched per k0",
         "B: multicast along px, re-fetched per k0",
         "C: stationary (spatial), resident for the whole run",

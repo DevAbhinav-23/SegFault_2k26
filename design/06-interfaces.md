@@ -6,7 +6,18 @@ sign it in `00-README.md` §4 and a version bump of `CONTRACT_VERSION` below.*
 **This file is specification text, not code.** Field lists and signatures describe what must be
 built; no implementation exists.
 
-`CONTRACT_VERSION = 4`
+`CONTRACT_VERSION = 5`
+
+*Version 5 (architect ruling, 2026-09-13) gives `Statement` the value it stores. `Statement.expr`
+is the complete right-hand side written into `target`, after scalar forward substitution
+(`03-lld-M1-frontend.md` §3.5), as an `ExprNode` tree over **kernel-level** operands — §2.4 says
+what that means and §2.7 carries the invariant that every `Load` in it names a `Param` of the
+kernel. Forcing requirement: FR-M8 and FR-E2, because M4 must emit the kernel's arithmetic as
+`StoreNode`s and has no other source for W2's `0.2 × (five-term sum)` or W3's `max`/`Select`
+recurrence — `KernelModel` as frozen at v4 records `kind`, `target`, `reads` and `op`, from which
+only the accumulate form can be rebuilt (B-P19). Two clarifications ride with it and change no
+field: §5.6's `declared` is `True` exactly when a clause names that operand's delivery (B-P17),
+and §5.5 fixes the naming of a plan-synthesised loop axis (B-P18). Signed in `00-README.md` §4.*
 
 *Version 4 (architect ruling, 2026-09-13) adds two things P0c's measurements proved missing.
 `HerdPlan` joins the `PlanNode` union and `MappingPlan.segment_body` carries exactly one
@@ -90,6 +101,7 @@ All dataclasses in this document are **frozen** (immutable), with tuples rather 
 | `kind` | `"assign" \| "accumulate"` | `x[...] = e` vs `x[...] += e` (or `x[...] = max(x[...], e)`) |
 | `target` | `AccessMap` | the written access |
 | `reads` | `tuple[AccessMap, ...]` | every read access, in source order |
+| `expr` | `ExprNode` | **the complete value stored into `target`**, after scalar forward substitution (`03-lld-M1-frontend.md` §3.5), over **kernel-level** operands: `Load(buffer_id=<a `Param.name`>, subscripts=<one `Expr` per array dim, over kernel axis names, shape-parameter names and constants>)`, `Const(value, text, dtype=<the target param's dtype>)` with `text` the source token (a module-level constant resolves to its integer's decimal form, `MISMATCH` → `"-1"`), `BinOp`, `Neg`, `MaxMin`, `Select` (§5.5's union). For `kind == "accumulate"` it is the **desugared** right-hand side: `C[i,j] += A[i,k]*B[k,j]` is `BinOp("+", Load("C",(i,j)), BinOp("*", Load("A",(i,k)), Load("B",(k,j))))` and `x = max(x, e)` is `MaxMin("maximum", (Load(x,…), e))`. Association follows Python's parser, so a sum of five terms is left-nested `((((a+b)+c)+d)+e)`. M4 rewrites each `Load` into the L1 buffer staging that operand and rebuilds no arithmetic of its own |
 | `op` | `ReduceOp \| None` | for `accumulate`, the accumulation operator recovered from the source |
 | `axes` | `tuple[str, ...]` | the enclosing loop axes, outermost first |
 | `line` | `int` | source line, for diagnostics |
@@ -124,6 +136,10 @@ All dataclasses in this document are **frozen** (immutable), with tuples rather 
 | `statements` | `tuple[Statement, ...]` | in source order | ≥ 1 |
 | `dependences` | `tuple[Dependence, ...]` | sorted by `(operand, vector)` | — |
 | `reduction` | `ReductionSpec \| None` | present iff a statement is an `accumulate` | — |
+
+**Invariant (v5)**: every `Load` reachable in any statement's `expr` names a `Param` of this
+kernel. It is the one reference check M0 enforces, because a `KernelModel` holds both sides of
+it; every other reference stays M2/M3/M4's (Q-M2-3).
 
 ---
 
@@ -258,8 +274,20 @@ and no reference to the kernel function. It is serialisable to JSON by field ord
 | `depth` | `int` | nesting depth | — |
 | `body` | `tuple[PlanNode, ...]` | ordered children: allocs, sites, loops, compute | — |
 
-`LoopPlan.axis` is a kernel axis name, **or** a plan-synthesised name for a bundle-index or a
-drain loop (`<operand>_bundle`, `<operand>_drain`), which no `KernelModel.axes` entry matches.
+`LoopPlan.axis` names the axis the loop realises, under one rule (v5, the ruling on B-P18):
+
+* a **bundle-index** loop is `p<root>_bundle`, where `root` is the untiled parent of the placed
+  axis that PE dimension carries — W1's `pi_bundle` and `pj_bundle`, the flip's `pk_bundle`;
+* a **drain** loop is `<axis>_drain`, naming the axis whose trips it enumerates — W1's `i_drain`
+  and `j_drain`, the flip's `i0_drain`;
+* a **compute or zeroing** nest is named by the **post-tiling axis it realises** — W1's `i1`,
+  `j1`, `k1` (its zeroing nest `i1`, `j1`), the flip's `i1`, `j`, `k1`, W2's `i1`, `j`, W3's
+  `j1` — never a positional `m`/`n`/`t`/`m0`/`n0`.
+
+A `LoopPlan.axis` may therefore recur in different bodies (the zeroing nest and the compute nest
+both realise `i1`); M5 rebinds the name in order as it walks, which is what it already does.
+The first two forms match no `KernelModel.axes` entry; the third matches a `LegalMapping.axes`
+entry for a tiled axis and a kernel axis for an untiled one.
 
 `PlanNode` is the union `BufferPlan | ChannelSite | LoopPlan | StoreNode | BranchNode | HerdPlan`.
 
@@ -283,7 +311,9 @@ ExprNode = Load(buffer_id: str, subscripts: tuple[Expr, ...])
 
 * `Const.text` is the source token, never a float round-trip (`02-hld.md` §5 rule 4).
 * Every `buffer_id` names a `BufferPlan` in this plan, so M5 resolves it by lookup and never by
-  derivation (D-14).
+  derivation (D-14). The same union is also used *kernel-level* by `Statement.expr` (§2.4 at
+  v5), where a `Load` names a `Param` instead; M4 rewrites each such `Load` into the buffer
+  staging that operand, and only the rewritten form ever reaches a `StoreNode`.
 * A `StoreNode` whose subscripts are fully integer emits one
   `memref.load`/`arith`/`memref.store` triple (`_value.py:590-593`, VF §D.11).
 * **There is no whole-buffer form.** `b[:] = b[:] + r[:]` is expanded by M4 into an explicit
@@ -314,7 +344,7 @@ further `BranchNode`s. `ChannelSite.guard` stays for the single-site case and is
 | `channels` | `tuple[ChannelPlan, ...]` | sorted by name | — |
 | `segment_body` | `tuple[PlanNode, ...]` | nodes emitted at segment scope, before and after the herd | contains exactly one `HerdPlan` node, at top level, `== herd` |
 | `herd_body` | `tuple[PlanNode, ...]` | nodes emitted inside the herd body | — |
-| `delivery` | `tuple[tuple[str, Delivery, str \| None, bool], ...]` | `(operand, delivery, along PE axis, declared)` | one per operand |
+| `delivery` | `tuple[tuple[str, Delivery, str \| None, bool], ...]` | `(operand, delivery, along PE axis, declared)`. `declared` is `True` **iff a clause names this operand's delivery** — `stationary(a)`, `stream(a, …)`, `forward(a, …)` or `exchange(a, …)`: a fact about the schedule, not about whether the derivation would have agreed (v5, the ruling on B-P17) | one per operand |
 | `summary` | `MappingSummary` | see §5.7 | — |
 
 **Plan invariants checked by M4's self-check before the plan leaves the module:**

@@ -15,6 +15,11 @@ it; and `plan.buffers` is in allocation order (`06-interfaces.md` §5.6).
 
 At `CONTRACT_VERSION = 4` §6.1 line 6's `<HERD>` is a real node: the `HerdPlan` at
 `segment_body` index 2 (`06-interfaces.md` §5.6 invariant 8), which closed B-P7.
+
+At `CONTRACT_VERSION = 5` two of §6.1's printed names are superseded by `06-interfaces.md`
+§5.5's naming rule (the ruling that closed B-P18): the compute and zeroing nests are named by
+the post-tiling axis they realise — `i1`, `j1`, `k1` — not positionally `m`, `n`, `t`, `m0`,
+`n0`. And `C` is `declared`, because `stationary("C")` names its delivery (B-P17).
 """
 
 from __future__ import annotations
@@ -125,31 +130,35 @@ def segment_body(herd: HerdPlan) -> tuple:
     """
     return (FILL_A, FILL_B, herd, DRAIN)
 
-_ZERO_STORE = StoreNode(buffer_id="acc", subscripts=(lin("m0"), lin("n0")),
+# The compute and zeroing nests are named by the post-tiling axis they realise — `i1`, `j1`,
+# `k1` — and both nests realise `i1`/`j1` (`06-interfaces.md` §5.5 at CONTRACT_VERSION 5).
+_ZERO_STORE = StoreNode(buffer_id="acc", subscripts=(lin("i1"), lin("j1")),
                         expr=Const(value=0.0, text="0.0", dtype=Dtype.f32))
 _ACCUMULATE = StoreNode(
-    buffer_id="acc", subscripts=(lin("m"), lin("n")),
+    buffer_id="acc", subscripts=(lin("i1"), lin("j1")),
     expr=BinOp(op="+",
-               lhs=Load(buffer_id="acc", subscripts=(lin("m"), lin("n"))),
+               lhs=Load(buffer_id="acc", subscripts=(lin("i1"), lin("j1"))),
                rhs=BinOp(op="*",
-                         lhs=Load(buffer_id="a", subscripts=(lin("m"), lin("t"))),
-                         rhs=Load(buffer_id="b", subscripts=(lin("t"), lin("n"))))))
+                         lhs=Load(buffer_id="a", subscripts=(lin("i1"), lin("k1"))),
+                         rhs=Load(buffer_id="b", subscripts=(lin("k1"), lin("j1"))))))
+"""`Statement.expr` (§2.4 at v5) with each kernel `Load` rewritten into its L1 buffer: the
+placed contribution `tx*TM` and the streamed `k0` cancel against the staged slab's origin."""
 
 HERD_BODY = (
     ACC,                                                        # 0: air.alloc, depth 0
-    LoopPlan(axis="m0", lo=ZERO, hi=const(TM), step=const(1), kind="sequential", depth=0,
-             body=(LoopPlan(axis="n0", lo=ZERO, hi=const(TN), step=const(1),
+    LoopPlan(axis="i1", lo=ZERO, hi=const(TM), step=const(1), kind="sequential", depth=0,
+             body=(LoopPlan(axis="j1", lo=ZERO, hi=const(TN), step=const(1),
                             kind="sequential", depth=1, body=(_ZERO_STORE,)),)),   # 1-3
     LoopPlan(axis="k0", lo=ZERO, hi=const(K), step=const(TK), kind="sequential", depth=0,
              body=(A_TILE,                                      # 5: DIRECT child of the K loop
                    B_TILE,                                      # 6: DIRECT child of the K loop
                    A_GET,                                       # 7
                    B_GET,                                       # 8
-                   LoopPlan(axis="m", lo=ZERO, hi=const(TM), step=const(1),
+                   LoopPlan(axis="i1", lo=ZERO, hi=const(TM), step=const(1),
                             kind="sequential", depth=1,
-                            body=(LoopPlan(axis="n", lo=ZERO, hi=const(TN), step=const(1),
+                            body=(LoopPlan(axis="j1", lo=ZERO, hi=const(TN), step=const(1),
                                            kind="sequential", depth=2,
-                                           body=(LoopPlan(axis="t", lo=ZERO, hi=const(TK),
+                                           body=(LoopPlan(axis="k1", lo=ZERO, hi=const(TK),
                                                           step=const(1), kind="sequential",
                                                           depth=3, body=(_ACCUMULATE,)),)),)),
                    )),                                          # 9
@@ -158,8 +167,11 @@ HERD_BODY = (
 
 DELIVERY = (("A", "MULTICAST", "py", False),
             ("B", "MULTICAST", "px", False),
-            ("C", "STATIONARY", None, False))
-"""`test_M1_trichotomy`'s expected tuple (`03-lld-M4-mapping.md` §7)."""
+            ("C", "STATIONARY", None, True))
+"""`test_M1_trichotomy`'s expected tuple (`03-lld-M4-mapping.md` §7).
+
+`C` is **declared**: `stationary("C")` names its delivery, and `declared` is a fact about the
+schedule rather than about whether the derivation agreed (the ruling that closed **B-P17**)."""
 
 RESIDENCY = (("A", "re-fetched per k0"),
              ("B", "re-fetched per k0"),
@@ -179,7 +191,7 @@ def _summary(physical: tuple[int, ...], repeats: tuple[int, ...]) -> MappingSumm
         # lines 7-8: the delivery block — FR-M11's three literal strings
         "A: multicast along py (derived)",
         "B: multicast along px (derived)",
-        "C: stationary (derived)",
+        "C: stationary (declared)",
         # lines 8a-8c: the residency block (RULING 9)
         "A: multicast along py, re-fetched per k0",
         "B: multicast along px, re-fetched per k0",

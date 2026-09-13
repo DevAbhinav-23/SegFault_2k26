@@ -415,7 +415,7 @@
       "C",
       "STATIONARY",
       null,
-      false
+      true
     ]
   ],
   "herd": {
@@ -453,11 +453,11 @@
     },
     {
       "__type__": "LoopPlan",
-      "axis": "m0",
+      "axis": "i1",
       "body": [
         {
           "__type__": "LoopPlan",
-          "axis": "n0",
+          "axis": "j1",
           "body": [
             {
               "__type__": "StoreNode",
@@ -473,7 +473,7 @@
                   "__type__": "Expr",
                   "coeffs": [
                     [
-                      "m0",
+                      "i1",
                       1
                     ]
                   ],
@@ -483,7 +483,7 @@
                   "__type__": "Expr",
                   "coeffs": [
                     [
-                      "n0",
+                      "j1",
                       1
                     ]
                   ],
@@ -643,15 +643,15 @@
         },
         {
           "__type__": "LoopPlan",
-          "axis": "m",
+          "axis": "i1",
           "body": [
             {
               "__type__": "LoopPlan",
-              "axis": "n",
+              "axis": "j1",
               "body": [
                 {
                   "__type__": "LoopPlan",
-                  "axis": "t",
+                  "axis": "k1",
                   "body": [
                     {
                       "__type__": "StoreNode",
@@ -666,7 +666,7 @@
                               "__type__": "Expr",
                               "coeffs": [
                                 [
-                                  "m",
+                                  "i1",
                                   1
                                 ]
                               ],
@@ -676,7 +676,7 @@
                               "__type__": "Expr",
                               "coeffs": [
                                 [
-                                  "n",
+                                  "j1",
                                   1
                                 ]
                               ],
@@ -695,7 +695,7 @@
                                 "__type__": "Expr",
                                 "coeffs": [
                                   [
-                                    "m",
+                                    "i1",
                                     1
                                   ]
                                 ],
@@ -705,7 +705,7 @@
                                 "__type__": "Expr",
                                 "coeffs": [
                                   [
-                                    "t",
+                                    "k1",
                                     1
                                   ]
                                 ],
@@ -722,7 +722,7 @@
                                 "__type__": "Expr",
                                 "coeffs": [
                                   [
-                                    "t",
+                                    "k1",
                                     1
                                   ]
                                 ],
@@ -732,7 +732,7 @@
                                 "__type__": "Expr",
                                 "coeffs": [
                                   [
-                                    "n",
+                                    "j1",
                                     1
                                   ]
                                 ],
@@ -747,7 +747,7 @@
                           "__type__": "Expr",
                           "coeffs": [
                             [
-                              "m",
+                              "i1",
                               1
                             ]
                           ],
@@ -757,7 +757,7 @@
                           "__type__": "Expr",
                           "coeffs": [
                             [
-                              "n",
+                              "j1",
                               1
                             ]
                           ],
@@ -1225,6 +1225,92 @@
             "j",
             "k"
           ],
+          "expr": {
+            "__type__": "BinOp",
+            "lhs": {
+              "__type__": "Load",
+              "buffer_id": "C",
+              "subscripts": [
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "i",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                },
+                {
+                  "__type__": "Expr",
+                  "coeffs": [
+                    [
+                      "j",
+                      1
+                    ]
+                  ],
+                  "const": 0
+                }
+              ]
+            },
+            "op": "+",
+            "rhs": {
+              "__type__": "BinOp",
+              "lhs": {
+                "__type__": "Load",
+                "buffer_id": "A",
+                "subscripts": [
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "i",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "k",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  }
+                ]
+              },
+              "op": "*",
+              "rhs": {
+                "__type__": "Load",
+                "buffer_id": "B",
+                "subscripts": [
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "k",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  },
+                  {
+                    "__type__": "Expr",
+                    "coeffs": [
+                      [
+                        "j",
+                        1
+                      ]
+                    ],
+                    "const": 0
+                  }
+                ]
+              }
+            }
+          },
           "kind": "accumulate",
           "line": 8,
           "op": "+",
@@ -1870,7 +1956,7 @@
     "lines": [
       "A: multicast along py (derived)",
       "B: multicast along px (derived)",
-      "C: stationary (derived)",
+      "C: stationary (declared)",
       "A: multicast along py, re-fetched per k0",
       "B: multicast along px, re-fetched per k0",
       "C: stationary (spatial), resident for the whole run",

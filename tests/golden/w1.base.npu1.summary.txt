@@ -1,6 +1,6 @@
 A: multicast along py (derived)
 B: multicast along px (derived)
-C: stationary (derived)
+C: stationary (declared)
 A: multicast along py, re-fetched per k0
 B: multicast along px, re-fetched per k0
 C: stationary (spatial), resident for the whole run

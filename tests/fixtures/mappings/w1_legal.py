@@ -8,8 +8,8 @@ Stub written by B at P0c to unblock M4/M5; **Person A owns this file**.
 
 from __future__ import annotations
 
-from spatial.model import (AccessMap, Axis, Dependence, Dtype, KernelModel, LegalMapping, Param,
-                           ReductionSpec, ScheduleModel, Statement)
+from spatial.model import (AccessMap, Axis, BinOp, Dependence, Dtype, KernelModel, LegalMapping,
+                           Load, Param, ReductionSpec, ScheduleModel, Statement)
 
 from tests.fixtures.mappings import ONE, ZERO, lin, resolve_physical, tile_axis
 
@@ -56,6 +56,13 @@ def kernel() -> KernelModel:
                     AccessMap(operand="B", matrix=((0, 0, 1), (0, 1, 0)),
                               offsets=(ZERO, ZERO), is_write=False),
                 ),
+                # the DESUGARED right-hand side (§2.4 at CONTRACT_VERSION 5):
+                # `C[i,j] += A[i,k] * B[k,j]` is `C[i,j] + A[i,k] * B[k,j]`
+                expr=BinOp(op="+",
+                           lhs=Load(buffer_id="C", subscripts=(lin("i"), lin("j"))),
+                           rhs=BinOp(op="*",
+                                     lhs=Load(buffer_id="A", subscripts=(lin("i"), lin("k"))),
+                                     rhs=Load(buffer_id="B", subscripts=(lin("k"), lin("j"))))),
                 op="+",
                 axes=("i", "j", "k"),
                 line=8,

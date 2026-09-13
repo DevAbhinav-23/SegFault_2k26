@@ -75,7 +75,8 @@ E4 = Expr((), 4)
 PARAM = Param("A", Dtype.f32, (4, "M"), True)
 AXIS = Axis("i", E0, E4, E1, 4, None, 0)
 ACCESS = AccessMap("A", ((1, 0),), (E0,), True)
-STATEMENT = Statement("assign", ACCESS, (ACCESS,), None, ("i",), 7)
+# §2.4 at CONTRACT_VERSION 5: the value stored, over kernel-level operands — `A[i] = A[i]`
+STATEMENT = Statement("assign", ACCESS, (ACCESS,), Load("A", (E0,)), None, ("i",), 7)
 DEPENDENCE = Dependence((1, 0), "RAW", "A")
 REDUCTION = ReductionSpec("A", ((1, 0),), ((0, 1),), "+")
 KERNEL = KernelModel("k", "def k(): ...", (PARAM,), ("M",), (("M", 4),), (AXIS,), (STATEMENT,),
@@ -246,8 +247,8 @@ CASES: list[tuple] = [
     ("I20", KernelModel, dict(dependences=(Dependence((1,), "RAW", "B"), DEPENDENCE)),
      ValueError, "sorted by .operand, vector."),
     ("I21", KernelModel, dict(reduction=REDUCTION), ValueError, "if and only if"),
-    ("I21", KernelModel, dict(statements=(Statement("accumulate", ACCESS, (ACCESS,), "+",
-                                                    ("i",), 7),)),
+    ("I21", KernelModel, dict(statements=(Statement("accumulate", ACCESS, (ACCESS,),
+                                                    Load("A", (E0,)), "+", ("i",), 7),)),
      ValueError, "if and only if"),
     ("I22", AxisRef, dict(name=""), ValueError, "non-empty"),
     ("I23", WindowClause, dict(halo=(1, 1)), ValueError, "one entry per dim"),
@@ -349,6 +350,11 @@ CASES: list[tuple] = [
     ("I77", MappingPlan,
      dict(segment_body=(PUT, HERD, LoopPlan("k", E0, E4, E1, "sequential", 0, (HERD,)))),
      ValueError, "must not be nested inside a LoopPlan"),
+    # I78: the Load is reached through a BinOp and a MaxMin, so the whole tree is walked
+    ("I78", KernelModel,
+     dict(statements=(dataclasses.replace(
+         STATEMENT, expr=MaxMin("maximum", (CONST, BinOp("+", Load("Z", (E0,)), CONST)))),)),
+     ValueError, "must name a param of this kernel"),
 ]
 
 
@@ -599,5 +605,5 @@ def test_schedule_model_is_pure_data():
     assert hash(SCHEDULE)
 
 
-def test_contract_version_is_four():
-    assert m.CONTRACT_VERSION == 4
+def test_contract_version_is_five():
+    assert m.CONTRACT_VERSION == 5

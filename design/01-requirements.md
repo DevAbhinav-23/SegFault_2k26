@@ -464,8 +464,10 @@ the fixture parameter that sets it.
 or **stream/flow** (`r ∉ ker M_a` and `π(r) ≠ 0`), and record one classification per operand in
 the plan.
 *Source*: SD-04 §3 (the trichotomy table).
-*Acceptance*: `test_M1_trichotomy` — W1 output-stationary yields `C: STATIONARY`,
-`A: MULTICAST along py`, `B: MULTICAST along px`, matching SD-04 §5's worked derivation.
+*Acceptance*: `test_M1_trichotomy` — W1 output-stationary yields
+`("C", STATIONARY, None, declared=True)`, `("A", MULTICAST, "py", False)`,
+`("B", MULTICAST, "px", False)`, matching SD-04 §5's worked derivation; `C`'s row is `declared`
+because `stationary("C")` names its delivery (`06-interfaces.md` §5.6 at v5).
 
 **FR-M2 — multicast emission.**
 *Shall*: a multicast operand shall be emitted as one `air.channel(name, size=S,
@@ -627,8 +629,10 @@ without re-deriving it from slice arithmetic" is the ARIES criticism this surfac
 (PC §1.4 item 2); the summary is what a judge reads in five minutes.
 *Source*: PC §1.4; SD-01 §0.
 *Acceptance*: `test_M11_summary_golden` — the summary text for W1 matches a stored golden file
-byte for byte, and contains the literal strings `C: stationary (derived)`,
-`A: multicast along py (derived)`, `B: multicast along px (derived)`;
+byte for byte, and contains the literal strings `C: stationary (declared)`,
+`A: multicast along py (derived)`, `B: multicast along px (derived)`
+(`declared` is `True` exactly when a clause names that operand's delivery, `06-interfaces.md`
+§5.6 at v5: `stationary("C")` does, and nothing names `A` or `B`);
 `test_M11_residency_line` — W1 prints `C: stationary (spatial), resident for the whole run` and
 `A: multicast along py, re-fetched per k0`, and the W1-flip prints
 `B: stationary (spatial), resident for the whole run` and

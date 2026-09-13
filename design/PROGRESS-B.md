@@ -660,3 +660,102 @@ believed (landed row 7).
 construction; that `self_check` catches anything at all (it is a pass-through); that the emitted
 module computes GEMM (no device, `04-test-plan.md` §3.4 keeps the oracle link structural); and
 every `NotImplementedError` path beyond the three inputs the tests drive through it.
+
+---
+
+# Phase P2b — CONTRACT_VERSION 5 applied (architect ruling)
+
+*Person B, 2026-09-13. Branch `role-b`. The architect's three rulings of 2026-09-13 on B-P19
+(`Statement.expr`), B-P17 (`declared`) and B-P18 (loop-axis naming), across the contract, M0, M4,
+the literals, the goldens and the documents that quote them. **Not pushed** — the architect
+verifies and pushes.*
+
+## Landed
+
+| # | What | Where |
+|---|---|---|
+| 1 | `CONTRACT_VERSION = 5`, with a *Version 5* paragraph naming FR-M8 + FR-E2 as the forcing requirements | `design/06-interfaces.md` header, `spatial/model.py` |
+| 2 | **`Statement.expr: ExprNode`** — the complete right-hand side stored into `target`, after scalar forward substitution, over **kernel-level** operands; an `accumulate` carries the **desugared** tree; association follows Python's parser | `06-interfaces.md` §2.4, `spatial/model.py` |
+| 3 | **`I78`**: every `Load` reachable in any statement's `expr` names a `Param` of that kernel — the one reference check M0 makes, because a `KernelModel` holds both sides. The module docstring's "M0 checks no reference" paragraph now states that exception | `spatial/model.py` (`_loads` + `KernelModel._validate`), `06-interfaces.md` §2.7 |
+| 4 | **`declared` := a clause names this operand's delivery** — `stationary(a)`, `stream(a, …)`, `forward(a, …)`, `exchange(a, …)` — a fact about the schedule, not about whether the derivation agreed. W1's `C` becomes `("C", STATIONARY, None, True)` / `C: stationary (declared)`; `A`/`B` stay derived; the flip's `B` stays declared and its `A` derived | `06-interfaces.md` §5.6, `m4.declared_operands` + `m4.classify` |
+| 5 | **The loop-axis naming rule**: `p<root>_bundle`, `<axis>_drain`, and a compute or zeroing nest named by the **post-tiling axis it realises** — W1 `i1`, `j1`, `k1` (zeroing `i1`, `j1`), never positional `m`/`n`/`t`/`m0`/`n0`. A `LoopPlan.axis` may recur in two bodies; M5 rebinds by name in order, which is what `_bound` already did | `06-interfaces.md` §5.5, `m4.compute_names`, `m4.bundle_name`, `m4.drain_name` |
+| 6 | **M4 builds every compute `StoreNode` from `Statement.expr`**, generically: `l1_subscripts` rewrites each kernel-level `Load` into its L1 buffer, `_rewrite_loads` walks the tree, and the hard-coded `acc = acc + <product of the reads>` reconstruction is gone. The zeroing nest stays (no kernel statement corresponds to it) and now shares the compute store's subscripts | `spatial/m4_mapping.py` |
+| 7 | `expr` on all three kernel literals, exactly per the ruling: W1's desugared accumulate; W2's `0.2 × (left-nested five-term sum in source order)`; W3's `max` with the `Select` and the resolved `MATCH`/`MISMATCH`/`GAP` tokens. `w1flip_legal` inherits W1's kernel unchanged | `tests/fixtures/mappings/w{1,2,3}_legal.py` |
+| 8 | The W1 plan literal's loop names, store subscripts and `declared` flag | `tests/fixtures/plans/w1_plan.py` |
+| 9 | Tests: `I78` negative and the minimal `Statement`'s `expr` (M0); `test_M4_loop_axis_names`, `test_M4_compute_node_is_the_kernel_expression`, `test_M4_l1_subscripts_rule` (M4); each literal's `expr` asserted structurally against the LLD text plus `test_statement_expr_loads_agree_with_the_access_maps` per workload | `tests/unit/test_m0_model.py`, `test_m4_mapping.py`, `test_fixture_literals.py` |
+| 10 | Documents: `06-interfaces.md` §2.4/§2.7/§5.5/§5.6 + header; `00-README.md` §3, §4 (signature row and change-log row 5); `01-requirements.md` FR-M1, FR-M11; `03-lld-M4-mapping.md` §3.2, §3.9, §6.1, §6.2, §7; `05-work-breakdown.md` §5 step 2; `03-lld-M8-kernels-demo.md` §5 and §6.1 | `design/` |
+
+Counts: **78** invariants (`I01`-`I78`) / **117** negative cases / 33 classes with a minimal
+instance.
+
+## The L1-subscript rewrite rule (landed row 6)
+
+`l1_subscripts(subscripts, elements, origin, bindings)` is a pure function and has its own unit
+test. Array dim `d` of a kernel-level access reads L3 at `subscripts[d]`, an `Expr` over kernel
+axis names, shape-parameter names and constants. `elements[x]` is the **L3 element coordinate the
+compute nest realises** for kernel axis `x` — the tile origin plus the inner loop variable where
+`x` is tiled (`tx·TM + i1`, `k0 + k1`), the loop variable itself where it is not, since an
+untiled axis's loop runs over the kernel's own range. `origin[d]` is where this PE's **staged
+slab** starts in L3 along that dim, taken from `L3_REGION` over the same herd-scope variables, so
+it carries whatever the staging region carries — a ghost row, a whole-width band. The buffer-local
+index is then `substitute(subscripts[d], elements) − origin[d]`: the placed and outer-tile
+contributions cancel exactly. `compute_frame` builds `elements` and the per-axis slab origins;
+`_in_l1` turns one `Load` into `(buffer name, rewritten subscripts)`; a buffer that stages *fewer*
+dims than the access indexes (a plane of a rank-3 tensor) raises `NotImplementedError` naming the
+phase.
+
+**W1, measured** (the derived plan equals the literal): `A[i,k] → a[i1,k1]`, `B[k,j] → b[k1,j1]`,
+`C[i,j] → acc[i1,j1]`, so the store is `acc[i1,j1] = acc[i1,j1] + a[i1,k1]*b[k1,j1]` and the
+zeroing store is `acc[i1,j1] = 0.0`.
+
+**W2 and W3, derived by hand from §6.3/§6.4 — to be exercised in P4/P5, not asserted here:**
+
+* **W2** (`cur`/`next` are `(HS+2, W)`, the row band ghost-padded above, all `W` columns staged
+  from column 0): `U[t,i,j] → src[i1+1, j]`, `U[t,i-1,j] → src[i1, j]`, `U[t,i+1,j] →
+  src[i1+2, j]`, `U[t,i,j-1] → src[i1+1, j-1]`, `U[t,i,j+1] → src[i1+1, j+1]`, and
+  the write `U[t+1,i,j] → dst[i1+1, j]` — the nest being `i1`, `j` per §5.5's rule.
+* **W3** (`prev`/`cur` are `(CW+1,)`, the PE's column band with one left-edge cell; `qb` the whole
+  `q`; `rb` the PE's slice of `r`): `S[i-1,j-1] → p[j1]`, `S[i-1,j] → p[j1+1]`,
+  `S[i,j-1] → c[j1]`, `q[i-1] → qb[i-1]`, `r[j-1] → rb[j1]`, and the write `S[i,j] → c[j1+1]`,
+  the nest being `j1` inside the row loop `i`.
+* **The one caveat both turn on**: `_origins` gives a placed tiled axis the origin `pe·factor`
+  and ignores the axis's `lo`. W1's axes all have `lo = 0`, so this cut is unaffected, but W2's
+  `i` starts at 1 and W3's `i`/`j` start at 1, and the results above hold only if the placed
+  tile origin is `lo + pe·factor`. **P4 must add the `lo` term** (one `_add` in `_origins`), and
+  the fixture regions of §6.3/§6.4 should be checked against it when they are written.
+
+## Verified (command → result)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `.venv/bin/python -m pytest` | **456 passed, 4 deselected** in 1.59 s (was 448 passed, 4 deselected) |
+| 2 | `PYTHONHASHSEED=1` / `=2`, `-vv` | 456 passed both times; `diff` of the two 456-line id/outcome lists is **empty** |
+| 3 | `.venv/bin/python -m pytest -m slow` | **4 passed**, 456 deselected, 3.22 s |
+| 4 | `.venv/bin/python -c "import spatial; print(spatial.CONTRACT_VERSION)"` | `5` |
+| 5 | `m4.plan(w1_legal.legal(t)) == w1_plan.plan(t)`, `to_json` equal, both targets | **True** — after the literal's loop names, store subscripts and `declared` flag were updated, and with no other change |
+| 6 | `pytest --update-goldens` then `git diff --stat tests/golden` | `w1.base.npu{1,2}.plan.json` 120 changed lines each (the `expr` subtree, the loop names, `declared: true`) and `w1.base.npu{1,2}.summary.txt` 2 lines each (`C: stationary (declared)`). **`*.air.mlir` and `*.ir_facts.json` are untouched** — R3 and R2 do not reach the IR, which is the check the brief asked for |
+| 7 | `import spatial.m4_mapping` in a fresh process | `air imported: False`, `m5 imported: False` (FR-S20, I-1) |
+
+## Blockers closed
+
+| # | Resolution |
+|---|---|
+| **B-P19** | **Closed.** `Statement.expr` is the M1→M4 route M1 §6.3 already described in prose; M4 rebuilds no arithmetic, so W2's five-point stencil and W3's `max`/`Select` reach M5 unchanged once their protocol builders land. The only nodes M4 still synthesises are the accumulator zeroing and (at P6) the cascade's `acc += recv`, and neither corresponds to a kernel statement. |
+| **B-P17** | **Closed.** `declared` is a fact about the schedule: named by a clause or not. W1 now reads two derived rows and one declared, and the flip's `B` keeps the `(declared)` its §6.2 summary and §7 row require — one rule, both worked examples, no accumulator carve-out. |
+| **B-P18** | **Closed.** `06-interfaces.md` §5.5 carries the naming rule; `m4.compute_names` returns the post-tiling axis; the `<operand>_bundle`/`<operand>_drain` footnote that matched neither worked example is gone. |
+
+## Open / blockers
+
+| # | Item | Detail |
+|---|---|---|
+| **v5 signatures** | A, B, C have not signed | **A is affected**: M1 must emit `Statement.expr` (the tree of M1 §6.1-§6.3, already printed there for W3), and no `KernelModel` constructs without it. **C is affected**: the demo screen of `03-lld-M8-kernels-demo.md` §6.1 and §5 step 2 now say `C: stationary (declared)`; any hand-written kernel fixture needs an `expr`. |
+| **v4 signatures** | unchanged | A and C have still not signed `CONTRACT_VERSION = 4`. |
+| **B-P21** | `02-hld.md` §7's W1 delivery-summary row still reads `C: stationary (derived)` | The brief's edit list is explicit — *"No other document"* — and `02-hld.md` is not on it, so the edit was **not** made. `design/02-hld.md:342`: `\| delivery summary \| `C: stationary (derived)`, `A: multicast along py (derived)`, `B: multicast along px (derived)` \|`. One word, architect's call. |
+| **B-P22** | W2's and W3's delivery *sentences* predate the one-bit `declared` | Under R2 an `exchange("U", …)` clause names `U`'s delivery, so W2's row is `("U", STATIONARY, None, True)` — while `03-lld-M4-mapping.md` §6.3 prints `U: STATIONARY strip (derived); halo exchange along px, width 1 (declared)`, i.e. two facts in one sentence. W3 is the same shape (`S: column band stationary (derived); forward … (declared)`), and there `forward` also replaces the row, so the summary line becomes `S: forward along px (declared)`. Neither section was in the edit list and neither plan is built yet; **P4/P5 must reconcile the printed sentence with the row** or the architect must rule that the summary keeps a second, protocol sentence. |
+| **B-P10**, **B-P12**, **B-P13**, **B-P15**, **B-P16**, **B-P20**, **B-O8** | unchanged | — |
+
+**Not verified in this phase**: that M1 will produce these `expr` trees (M1 does not exist — the
+three are B's transcription of M1 §6.1-§6.3, and `test_statement_expr_loads_agree_with_the_access_maps`
+only proves each tree agrees with the `AccessMap`s beside it); that the W2/W3 rewrites above are
+right (no plan is built for either — they are hand-derived and are recorded so P4/P5 can check
+them, including the `lo` caveat); anything on a device.

@@ -173,9 +173,9 @@ runs in parallel throughout and blocks only on B's text.
 1. **(45 s) The claim.** A plain Python loop nest and a separate list of schedule clauses.
    Delete the clauses, the program runs in CPython, and that run **is** the specification.
 2. **(60 s) W1.** Show `gemm`, show the schedule, run `s.summary()` — the audience reads
-   `C: stationary (derived)`, `A: multicast along py (derived)`, `B: multicast along px
-   (derived)` off the screen. That is the ARIES criticism answered out loud: the dataflow is
-   named, not emergent.
+   `C: stationary (declared)`, `A: multicast along py (derived)`, `B: multicast along px
+   (derived)` off the screen: `stationary("C")` names `C`'s delivery and the other two are
+   derived. That is the ARIES criticism answered out loud: the dataflow is named, not emergent.
 3. **(45 s) The flip.** Change **four schedule lines** — `grid(PK)`, `place(px=ax.k0)`,
    `stationary("B")`, `double_buffer("A")` — and drop `tile(ax.j, TN)` so each PE holds the
    whole `B` row-block, **with no edit to the kernel**. The summary now says

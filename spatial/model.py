@@ -12,7 +12,9 @@ codes of design/06-interfaces.md §6.3 stay reachable. In particular M0 does **n
 `l1_bytes <= 65536`, `physical_herd` divides the grid, put/get balance, channel acyclicity,
 bundle-index-is-IV, the tensor read-before-write ordering, `LoopPlan.kind == "unrolled"`
 placement, or any *reference* from one object to another (an operand naming a `Param`, a site
-naming a channel or a buffer, a shape entry naming a `shape_param`).
+naming a channel or a buffer, a shape entry naming a `shape_param`) — except where the
+reference is *inside* the object being constructed: `I78` checks that every `Load` of a
+`Statement.expr` names a `Param`, and a `KernelModel` holds both (§2.7 at v5).
 
 Violations are programmer errors, not user diagnostics: they raise `TypeError` (wrong type) or
 `ValueError` (wrong value), naming the class, the field and the offending value. NFR-4 / NFR-7
@@ -110,6 +112,7 @@ I75 `MappingPlan.segment_body` holds exactly one `HerdPlan` node at top level (�
 I76 that `HerdPlan` node equals `MappingPlan.herd` (§5.5, §5.6)
 I77 no `HerdPlan` node appears in `MappingPlan.herd_body`, or nested inside any `LoopPlan` or
     `BranchNode` body (§5.5, §5.6)
+I78 every `Load` reachable in any `Statement.expr` names a `Param` of that kernel (§2.4, §2.7)
 """
 
 from __future__ import annotations
@@ -125,7 +128,7 @@ from functools import lru_cache
 from math import prod
 from typing import Any, Literal, Union, get_args, get_origin
 
-CONTRACT_VERSION = 4
+CONTRACT_VERSION = 5
 """The version of design/06-interfaces.md this module implements."""
 
 
@@ -477,11 +480,19 @@ class AccessMap(_Model):
 
 @dataclass(frozen=True)
 class Statement(_Model):
-    """One kernel statement: the written access, its reads, and the enclosing axes."""
+    """One kernel statement: the written access, its reads, its value, and the enclosing axes.
+
+    `expr` is the complete right-hand side stored into `target`, after scalar forward
+    substitution (`03-lld-M1-frontend.md` §3.5), over **kernel-level** operands: every
+    `Load.buffer_id` is a `Param.name` and its subscripts are `Expr`s over kernel axis names,
+    shape-parameter names and constants. An `accumulate` carries the **desugared** tree, so
+    `C[i,j] += A[i,k]*B[k,j]` is `BinOp("+", Load(C), BinOp("*", Load(A), Load(B)))`.
+    """
 
     kind: Literal["assign", "accumulate"]
     target: AccessMap
     reads: tuple[AccessMap, ...]
+    expr: ExprNode
     op: ReduceOp | None
     axes: tuple[str, ...]
     line: int
@@ -551,6 +562,12 @@ class KernelModel(_Model):
         accumulates = any(s.kind == "accumulate" for s in self.statements)
         _need(self, "reduction", (self.reduction is not None) == accumulates,
               "is present if and only if a statement is an accumulate", self.reduction)
+        names = {p.name for p in self.params}
+        for statement in self.statements:
+            for load in _loads(statement.expr):
+                _need(self, "statements", load.buffer_id in names,
+                      f"every Load in a statement's expr must name a param of this kernel "
+                      f"{tuple(sorted(names))}", load.buffer_id)
 
 
 # --------------------------------------------------------------------------------------------
@@ -870,6 +887,20 @@ class Select(_Model):
 
 ExprNode = Union[Load, Const, BinOp, Neg, MaxMin, Select]
 """The frozen expression-tree union of design/06-interfaces.md §5.5."""
+
+_EXPR_NODES: tuple[type, ...] = get_args(ExprNode)
+
+
+def _loads(node: ExprNode) -> Iterator[Load]:
+    """Yield every `Load` in an expression tree, in field order (§5.5)."""
+    if isinstance(node, Load):
+        yield node
+        return
+    for field in fields(node):  # type: ignore[arg-type]
+        value = getattr(node, field.name)
+        for item in value if type(value) is tuple else (value,):
+            if isinstance(item, _EXPR_NODES):
+                yield from _loads(item)
 
 
 @dataclass(frozen=True)

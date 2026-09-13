@@ -126,11 +126,22 @@ because the only spatial directions that exist are the placed axes.
 16              out.append((a, STATIONARY, None, False))
 17          else:
 18              out.append((a, FORWARD, PE axis of the non-reuse spatial direction, False))
-19      # declared overrides (FR-M3): a stream()/forward() clause replaces the derived row
-20      for clause in sorted(mapping.schedule.streams + mapping.schedule.exchanges, key=operand):
-21          replace the row for clause.operand with (operand, PATTERN[clause], clause.along, True)
+19      # `declared` is a fact about the SCHEDULE: it is True iff a clause names this operand's
+19a     # delivery — stationary(a), stream(a,...), forward(a,...) or exchange(a,...) — whatever
+19b     # row the derivation produced above.  (Ruling on B-P17, `06-interfaces.md` §5.6 at v5.)
+19c     out := [(a, kind, along, a in DECLARED_OPERANDS(mapping.schedule)) for (a, kind, along, _) in out]
+20      # FR-M3: a stream()/forward() clause additionally REPLACES the derived row.  exchange()
+20a     # does not: `Delivery` has no halo member, and §6.3 prints W2's derived `U: STATIONARY`
+20b     # beside its declared halo sentence.
+21      for clause in sorted(mapping.schedule.streams, key=operand):
+21a         replace the row for clause.operand with (operand, PATTERN[clause], clause.along, True)
 22      return tuple(out)
 ```
+
+`DECLARED_OPERANDS` is `set(schedule.stationary) | {c.operand for c in schedule.streams} |
+{c.operand for c in schedule.exchanges}`. It says a clause **named** the delivery, not that the
+derivation needed the clause: W1's `C` is `declared` although `ker M_C ⊆ ker Sπ_u` holds anyway,
+and the flip's `B` is `declared` for the same reason — one rule, both worked examples.
 
 **Every classification here is computed in `UCoord`** — the untiled `kernel.axes` frame.
 `mapping.pi` and `mapping.ker_pi` are over `Coord` (post-tiling) and are used **only** for herd
@@ -806,9 +817,11 @@ summary therefore re-expresses both bases over the post-tiling axes, so the flip
 are **not** the same and the line says which it is showing: the `LegalMapping` fields stay
 untiled and are what M4's own classification reads (§3.2); only the rendered text is tiled.
 
-FR-M11's acceptance requires the literal strings `C: stationary (derived)`,
+FR-M11's acceptance requires the literal strings `C: stationary (declared)`,
 `A: multicast along py (derived)` and `B: multicast along px (derived)` — lines 4-8 produce
-exactly those. The summary is compared byte for byte against
+exactly those. *(Erratum, 2026-09-13, the ruling on B-P17: `C`'s row is **declared**, because
+`stationary("C")` names its delivery; `A` and `B` are named by no clause. Two derived rows and
+one declared still say the dataflow is named, not emergent.)* The summary is compared byte for byte against
 `tests/golden/<workload>.<variant>.summary.txt` (`06-interfaces.md` §8).
 
 ---
@@ -890,7 +903,8 @@ guard, scope and loop kind below is a literal field of the `MappingPlan`.
 `repeats=(2,1)`.
 
 **Delivery** (§3.2): `A: MULTICAST along py (derived)`, `B: MULTICAST along px (derived)`,
-`C: STATIONARY (derived)`.
+`C: STATIONARY (declared)` — *erratum, 2026-09-13: `stationary("C")` names `C`'s delivery, so
+its row is `declared` (the ruling on B-P17)*.
 
 **Herd**: `HerdPlan(name="gemm_herd", grid=(2,2), shape=(1,2), at=None, coords=("tx","ty"))`.
 
@@ -935,17 +949,24 @@ L1 = `4096 + 2·2048 + 2·2048 = 12 288` of 65 536, matching HLD §7.1 and `04-t
 
 ```
 0  BufferPlan acc                                         # air.alloc, depth 0
-1  LoopPlan(axis="m0", 0..32, "sequential", depth=1, body=[
-2      LoopPlan(axis="n0", 0..32, "sequential", depth=2, body=[
-3          StoreNode(zero acc[m,n]) ])])
+1  LoopPlan(axis="i1", 0..32, "sequential", depth=1, body=[
+2      LoopPlan(axis="j1", 0..32, "sequential", depth=2, body=[
+3          StoreNode(zero acc[i1,j1]) ])])
 4  LoopPlan(axis="k0", 0..64 step 16, kind="sequential", depth=0, body=[
 5      BufferPlan a                                       # DIRECT child of the K loop  (H-1)
 6      BufferPlan b                                       # DIRECT child of the K loop
 7      ChannelSite(get, "A2L1", indices=(tx, ty), buffer="a", region=empty, scope="herd", order=2)
 8      ChannelSite(get, "B2L1", indices=(tx, ty), buffer="b", region=empty, scope="herd", order=3)
-9      LoopPlan m, LoopPlan n, LoopPlan t  ->  StoreNode(acc[m,n] += a[m,t]*b[t,n]) ])
+9      LoopPlan i1, LoopPlan j1, LoopPlan k1
+                        ->  StoreNode(acc[i1,j1] = acc[i1,j1] + a[i1,k1]*b[k1,j1]) ])
 10 ChannelSite(put, "C2L3", indices=(tx, ty), buffer="acc", region=empty, scope="herd")
 ```
+
+*Erratum, 2026-09-13 (the ruling on B-P18, `06-interfaces.md` §5.5 at v5): lines 1-3 and 9 are
+named by the post-tiling axis each loop realises — `i1`, `j1`, `k1`, the zeroing nest reusing
+`i1`/`j1` — where this section first printed `m0`, `n0`, `m`, `n`, `t`. Line 9's store is
+`Statement.expr` (§2.4 at v5) with each `Load` rewritten into its L1 buffer; M4 rebuilds no
+arithmetic (B-P19).*
 
 Lines 5-8 are the ping-pong shape: the allocs are direct children of the K loop and each is first
 touched by its `get`. Measured to fire — open-questions §1 evidence 4 gives `{unroll = 2 : i32}`
@@ -963,7 +984,7 @@ on this exact structure.
 ```
 A: multicast along py (derived)
 B: multicast along px (derived)
-C: stationary (derived)
+C: stationary (declared)
 A: multicast along py, re-fetched per k0
 B: multicast along px, re-fetched per k0
 C: stationary (spatial), resident for the whole run
@@ -1038,11 +1059,14 @@ three `aie.cascade_flow` ops the probe emits.
 4  LoopPlan(axis="i0", 0..64 step 32, kind="sequential", depth=0, body=[     # 2 trips
 5      BufferPlan a                                # DIRECT child of the i0 loop  (ping-pong)
 6      ChannelSite(get, "A2L1", indices=(tx,), buffer="a", region=empty, scope="herd", order=1)
-7      <zeroing StoreNodes over acc[m,n]>
-8      LoopPlan m (0..32), LoopPlan n (0..64), LoopPlan t (0..16)
-                        -> StoreNode(acc[m,n] += a[m,t]*b[t,n])
+7      <zeroing StoreNodes over acc[i1,j]>
+8      LoopPlan i1 (0..32), LoopPlan j (0..64), LoopPlan k1 (0..16)
+                        -> StoreNode(acc[i1,j] = acc[i1,j] + a[i1,k1]*b[k1,j])
 9      <the cascade branch, below> ])
 ```
+
+*Erratum, 2026-09-13 (B-P18): lines 7-8 are named by the post-tiling axis each loop realises —
+`i1`, the **untiled** `j`, and `k1` — where this section first printed `m`, `n`, `t`.*
 
 Lines 5-6 are the ping-pong shape (VF §E.2 items 2, 3, 5): the alloc is a direct child of the
 streaming loop and its first touch is a `get`. Line 0 is deliberately **not**: hoisting `b`
@@ -1053,8 +1077,8 @@ above the loop is the whole point of the flip.
 ```
 Guard(tx == 0):        put CascadeK[tx]   <- acc
 Otherwise:             get CascadeK[tx-1] -> recv
-                       LoopPlan m (0..32) -> LoopPlan n (0..64)
-                                          -> StoreNode(acc[m,n] = acc[m,n] + recv[m,n])
+                       LoopPlan i1 (0..32) -> LoopPlan j (0..64)
+                                          -> StoreNode(acc[i1,j] = acc[i1,j] + recv[i1,j])
                        Guard(tx == 3):    put C2L3[0] <- acc
                        Otherwise:         put CascadeK[tx] <- acc
 ```
@@ -1070,8 +1094,10 @@ carries `aie.cascade_flow(%tile_0_2, %tile_1_2)`, `(1,2)→(2,2)`, `(2,2)→(3,2
 
 **The accumulate is an explicit loop nest, not a whole-tile op.** `acc[:] = acc[:] + recv[:]` is
 not a `StoreNode` — there is no whole-buffer form (`06-interfaces.md` §5.5). M4 expands it here,
-into a two-deep `LoopPlan` over `(m, n)` carrying one scalar `StoreNode` whose expression is
-`BinOp("+", Load(acc,(m,n)), Load(recv,(m,n)))`. M5 then has nothing to decide (D-14).
+into a two-deep `LoopPlan` over `(i1, j)` carrying one scalar `StoreNode` whose expression is
+`BinOp("+", Load(acc,(i1,j)), Load(recv,(i1,j)))`. M5 then has nothing to decide (D-14). This is
+the one arithmetic node M4 synthesises rather than reading off `Statement.expr`, because no
+kernel statement corresponds to it — like the accumulator zeroing.
 
 **The `i0` sweep** is a 2-trip `air.sequential` **inside** the herd body: with `k` placed and `j`
 untiled, each PE walks the `M/TM = 2` row-blocks of `C` itself, each the full `[32, 64]` block,
@@ -1255,7 +1281,7 @@ which multiplex onto one shim MM2S, and the whole program is measured to compile
 
 | id | input | expected |
 |---|---|---|
-| `test_M1_trichotomy` | W1 `LegalMapping` | `delivery == (("A",MULTICAST,"py",False),("B",MULTICAST,"px",False),("C",STATIONARY,None,False))` |
+| `test_M1_trichotomy` | W1 `LegalMapping` | `delivery == (("A",MULTICAST,"py",False),("B",MULTICAST,"px",False),("C",STATIONARY,None,**True**))` — `stationary("C")` names `C`'s delivery, so its row is `declared`; `A` and `B` are named by no clause (erratum 2026-09-13, the ruling on B-P17) |
 | `test_M1_trichotomy_flip` | W1-flip `LegalMapping` | `delivery == (("A",STATIONARY,None,False),("B",STATIONARY,None,True),("C",CASCADE,"px",False))` — 1-D herd, `place(px=ax.k0)`, `j` untiled; `B` is `declared` and the containment holds in `UCoord` (§6.2, B-O5 closed) |
 | `test_M2_broadcast_shape` | W1 | `ChannelPlan("A2L1", size=(2,1), broadcast_shape=(2,2))`; `B2L1` mirrored |
 | `test_M2_broadcast_multiple` | hand plan, `size=(3,1)`, `broadcast_shape=(2,2)` | rejected before emission: `2 % 3 != 0` |
