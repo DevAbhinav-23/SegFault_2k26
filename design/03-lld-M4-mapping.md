@@ -1129,7 +1129,7 @@ end of it. Only `B` is resident for the whole run, and that is the flip's claim.
 `H=W=16`, `HS=8`, **`PI=2`** (finding N-1; the `PI=4` schedule becomes a `DMA-CHANNELS` negative
 fixture), `T=4`, `f32`. `physical_herd=(2,)` on `npu1`, `repeats=(1,)`.
 
-**Delivery**: `U: STATIONARY strip (derived); halo exchange along px, width 1 (declared)`.
+**Delivery**: `("U", STATIONARY, None, True)`, rendered `U: stationary (declared)`. *(Erratum, 2026-09-13, the ruling on **B-P22**: the summary's delivery block is the mechanical `f"{a}: {HOW} ({declared})"` line per operand and nothing else — protocol facts appear through the channel lines of §3.9 line 14. `exchange("U", …)` names `U`'s delivery, so under R2 — "`declared` is a fact about the schedule: a clause names this operand's delivery" — the row is `declared`; the earlier two-facts-in-one-sentence form predates the one-bit flag.)*
 
 **Tensors**: `(U,)` — the kernel's one parameter, `[T+1, H+2, W] f32` = `[5, 18, 16]`, level
 `L3`, scope `"tensor"`. Read **and** written, so §3.3's read-before-write ordering is vacuous.
@@ -1197,8 +1197,7 @@ claim is this sentence.
 
 `MQ=NR=32`, `PJ=4`, `CW=8`, `i32`. `physical_herd=(4,)`, `repeats=(1,)`.
 
-**Delivery**: `S: column band stationary (derived); forward W->E along px, one scalar per row
-(declared)`.
+**Delivery**: `S: forward along px (declared)`, `q: multicast along px (derived)`, `r: stationary (derived)` — three mechanical lines, in `MappingPlan.delivery` order (sorted by operand: `S`, `q`, `r`). *(Erratum, 2026-09-13, the ruling on **B-P22**: the delivery block carries one `f"{a}: {HOW} ({declared})"` line per operand and nothing else. `forward("S", …)` both names `S`'s delivery — R2, "`declared` is a fact about the schedule: a clause names this operand's delivery" — and replaces its derived row (FR-M3, §3.2 line 21a).)*
 
 **Tensors**: `(q, r, S)` — `q [32] i32` and `r [32] i32` are read-only and **must** precede the
 written `S [33,33] i32` (§3.3 note 6; `_check_interface` raises otherwise, measured).

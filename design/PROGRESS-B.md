@@ -759,3 +759,135 @@ three are B's transcription of M1 §6.1-§6.3, and `test_statement_expr_loads_ag
 only proves each tree agrees with the `AccessMap`s beside it); that the W2/W3 rewrites above are
 right (no plan is built for either — they are hand-derived and are recorded so P4/P5 can check
 them, including the `lo` caveat); anything on a device.
+
+---
+
+# Phase P3 — the M4 self-check, the corrupted-plan corpus, the plan interpreter
+
+*Person B, 2026-09-13. Branch `role-b`. P1' balance, P2b acyclicity, the structural invariants
+and the P3 DMA-channel budget land as real checks; `spatial/m4_selfcheck.py` stops being a
+pass-through. **Not pushed** — the architect verifies and pushes.*
+
+## Landed
+
+| # | What | Where |
+|---|---|---|
+| 1 | **P1' balance** (§3.7.1): concrete coordinate enumeration, `trips` through sequential loops, unrolled loops **enumerated**, guards and `BranchNode` arms evaluated per coordinate, fan-out by D-2. Failure carries the full per-key table (every index of every channel, `0 == 0` rows included), the channel, the index, the fan-out index, both site lists with their coordinates, and `details["rule"]` — one of `fan-out`, `per-branch`, `per-iteration`, `total` | `spatial/m4_selfcheck.py` |
+| 2 | **P2b acyclicity** (§3.7.2): nodes are `(site id, coord, concrete index)`; channel edges put→get after fan-out expansion; program-order edges by rules 1-5 exactly, with the herd contracted to a single `HERD` node so **no** segment-site→herd-site edge exists; iterative Tarjan; `details["cycle"]` is the ordered edge list, each end naming site, channel, index and coordinate | same |
+| 3 | **Structural** (§3.7.3, `06-interfaces.md` §5.6 invariants 3-8): bundle-index-is-IV (`BUNDLE-INDEX-IS-IV`, also reached through the balance walk so an unevaluable index never surfaces as an internal error), ping-pong shape, the L1 budget **and** the staged-subset equality with `LegalMapping.l1_bytes`, tensor order naming `_check_interface`, the names and the `HerdPlan` marker | same |
+| 4 | **P3 DMA budget** (§3.8): per coordinate, live sites; `MAX_OVER_EXCLUSIVE_BRANCHES` falls out of enumeration; `DMA-CHANNELS` error naming the PE, the direction, the channel list, the budget, `circuit-switched` and `2 S2MM`/`2 MM2S`, with `clause = grid(...)`; a module-level `warnings(plan) -> tuple[str, ...]` for the packet-capable case, which raises nothing | same |
+| 5 | **`may_packet(channel, plan)`** — the `CIRCUIT` predicate §3.8 leaves undefined, derived from evidence and then found to be the upstream pass's own arithmetic (below) | same |
+| 6 | **The corrupted-plan corpus**: six `dataclasses.replace` corruptions of `w1_plan.plan("npu1")` — `dropped_get`, `extra_put_in_loop`, `broadcast_underconsumed`, `iv_bundle_index`, `pingpong_hoisted`, `tensor_order` — plus the synthetic 2-PE `halo.py` base and its `halo_guard_dropped`, `halo_reversed`, `dma_three_inbound`, `dma_packet_warn`, plus the legal `branch_gets.py` (a `BranchNode` plan, for the two rows that need one) | `tests/fixtures/corrupt/` |
+| 7 | **The plan interpreter**: one coroutine per concurrent region, one FIFO per `(channel, concrete index)`, fan-out on every put, a get that yields while empty, round-robin with a deadlock report (a dynamic P2 check), `air.alloc` re-allocating per trip, regions as row-major slabs | `tests/helpers/plan_interp.py` (201 lines) |
+| 8 | **The three semantic checks** of `04-test-plan.md` §3.4 for W1 on both targets: `test_sem_access_regions` (every region's index set equals the `AccessMap` image over that PE's subdomain), `test_sem_compute_nodes` (`C == A @ B` **exactly**, plus a mutation test proving it is not vacuous), `test_sem_coverage` (the drained regions partition the write domain) | `tests/integration/test_semantics.py` |
+| 9 | 20 unit tests for the checks, every negative through `assert_diagnostic` with the numbers the LLD names | `tests/unit/test_m4_selfcheck.py` |
+| 10 | **B-P21** and **B-P22** applied: `02-hld.md` line 342 `C: stationary (declared)`; the W2 and W3 delivery-summary rows of `02-hld.md` §7.2/§7.3 and of `03-lld-M4-mapping.md` §6.3/§6.4 replaced by the mechanical `f"{a}: {HOW} ({declared})"` lines, each with a one-line erratum quoting R2 | `design/02-hld.md`, `design/03-lld-M4-mapping.md` |
+
+## The `may_packet` predicate, and the evidence it was derived from
+
+§3.8 lines 4-9 state `CIRCUIT(site)` in prose and never define `may_packet`. It was derived from
+measurement and then **found in the source**, which is a stronger result than the brief asked for:
+it is `air-dma-to-channel`'s own auto-upgrade rule (`mlir/lib/Transform/AIRDmaToChannel.cpp:1598-1740`,
+pass option `shim-dma-channels-per-col`, default 2, `mlir/include/air/Transform/Passes.td:1808-1812`;
+wheel `0.0.1.2026091204+ff95a9b`, whose commit `ff95a9b` is the checked-out `mlir-air` tree).
+
+> Per segment and per direction — **input** is a herd-side get with a launch-side L3 put,
+> **output** a herd-side put with a launch-side L3 get — the per-column shim pressure is
+> `#non-broadcast + Σ_span ceil(members_span / span)`, where a broadcast channel contributes
+> `prod(size)` members at `span = broadcast_shape[0] // size[0]` (it is split into one channel per
+> bundle index by `air-specialize-dma-broadcast`, which runs first). If that exceeds 2, **every**
+> L3-attached channel of that direction becomes `channel_type = "npu_dma_packet"` and multiplexes;
+> otherwise they stay circuit-switched `aie.flow`s. Core-to-core channels are never upgraded.
+
+**Evidence, regenerated this session.** Five probes, each `python <probe> > x.mlir` then
+`timeout 600 aircc --device npu1 --output-format=none --tmpdir <scratch>/x.tmp x.mlir`, **one at a
+time**, tmpdirs outside the repo; then `aie.*.mlir` tabulated per channel.
+
+| probe | L3 in-channels → pressure | predicted | measured lowering | `aircc` |
+|---|---|---|---|---|
+| `q/q7_a.py` (W1, PI=PJ=2) | `A2L1` bcast(2 members, span 1) + `B2L1` bcast(2, span 2) → **3** | packet | 3 `aie.packet_flow`; `air_A2L1_0`, `air_B2L1_0`, `air_B2L1_1` all on `shim_noc_tile_0_0, MM2S, 0`; `C2L3` (out, pressure 1) 4 circuit `aie.flow` | exit 0, 0 `error:` |
+| `q/pi2/w2_pi2.py` (W2, PI=2) | `UIn` → **1** | circuit | **0** packet flows; `aie.flow(shim_x_0 → tile_x_2)`; halo links circuit | exit 0, 0 `error:` |
+| `q/q2_w2.py` (W2, PI=4) | `UIn` → **1** | circuit | **0** packet flows; two circuit flows target `tile_1_2, DMA:0` | **exit 1**, `'aie.connect' op … targets same dst` |
+| `q/w3b.py` (W3, no `q`/`r`) | `WestIn` → **1** | circuit | **0** packet flows | exit 0, 0 `error:` |
+| `review/w3c.py` (W3, `q`/`r` staged) | `WestIn` + `QIn` + `RIn` → **3** | packet | 9 `aie.packet_flow`; all three channels carry `channel_type = "npu_dma_packet"` in `placed.w3c.mlir` | exit 0, 0 `error:` |
+
+Every row is reproduced. The discriminating pair is `w3b` vs `w3c`: the **same** `WestIn` channel
+is circuit alone and packet beside `QIn`/`RIn`, so no predicate over one channel's own shape can
+work — which refutes all three candidates the brief listed (`broadcast_shape`: `RIn`/`WestIn` are
+plain and packet; puts under a temporal segment-scope loop: `WestIn`'s are, and it is circuit in
+`w3b`; distinct L3 endpoints per shim: `q7a`'s pressure is 3 from two channels). The pass printed
+its own arithmetic when run directly:
+
+```
+$ air-opt --air-dma-to-channel w3c.mlir            # and with the real pipeline prefix for q7a
+w3c.mlir:14:7: warning: auto-upgrading 3 input channels to dma_packet (per-column pressure 3
+  exceeds shim DMA limit of 2)
+q7a.mlir:11:7: warning: auto-upgrading 4 input channels to dma_packet (per-column pressure 3
+  exceeds shim DMA limit of 2)
+```
+
+**Labelled measured, not contractual (R-19, R-21)**, because it is a pass option's default on a
+pinned wheel rather than a documented guarantee: `--shim-dma-channels-per-col` or
+`--force-shim-packet-flow` changes it, and a shim-column assignment other than the `same_column`
+default the pass assumes would too. That is exactly why §3.8 splits the verdict: a circuit-switched
+overflow is a `DMA-CHANNELS` **error**, and an overflow that only packet-capable channels cause is a
+**warning**. W2 at `PI = 4` is an error (`UIn` alone → pressure 1 → all three inbound circuit) and
+W3 is a warning (three L3 inputs → pressure 3 → packet), which is what §7 requires.
+**Not measured**: the outbound half at pressure > 2 — no probe has three L1→L3 channels.
+
+## Two readings the LLD's pseudocode leaves open
+
+| # | Reading | Why |
+|---|---|---|
+| 1 | §3.7.1 line 24 multiplies `trips` through **every** `LoopPlan`; the implementation multiplies through a `"sequential"` loop and **enumerates** an `"unrolled"` one, binding its variable | An unrolled loop is a trace-time Python loop whose variable *is* a bundle index. Multiplying leaves `pi_bundle` unbound and `A2L1[pi_bundle, 0]` unevaluable; enumerating is what makes §6.1's own statement — "`A2L1` put key `[0,0]` count 4" — and §7's `test_M4_balanced` (per-index rows) come out |
+| 2 | §3.7.2 rule 5 excludes the loop back edge; it is applied to unrolled loops too | Uniform, and conservative: fewer edges can hide a cycle, never invent one. A real cycle across two trips of an unrolled loop would be missed, which no plan we build can have (a bundle index is spatial, the trips are independent) |
+
+## The interpreter's scope, and its limits
+
+`run(plan, tensors)` executes **the plan, not the emitted IR** — D-9 and the honest-limits slide
+stand unchanged. It models the four things that can make a plan wrong on paper: the region
+arithmetic (a wrong slab shows as a wrong answer), the fan-out (a put reaches every destination
+index), the blocking discipline (a get yields while its FIFO is empty, so a missing put is a
+`RuntimeError("deadlock")` naming the blocked sites), and the allocation rule (`air.alloc` inside a
+loop re-allocates per trip). It does **not** model: token dependencies and `is_async` (every actor
+is sequential within itself), the physical herd and `repeats` (the logical grid is what runs),
+`air.sequential`'s true concurrency, L2, DMA ordering beyond FIFO per `(channel, index)`, or
+anything about the lowered IR. A W1 run is 4 PEs × 32×32×16 scalar stores ≈ 2 s of the suite's
+4.2 s; W2 and W3 will need the same care when their plans exist.
+
+## Verified (command → result)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `.venv/bin/python -m pytest` | **483 passed, 4 deselected** in 4.16 s (was 456 passed) |
+| 2 | `PYTHONHASHSEED=1` / `=2`, `-vv` | 483 passed both times; `diff` of the two 483-line id/outcome lists is **empty** |
+| 3 | `.venv/bin/python -m pytest -m slow` | **4 passed**, 483 deselected, 3.23 s — unchanged |
+| 4 | `import spatial.m4_selfcheck` in a fresh process | `air: False, m5: False, m4_mapping: False, numpy: False` (I-1; the checker is exact integer arithmetic, so numpy is not imported either) |
+| 5 | the five `aircc` runs of the evidence table, one at a time, `--tmpdir` under the scratch dir | exits 0/0/**1**/0/0 with 0/0/**1**/0/0 `error:` lines, as tabulated |
+| 5a | — | `aircc` also writes `elfs_<core>/` and `measured_stack_sizes.mlir` into its **cwd**, `--tmpdir` notwithstanding. The probe script ran from the repo root and left nine stray paths, which were removed; `m6_tools.aircc` already passes `cwd=work`, so the product is unaffected — but any future probe run must `cd` outside the repo first |
+| 6 | `air-opt --air-dma-to-channel` on each probe | the two `auto-upgrading` warnings quoted above; silent on `w2pi2`, `w2pi4`, `w3b` |
+| 7 | `m4.plan(w1_legal.legal(t))` with the real `self_check` wired in | accepted on both targets; no golden changed |
+
+## Blockers closed
+
+| # | Resolution |
+|---|---|
+| **B-P21** | **Closed.** `02-hld.md:342` now reads `C: stationary (declared)` — one word, the architect's ruling. |
+| **B-P22** | **Closed.** The delivery block is the mechanical `f"{a}: {HOW} ({declared})"` line per operand and nothing else; protocol facts appear through the channel lines. W2 renders `U: stationary (declared)`, W3 renders `S: forward along px (declared)`, `q: multicast along px (derived)`, `r: stationary (derived)`. The prose sentences in `03-lld-M4-mapping.md` §6.3/§6.4 and `02-hld.md` §7.2/§7.3 are replaced, each with a one-line erratum quoting R2. |
+| **B-P23** | **Applied as ruled.** A self-check failure that can only be M4's own construction bug raises `MappingError` with `PROTOCOL-UNSUPPORTED`, `details["internal_consistency"] = True`, `details["invariant"] = <§5.6 number>`, a `reason` beginning `internal:` and naming the workload and the invariant, and a `fix` asking for a bug report (HLD §4.3). The catalogue stays at 43. Recorded for a possible dedicated code after the freeze, with M5's B-P13. |
+
+## Open / blockers
+
+| # | Item | Detail |
+|---|---|---|
+| **B-P24** *(new)* | The `along` of an overridden delivery row is the **clause's** axis, not the PE axis | §3.2 line 21a says `clause.along`, so `forward("S", along=ax.j0)` gives `("S", FORWARD, "j0", True)` and the summary renders `S: forward along j0 (declared)` — while §6.4 and `02-hld.md` §7.3 print `along px`. The derived rows all use `PE_AXIS_NAME`. One of the two must move: either line 21a maps the clause axis to the PE dim carrying it, or the documents say `j0`. It bites at **P5**, when W3's summary golden is frozen. No code changed this phase. |
+| **Substitutions in the corpus** | three, each recorded in the fixture's docstring | (a) `dropped_get` shortens the `j_drain` loop rather than deleting one `get`, because W1's four `C2L3` gets are four trips of one site; (b) `broadcast_underconsumed` guards the `A2L1` get to `ty == 0` for the same reason; (c) `dma_packet_warn` is three packet-capable inbound plus one circuit rather than "three of which two are packet-capable", because the upstream rule upgrades **every** L3 channel of a direction at once, so a two-of-three split is unreachable. `test_M4_l1_agrees_with_m3` widens `acc` to `(32,64)` rather than inflating `bytes`, which M0's `I39` forbids. |
+| **M4 §7 rows still waiting** | `test_M4_balanced` (W2 at `PI=2`, both boundary PEs), `test_M4_drains_every_plane`, `test_M4_odd_T_peel`, `test_M4_even_T_no_peel`, `test_M10_w2_acyclic`, `test_M4_halo_indices`, `test_M4_stencil_is_five_point` — **P4**; `test_M5_wavefront_balance`, `test_M5_stages_q_and_r`, `test_M5_drains_every_row`, `test_M5_three_channels`, and `test_P3_dma_packet_warns` **on W3 itself** — **P5**; `test_M6_cascade_chain`, `test_M6_cascade_orientation`, `test_M11_residency_line`'s flip half — **P6**. Each has a hand-written stand-in of the same shape here, so the checker is exercised now and only the *plan* is missing. |
+| **B-P10**, **B-P12**, **B-P13**, **B-P15**, **B-P16**, **B-P20**, **B-O8** | unchanged | — |
+
+**Not verified in this phase**: that the packet/circuit rule holds on any wheel but the pin (it is a
+pass option's default, R-19/R-21); the outbound half of `may_packet` at pressure > 2 (no probe
+reaches it); that W2's and W3's **real** plans pass the checks (neither is built — the synthetic
+halo and the `BranchNode` plan are hand-written stand-ins with the right shape, not the protocols
+of §3.6.1/§3.6.2); that the interpreter agrees with the device (it interprets the plan, never the
+emitted IR — D-9); anything on hardware.
