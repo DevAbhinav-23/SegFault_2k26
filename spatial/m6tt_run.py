@@ -65,8 +65,17 @@ def _check_environment() -> None:
                          f"firmware for the simulator: {_ENV_HINT}")
 
 
+def _padded_shape(spec: Any) -> tuple[int, ...]:
+    """The shape actually uploaded: the tensor's, with its last dimension widened to the padded
+    row `m5tt_emit` addressed (ruling R-TT-A′, `design/08-tt-backend.md` §3.3)."""
+    return tuple(spec.shape[:-1]) + (spec.row_elems,)
+
+
 def _upload(ttnn: Any, device: Any, spec: Any, array: np.ndarray) -> Any:
-    """One L3 tensor as a row-major DRAM tensor, with the emitter's page arithmetic checked."""
+    """One L3 tensor as a row-major DRAM tensor under R-TT-A′: `pad_elems` elements of leading
+    pad, rows widened to `page_bytes`, and the emitter's page arithmetic checked against the
+    device. Padding here is the whole of the layout policy — the kernel reads the two numbers as
+    literals, and nothing else in the program knows about it."""
     dtype = _dtypes(ttnn).get(spec.dtype.value)
     if dtype is None:
         raise TTRunError(f"tensor {spec.name!r} has dtype {spec.dtype.value!r}, which this "
@@ -77,7 +86,10 @@ def _upload(ttnn: Any, device: Any, spec: Any, array: np.ndarray) -> Any:
     if array.dtype != np.dtype(spec.dtype.numpy):
         raise TTRunError(f"tensor {spec.name!r} has dtype {array.dtype} where the program "
                          f"declares {np.dtype(spec.dtype.numpy)}")
-    tensor = ttnn.Tensor(np.ascontiguousarray(array).reshape(-1).tolist(), list(spec.shape),
+    shape = _padded_shape(spec)
+    padded = np.zeros(shape, dtype=array.dtype)
+    padded[..., spec.pad_elems:spec.pad_elems + spec.shape[-1]] = array
+    tensor = ttnn.Tensor(padded.reshape(-1).tolist(), list(shape),
                          dtype, ttnn.ROW_MAJOR_LAYOUT, device, ttnn.DRAM_MEMORY_CONFIG)
     if tensor.buffer_page_size() != spec.page_bytes:
         raise TTRunError(
@@ -87,8 +99,15 @@ def _upload(ttnn: Any, device: Any, spec: Any, array: np.ndarray) -> Any:
     return tensor
 
 
-def _descriptor(ttnn: Any, program: TTProgram, uploaded: dict[str, Any]) -> Any:
-    """The `ttnn.ProgramDescriptor`: one kernel over the core range, the CB table, the args."""
+def _download(spec: Any, tensor: Any) -> np.ndarray:
+    """The tensor back, with R-TT-A′'s padding stripped."""
+    whole = tensor.cpu().to_numpy().reshape(_padded_shape(spec))
+    return np.ascontiguousarray(whole[..., spec.pad_elems:spec.pad_elems + spec.shape[-1]])
+
+
+def _descriptor(ttnn: Any, device: Any, program: TTProgram, uploaded: dict[str, Any]) -> Any:
+    """The `ttnn.ProgramDescriptor`: one kernel over the core range, the CB table, the
+    semaphores, the args."""
     (x0, y0), (x1, y1) = program.core_range
     cores = ttnn.CoreRangeSet([ttnn.CoreRange(ttnn.CoreCoord(x0, y0), ttnn.CoreCoord(x1, y1))])
     formats = _dtypes(ttnn)
@@ -98,6 +117,11 @@ def _descriptor(ttnn: Any, program: TTProgram, uploaded: dict[str, Any]) -> Any:
                                                     data_format=formats[cb.dtype.value],
                                                     page_size=cb.page_bytes)])
         for cb in program.cbs]
+    # Over the whole core range, so a given id names the same L1 address on every core — A-TT1,
+    # which is what lets a producer address its consumer's semaphore as its own.
+    semaphores = [ttnn.SemaphoreDescriptor(id=sem.id, core_type=ttnn.CoreType.WORKER,
+                                           core_ranges=cores, initial_value=sem.initial_value)
+                  for sem in program.semaphores]
 
     compile_time: list[int] = []
     defines: list[tuple[str, str]] = []
@@ -106,10 +130,18 @@ def _descriptor(ttnn: Any, program: TTProgram, uploaded: dict[str, Any]) -> Any:
         compile_time += list(
             ttnn.TensorAccessorArgs(uploaded[spec.name]).get_compile_time_args())
 
+    def _noc(logical: tuple[int, int], axis: str) -> int:
+        """The NoC coordinate of a logical worker core — the one thing about the grid that only
+        a live device knows (C-TT3 / Q-TT2, `design/08-tt-backend.md` §3.4)."""
+        core = device.worker_core_from_logical_core(ttnn.CoreCoord(logical[0], logical[1]))
+        return int(core.x if axis == "x" else core.y)
+
     runtime = ttnn.RuntimeArgs()
     for (x, y), args in program.runtime_args:
-        runtime[x][y] = [uploaded[value].buffer_address() if kind == "addr" else int(value)
-                         for kind, value in args]
+        runtime[x][y] = [
+            uploaded[value].buffer_address() if kind == "addr" else
+            _noc(value, kind[-1]) if kind in ("noc_x", "noc_y") else int(value)
+            for kind, value in args]
 
     kernel = ttnn.KernelDescriptor(
         kernel_source=program.source,
@@ -118,7 +150,7 @@ def _descriptor(ttnn: Any, program: TTProgram, uploaded: dict[str, Any]) -> Any:
         runtime_args=runtime,
         config=ttnn.DataMovementConfigDescriptor(
             processor=ttnn.DataMovementProcessor.RISCV_0, noc=ttnn.NOC.RISCV_0_default))
-    return ttnn.ProgramDescriptor(kernels=[kernel], semaphores=[], cbs=cbs)
+    return ttnn.ProgramDescriptor(kernels=[kernel], semaphores=semaphores, cbs=cbs)
 
 
 def run(program: TTProgram, tensors: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -143,8 +175,8 @@ def run(program: TTProgram, tensors: dict[str, np.ndarray]) -> dict[str, np.ndar
         uploaded = {spec.name: _upload(ttnn, device, spec, tensors[spec.name])
                     for spec in program.io_tensors}
         order = [uploaded[spec.name] for spec in program.io_tensors]
-        ttnn.generic_op(order, _descriptor(ttnn, program, uploaded))
-        return {spec.name: uploaded[spec.name].cpu().to_numpy().reshape(spec.shape)
+        ttnn.generic_op(order, _descriptor(ttnn, device, program, uploaded))
+        return {spec.name: _download(spec, uploaded[spec.name])
                 for spec in program.io_tensors}
     finally:
         ttnn.close_device(device)

@@ -227,7 +227,7 @@ Four rules make this mechanical rather than a decision:
 > **Why it is amended.** The ruling's premise is that a transfer is legal when its *own* start is
 > aligned (32 B for a read, 16 B for a write) and its size is large enough. **Measured on ttsim,
 > 2026-09-13, that is not the rule the NoC enforces.** 23 single-transfer cases, one simulator
-> process each, `/tmp/…/probe_align.py` (the case table and every verdict are reproduced in
+> process each, `scripts/tt_probe_align.py` (the case table and every verdict are reproduced in
 > `design/PROGRESS-TT.md` §T2):
 >
 > | transfer | src offset | dst offset | size | verdict |
@@ -345,7 +345,7 @@ vector. The kernel never converts coordinates; it only substitutes them into
 > wrong tag), which is the negative control that keeps the positive result from being vacuous.
 > **Design kept and now measured working**: `worker_core_from_logical_core` is what the emitter
 > passes, and it is the value that stays correct when harvesting makes the two spaces differ.
-> Probe: `/tmp/…/probe_t2b.py`, verdicts in `design/PROGRESS-TT.md` §T2.
+> Probe: `scripts/tt_probe_coords.py`, verdicts in `design/PROGRESS-TT.md` §T2.3.
 >
 > *(Citation erratum against the brief: `worker_core_from_logical_core` does **not** appear in
 > `strings $WHEEL/build/lib/_ttnncpp.so` — 0 occurrences, measured. It appears 3× in
@@ -565,7 +565,7 @@ What the TT target does check, per core:
 | L1 per worker core | **1 499 136 B** | `$TT/ttsim-bin/soc_descriptor.yaml:132-133` (`worker_l1_size: 1499136`), byte-identical to `$WHEEL/tt_metal/soc_descriptors/wormhole_b0_80_arch.yaml` (measured `diff`). Equals `MEM_L1_SIZE (1464 * 1024)` in `$WHEEL/tt_metal/hw/inc/internal/tt-1xx/wormhole/dev_mem_map.h:33` |
 | reserved | **32 768 B** (32 KB) | `dev_mem_map.h:71-72`: *"1432 KB = 1464 KB (L1 total) − 32 KB (MEM_MAP_END system reserved)"*, `#define MEM_MAX_KERNEL_SIZE (1432 * 1024)`. **`[UNVERIFIED]` as the actual CB-arena bound** — it is the *kernel binary* limit in that header, and the kernel binary itself also occupies L1; the effective CB ceiling is measured at T2 |
 | usable, as designed | **1 466 368 B** | `1 499 136 − 32 768`. An estimate until T2 |
-| semaphores per core | **16** (ids `0..15`) — **measured at T2** | over-allocated deliberately: a program with 32 `SemaphoreDescriptor`s is refused by the host with `TT_FATAL @ tt_metal/impl/program/program.cpp:2001: semaphore_id < NUM_SEMAPHORES — Semaphore id 16 exceeds max value 15`, while 8 is accepted (`/tmp/…/probe_t2.py`, `design/PROGRESS-TT.md` §T2). Confirmed device-side: `get_semaphore(0)` and `get_semaphore(1)` read back `0x88f0` and `0x8900` — 16 B apart, as `dataflow_api.h:1501-1503` says |
+| semaphores per core | **16** (ids `0..15`) — **measured at T2** | over-allocated deliberately: a program with 32 `SemaphoreDescriptor`s is refused by the host with `TT_FATAL @ tt_metal/impl/program/program.cpp:2001: semaphore_id < NUM_SEMAPHORES — Semaphore id 16 exceeds max value 15`, while 8 is accepted (`design/PROGRESS-TT.md` §T2.3). Confirmed device-side: `get_semaphore(0)` and `get_semaphore(1)` read back `0x88f0` and `0x8900` — 16 B apart, as `dataflow_api.h:1501-1503` says |
 | alignment | **relative**: a write needs `src ≡ dst (mod 16)`, a read `src ≡ dst (mod 32)`; size unconstrained | **measured at T2** — ruling **R-TT-A′** in §3.3 and its 23-case table. The header constants it replaces are `$WHEEL/tt_metal/hw/inc/internal/tt-1xx/wormhole/noc/noc_parameters.h:291-292` (`NOC_L1_{READ,WRITE}_ALIGNMENT_BYTES 16`), `:295-296`, `:299-302` (`NOC_DRAM_READ_ALIGNMENT_BYTES 32`, `NOC_DRAM_WRITE_ALIGNMENT_BYTES 16`): the moduli are those numbers, but they bound a *difference*, not an address |
 | CB base address | a multiple of **32 B** | measured at T2 (§3.3, R-TT-A′'s closing paragraph). The emitter rounds every CB's `total_size` up to 32 B to keep it so |
 
@@ -719,9 +719,9 @@ fails as designed, and the result equals `plan_interp.run`. UB lines from ttsim 
 | Gate | Workload | What it first exercises | Status |
 |---|---|---|---|
 | **T1** | **W1** (GEMM output-stationary) | DRAM row-wise transfer, `TensorAccessor`, CBs, per-core runtime args, the scalar compute walk, `BranchNode`-free path. **Zero semaphores.** Also settles C-TT1 (row-major/one-row pages) and C-TT2 (the raw NoC calls) | **GREEN** (2026-09-13; `design/PROGRESS-TT.md` §4) |
-| **T2** | **W3** (wavefront) | **the first semaphores**: a 3-link chain, `full`/`empty`, `wait_min`, remote `inc`. Settles A-TT1, the `get_noc_addr` coordinate space (C-TT3), the semaphore limit, the `-march` string, the 4-byte-transfer alignment question | see `design/PROGRESS-TT.md` §T2 |
-| **T3** | **W2** (Jacobi halo) | **bidirectional** exchange, two links per interior PE, the `cur`/`next` swap with the odd-`T` peel, and f32 exactness under soft-float | not started |
-| **T4** | **W1-flip** (cascade) | `chain_direction` read rather than derived; a 1-D grid; the accumulate-in-the-middle block | not started |
+| **T2** | **W3** (wavefront) | **the first semaphores**: a 3-link chain, `full`/`empty`, `wait_min`, remote `inc`. Settles A-TT1, the `get_noc_addr` coordinate space (C-TT3), the semaphore limit, the `-march` string, the 4-byte-transfer alignment question | **GREEN** (2026-09-13; `design/PROGRESS-TT.md` §T2.1). Exact against the textbook DP, 2.2 s and 24 426 simulated cycles. The `-march` string is the one item it did **not** settle — nothing required reading it |
+| **T3** | **W2** (Jacobi halo) | **bidirectional** exchange, two links per interior PE, the `cur`/`next` swap with the odd-`T` peel, and f32 exactness under soft-float | not started — and now the **only** gate left. The blocker is the ping-pong landing buffer, named in `design/PROGRESS-TT.md` §5 |
+| **T4** | **W1-flip** (cascade) | `chain_direction` read rather than derived; a 1-D grid; the accumulate-in-the-middle block | **GREEN** (2026-09-13; `design/PROGRESS-TT.md` §T2.2), reached at T2 with no emitter change: the emitter dispatches on plan shape, never on a workload. Exact, 54.9 s, 12 129 177 cycles. It is also the only workload that exercises a **multi-row** remote write (32 × 256 B per link crossing) |
 
 **Stop rule.** *A gate that is not green after two agent-days is abandoned, not extended.* Keep
 whatever runs, write what failed into `design/PROGRESS-TT.md`, and **say so on the slide** — "W1

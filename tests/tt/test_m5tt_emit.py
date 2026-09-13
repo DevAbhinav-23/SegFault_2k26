@@ -9,6 +9,7 @@ confined to `spatial.m6tt_run`. The simulator run is `tests/tt/test_tt_w1.py`, m
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import subprocess
 import sys
@@ -115,23 +116,227 @@ def test_W1_kernel_has_balanced_braces(w1):
     assert w1.source.rstrip().endswith("}")
 
 
-# -- what T1 does not do -----------------------------------------------------
+# -- the program W3 produces (T2) --------------------------------------------
 
-@pytest.mark.parametrize("fixture", (w1flip_legal, w2_legal, w3_legal))
-def test_out_of_scope_plans_raise_not_implemented(fixture):
-    """A core-to-core channel (the flip's `CascadeK`, W2's `ToNorth`, W3's `West`) and the
-    segment-side programs W2 and W3 need are T2/T3/T4. They must say so, and by raising a
-    `NotImplementedError`, never by emitting something plausible."""
+@pytest.fixture(scope="module")
+def w3():
+    """W3's `TTProgram`: a 1-D chain of four PEs with the first core↔core channel."""
+    return m5tt.emit(m4.plan(w3_legal.legal("npu1")))
+
+
+def test_W3_grid_is_the_four_pe_chain(w3):
+    assert w3.grid == (4,)
+    assert w3.core_range == ((0, 0), (3, 0))
+    assert [core for core, _ in w3.runtime_args] == [(0, 0), (1, 0), (2, 0), (3, 0)]
+
+
+def test_W3_has_two_semaphores_per_link_and_none_for_the_L3_edges(w3):
+    """`West` is `size=(3,)`, three links over the chain, each with a `full` on its consumer and
+    an `empty` on its producer. `WestIn` and `EastOut` have an L3 end, so they are DRAM
+    transfers and carry no semaphore at all (`design/08-tt-backend.md` §3.6)."""
+    assert [(sem.id, sem.name, sem.initial_value) for sem in w3.semaphores] == [
+        (0, "West.full[0]", 0), (1, "West.empty[0]", 0),
+        (2, "West.full[1]", 0), (3, "West.empty[1]", 0),
+        (4, "West.full[2]", 0), (5, "West.empty[2]", 0)]
+
+
+def test_W3_runtime_args_carry_the_peer_of_each_channel_end(w3):
+    """Block B (`design/08-tt-backend.md` §3.4): per core↔core channel, the peer this core puts
+    to and the peer it gets from, as logical cores the runner converts. The head has no `West`
+    get and the tail no `West` put, so those slots hold the core's own coordinates and the guard
+    keeps them unused."""
+    args = dict(w3.runtime_args)
+    assert args[(0, 0)] == (("addr", "q"), ("addr", "r"), ("addr", "S"), ("const", 0),
+                            ("noc_x", (1, 0)), ("noc_y", (1, 0)),      # puts to core 1
+                            ("noc_x", (0, 0)), ("noc_y", (0, 0)))      # no get: itself
+    assert args[(2, 0)] == (("addr", "q"), ("addr", "r"), ("addr", "S"), ("const", 2),
+                            ("noc_x", (3, 0)), ("noc_y", (3, 0)),
+                            ("noc_x", (1, 0)), ("noc_y", (1, 0)))
+    assert args[(3, 0)][-4:] == (("noc_x", (3, 0)), ("noc_y", (3, 0)),  # no put: itself
+                                 ("noc_x", (2, 0)), ("noc_y", (2, 0)))
+
+
+def test_W3_cbs_are_rounded_to_the_circular_buffer_alignment(w3):
+    """`prev`/`cur` are 36 B in the plan and `edge_in`/`edge_out` 4 B. Rounding each up to 32 B
+    keeps every CB base 32 B aligned, which is what R-TT-A′'s L1 residues rest on; the flat index
+    arithmetic never sees the padding."""
+    assert [(cb.index, cb.name, cb.bytes) for cb in w3.cbs] == [
+        (0, "qb", 128), (1, "rb", 32), (2, "prev", 64), (3, "cur", 64),
+        (4, "edge_in", 32), (5, "edge_out", 32)]
+
+
+def test_W3_put_site_is_the_depth_one_fifo(w3):
+    """§3.5, the whole protocol in one site: wait for a free slot, write straight into the
+    consumer's `edge_in`, make the payload visible, then advertise it."""
+    assert ("noc_semaphore_wait_min((volatile tt_l1_ptr uint32_t*)"
+            "get_semaphore((uint32_t)(((tx * 2) + 1))), West_put_n);\n"
+            "            noc_async_write(edge_out_l1, "
+            "get_noc_addr(West_put_x, West_put_y, edge_in_l1), 4);\n"
+            "            noc_async_write_barrier();\n"
+            "            noc_semaphore_inc(get_noc_addr(West_put_x, West_put_y, "
+            "get_semaphore((uint32_t)((tx * 2)))), 1);\n"
+            "            West_put_n += 1;") in w3.source
+
+
+def test_W3_get_site_releases_the_previous_slot_before_it_waits(w3):
+    """§3.5 point 5 in its operational form: the `empty` increment sits at the top of the *next*
+    get on the link, never straight after the wait (which would let the producer overwrite a
+    region still being read) and never at the end of the enclosing body (which deadlocks, because
+    W3's `i` loop body holds two rows)."""
+    assert ("if (West_get_n > 0) {\n"
+            "                noc_semaphore_inc(get_noc_addr(West_get_x, West_get_y, "
+            "get_semaphore((uint32_t)((((tx + -1) * 2) + 1)))), 1);\n"
+            "            }\n"
+            "            noc_semaphore_wait_min((volatile tt_l1_ptr uint32_t*)"
+            "get_semaphore((uint32_t)(((tx + -1) * 2))), West_get_n + 1);\n"
+            "            West_get_n += 1;") in w3.source
+
+
+def test_W3_binds_the_twinless_segment_loops_to_occurrence_counters(w3):
+    """§3.3 rule 5. W3's `i_source` and `i_drain` run `[1, 33)` step 1 at segment scope while the
+    herd runs `i` over `[1, 33)` **step 2** with two row bodies inside, so there is no twin to
+    match. The channel is a FIFO, so the site's n-th transfer is the loop's n-th trip."""
+    for counter in ("WestIn_get_n", "EastOut_put_n", "SOut_put_n", "West_put_n", "West_get_n"):
+        assert f"int32_t {counter} = 0;" in w3.source
+    assert w3.source.count("SOut_put_n += 1;") == 2          # one per row body
+    assert ("noc_async_write(cur_l1 + (uint32_t)(1 * 4), "
+            "S_ta.get_noc_addr((uint32_t)((1 + SOut_put_n)), "
+            "(uint32_t)(((tx * 8) + 1) * 4)), 32);") in w3.source
+    assert ("noc_async_read(S_ta.get_noc_addr((uint32_t)((1 + WestIn_get_n)), "
+            "(uint32_t)(0 * 4)), edge_in_l1, 4);") in w3.source
+
+
+def test_W3_computes_the_recurrence_as_nested_ternaries(w3):
+    """§3.7: `MaxMin` left-folds to nested ternaries and `Select` is an expression, never control
+    flow, so the association is the interpreter's."""
+    assert w3.source.count("? ((int32_t)(2)) : ((int32_t)(-1))") == 8
+    assert "cur[0] = edge_in[0];" in w3.source and "prev[0] = edge_in[0];" in w3.source
+    assert "edge_out[0] = cur[8];" in w3.source and "edge_out[0] = prev[8];" in w3.source
+
+
+def test_W3_kernel_has_balanced_braces(w3):
+    assert w3.source.count("{") == w3.source.count("}")
+
+
+# -- R-TT-A': the DRAM layout policy -----------------------------------------
+
+def test_leading_pad_is_the_smallest_that_makes_every_transfer_congruent():
+    """The solver, on its own. `(modulus, delta)` is what one transfer asks: `delta` is its DRAM
+    byte offset minus its L1 byte offset with no pad, and the pad has to close the gap."""
+    assert m5tt._leading_pad(4, [(16, 0)]) == 0
+    assert m5tt._leading_pad(4, [(16, -4)]) == 1        # L1 starts 4 B in; DRAM must follow
+    assert m5tt._leading_pad(4, [(32, -8)]) == 2
+    assert m5tt._leading_pad(4, [(32, 0), (16, 0)]) == 0
+    assert m5tt._leading_pad(4, [(32, 0), (16, -4)]) is None    # 0 mod 8 and 1 mod 4 at once
+
+
+@pytest.mark.parametrize("fixture,pads,pages", (
+    (w1_legal, {"A": 0, "B": 0, "C": 0}, {"A": 256, "B": 256, "C": 256}),
+    (w3_legal, {"q": 0, "r": 0, "S": 0}, {"q": 128, "r": 128, "S": 160}),
+))
+def test_the_measured_layout_is_no_leading_pad_and_a_padded_row(fixture, pads, pages):
+    """R-TT-A′'s consequence, and it is not the one the ruling predicted: with the NoC's rule a
+    **relative** congruence, `p = 0` satisfies every transfer of every workload, including W3's
+    `S`. The only padding left is the row itself — 33 `i32` = 132 B → 160 B — which is what keeps
+    a page index from moving a residue. `p = 7` would put `S[i, 0]` at byte 28 against an L1
+    offset of 0 and is refused.
+    """
+    program = m5tt.emit(m4.plan(fixture.legal("npu1")))
+    assert {t.name: t.pad_elems for t in program.io_tensors} == pads
+    assert {t.name: t.page_bytes for t in program.io_tensors} == pages
+    assert all(t.page_bytes % 32 == 0 for t in program.io_tensors)
+
+
+def test_a_plan_no_leading_pad_can_satisfy_raises_TT_ALIGNMENT():
+    """The negative: shift W3's `SOut` drain one column left at its **segment** end only, so the
+    32-byte slab starts at DRAM byte `32·tx` while its source is still `cur + 4`. That transfer
+    now wants `p ≡ 1 (mod 4)` and `WestIn` still wants `p ≡ 0 (mod 8)`; no pad does both."""
+    plan = m4.plan(w3_legal.legal("npu1"))
+    bundle = plan.segment_body[5]                       # for pj_bundle: for i_drain: SOut.get
+    drain = bundle.body[0]
+    site = drain.body[0]
+    assert site.channel == "SOut" and site.scope == "segment"
+    row, column = site.region.offsets
+    moved = dataclasses.replace(
+        site, region=dataclasses.replace(
+            site.region, offsets=(row, dataclasses.replace(column, const=0))))
+    broken = dataclasses.replace(
+        plan,
+        segment_body=plan.segment_body[:5] + (
+            dataclasses.replace(bundle, body=(dataclasses.replace(drain, body=(moved,)),)),),
+        # the same site object is reachable from plan.channels, and the plan's own validator
+        # refuses two sites sharing an id
+        channels=tuple(
+            dataclasses.replace(channel, sites=tuple(
+                moved if other.id == site.id else other for other in channel.sites))
+            if channel.name == site.channel else channel
+            for channel in plan.channels))
+
+    with pytest.raises(m5tt.TTAlignmentError, match=r"TT-ALIGNMENT.*'S'.*no pad"):
+        m5tt.emit(broken)
+
+
+def test_TT_ALIGNMENT_is_not_in_the_frozen_error_catalogue():
+    """`design/08-tt-backend.md` §6.1: the five TT codes are *proposed*, not adopted, so the TT
+    emitter raises its own exception type and nothing reaches `06-interfaces.md`'s 43."""
+    assert issubclass(m5tt.TTAlignmentError, m5tt.TTEmitError)
+    from spatial.model import EmissionError
+    assert not issubclass(m5tt.TTEmitError, EmissionError)
+
+
+# -- TT-P3, the resource model -----------------------------------------------
+
+def test_semaphore_and_L1_budgets_are_measured_constants():
+    """`design/08-tt-backend.md` §4. The semaphore limit is measured (the host refuses id 16 with
+    'Semaphore id 16 exceeds max value 15'); the L1 figure is an estimate and says so."""
+    assert m5tt.TT_SEM_LIMIT == 16
+    assert m5tt.TT_L1_USABLE == 1_499_136 - 32_768
+
+
+@pytest.mark.parametrize("fixture,cb_bytes,sems", (
+    (w1_legal, 8192, 0),
+    (w3_legal, 352, 6),
+))
+def test_TT_P3_budget_rows(fixture, cb_bytes, sems):
+    """One row of §4's table each, against the constants rather than a comment."""
+    program = m5tt.emit(m4.plan(fixture.legal("npu1")))
+    assert sum(cb.bytes for cb in program.cbs) == cb_bytes
+    assert len(program.semaphores) == sems
+    assert len(program.semaphores) <= m5tt.TT_SEM_LIMIT
+    assert cb_bytes + 16 * sems <= m5tt.TT_L1_USABLE
+
+
+def test_a_plan_over_the_semaphore_limit_is_refused():
+    """Nine links would need 18 ids against the measured 16, and the refusal must name the
+    number and where it came from."""
+    plan = m4.plan(w3_legal.legal("npu1"))
+    west = next(c for c in plan.channels if c.name == "West")
+    wide = dataclasses.replace(plan, channels=tuple(
+        dataclasses.replace(c, size=(9,)) if c is west else c for c in plan.channels))
+    with pytest.raises(m5tt.TTNotImplemented, match=r"18 semaphores.*16 \(ids 0\.\.15"):
+        m5tt.emit(wide)
+
+
+# -- what this emitter still does not do -------------------------------------
+
+def test_W2_is_still_refused_and_says_why():
+    """W2's halo `get` lands in `cur` on an even timestep and in `next` on an odd one — the
+    ping-pong peel — and a remote write has one destination address. That is T3's problem, and
+    the diagnostic names the construct rather than emitting something plausible."""
     with pytest.raises(m5tt.TTNotImplemented) as raised:
-        m5tt.emit(m4.plan(fixture.legal("npu1")))
+        m5tt.emit(m4.plan(w2_legal.legal("npu1")))
     assert isinstance(raised.value, NotImplementedError)
-    assert isinstance(raised.value, m5tt.TTEmitError)
+    assert "ToNorth" in str(raised.value) and "'cur'" in str(raised.value)
+    assert "'next'" in str(raised.value)
 
 
-def test_cascade_channel_is_named_in_its_own_error():
-    """The diagnostic has to name the construct, or it is not actionable."""
-    with pytest.raises(m5tt.TTNotImplemented, match=r"CascadeK.*core-to-core.*T2/T3/T4"):
-        m5tt.emit(m4.plan(w1flip_legal.legal("npu1")))
+def test_the_cascade_plan_now_emits_but_has_not_been_run():
+    """W1-flip's `CascadeK` is the same core↔core shape as `West`, so it emits — three links,
+    six semaphores. **It has not been executed**: gate T4, `design/PROGRESS-TT.md` §5."""
+    program = m5tt.emit(m4.plan(w1flip_legal.legal("npu1")))
+    assert [sem.name for sem in program.semaphores] == [
+        "CascadeK.full[0]", "CascadeK.empty[0]", "CascadeK.full[1]", "CascadeK.empty[1]",
+        "CascadeK.full[2]", "CascadeK.empty[2]"]
 
 
 # -- D-14, and the module's own dependencies ---------------------------------
@@ -190,14 +395,18 @@ def _at_module_level(tree: ast.Module, target: ast.AST) -> bool:
     return any(node is target for node in tree.body)
 
 
-def test_emission_is_deterministic_across_hash_seeds():
+@pytest.mark.parametrize("fixture", ("w1_legal", "w3_legal", "w1flip_legal"))
+def test_emission_is_deterministic_across_hash_seeds(fixture):
     """No set or dict iteration order reaches the text: two interpreters with different
-    `PYTHONHASHSEED` must emit byte-identical C++ and an identical program."""
+    `PYTHONHASHSEED` must emit byte-identical C++ and an identical program. W3 and the flip are
+    the ones that could go wrong — semaphore ids, peer coordinates and occurrence counters all
+    come out of dictionaries keyed by channel and core."""
     script = ("import sys;"
               "from spatial import m4_mapping as m4, m5tt_emit as tt;"
-              "from tests.fixtures.mappings import w1_legal;"
-              "p = tt.emit(m4.plan(w1_legal.legal('npu1')));"
-              "sys.stdout.write(repr((p.source, p.cbs, p.io_tensors, p.runtime_args)))")
+              f"from tests.fixtures.mappings import {fixture} as fx;"
+              "p = tt.emit(m4.plan(fx.legal('npu1')));"
+              "sys.stdout.write(repr((p.source, p.cbs, p.io_tensors, p.runtime_args, "
+              "p.semaphores)))")
     outputs = [subprocess.run([sys.executable, "-c", script], cwd=ROOT, check=True,
                               capture_output=True, text=True,
                               env={"PYTHONHASHSEED": seed, "PATH": "/usr/bin:/bin"}).stdout
