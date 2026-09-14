@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 
 from spatial import m6_tools as m6
+from spatial.model import ToolchainError
+from tests.helpers.diagnostics import assert_diagnostic
 from tests.helpers.golden import assert_golden
 from tests.integration.test_golden import require_pin
 
@@ -413,6 +415,20 @@ def test_I_pingpong_labels_flip(tmp_path):
                         ["pingpong_unroll", "hoist_alloc_count"], workdir=tmp_path)
     assert facts["pingpong_unroll"] == 2, "the i0 loop has 2 trips and is labelled"
     assert facts["hoist_alloc_count"] == 1, "only `a` is a ping-pong candidate (§6.2)"
+
+
+@pytest.mark.requires_air_opt
+@pytest.mark.fr("FR-T6")
+def test_trace_requires_launch(tmp_path):
+    """A module with no `air.launch` raises naming Runner.cpp, never segfaults (M6 §3.8)."""
+    _require_air_opt()
+    mod = tmp_path / "no_launch.mlir"
+    mod.write_text("module { func.func @f() { func.return } }", encoding="utf-8")
+    with pytest.raises(ToolchainError) as excinfo:
+        m6.trace(str(mod), str(tmp_path / "arch.json"), "f", workdir=tmp_path)
+    assert_diagnostic(excinfo, code="TOOL-AIRCC-FAILED", clause="build()",
+                      mentions=("air.launch", "Runner.cpp:547-551"),
+                      details_keys=("citation",))
 
 
 @pytest.mark.requires_air_opt

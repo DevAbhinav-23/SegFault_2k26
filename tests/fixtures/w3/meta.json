@@ -1,0 +1,16 @@
+{
+  "dtype": "i32",
+  "generator": "make_fixture.py",
+  "params": {
+    "CW": 8,
+    "GAP": 1,
+    "MATCH": 2,
+    "MISMATCH": -1,
+    "MQ": 32,
+    "NR": 32,
+    "PJ": 4
+  },
+  "seed": 2,
+  "tol": 0.0,
+  "workload": "W3"
+}

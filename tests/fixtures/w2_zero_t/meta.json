@@ -1,0 +1,16 @@
+{
+  "code": "SWAP-PARITY",
+  "dtype": "f32",
+  "expect": "reject",
+  "generator": "make_fixture.py",
+  "params": {
+    "H": 16,
+    "HS": 8,
+    "PI": 2,
+    "T": 0,
+    "W": 16
+  },
+  "seed": null,
+  "tol": null,
+  "workload": "W2"
+}

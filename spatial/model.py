@@ -1046,6 +1046,27 @@ class EmitResult(_Model):
         _need(self, "l1_peak", self.l1_peak >= 0, "must be >= 0", self.l1_peak)
 
 
+@dataclass(frozen=True)
+class DiffReport(_Model):
+    """What `m6.diff` returns: oracle-vs-device comparison (06-interfaces.md §7.2, FR-T4)."""
+
+    matched: bool
+    max_abs_err: float
+    first_mismatch: tuple[int, ...] | None
+    count_mismatched: int
+    total: int
+
+    def _validate(self) -> None:
+        _need(self, "max_abs_err", self.max_abs_err >= 0, "must be >= 0", self.max_abs_err)
+        _need(self, "count_mismatched", self.count_mismatched >= 0, "must be >= 0",
+              self.count_mismatched)
+        _need(self, "total", self.total >= 0, "must be >= 0", self.total)
+        if self.first_mismatch is not None:
+            _need(self, "first_mismatch",
+                  all(type(i) is int for i in self.first_mismatch),
+                  "must be a tuple of ints or None", self.first_mismatch)
+
+
 # --------------------------------------------------------------------------------------------
 # §6.3 The error-code catalogue — transcribed from design/06-interfaces.md §6.3
 # --------------------------------------------------------------------------------------------

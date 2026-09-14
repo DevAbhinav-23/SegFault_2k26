@@ -1,0 +1,134 @@
+# design/03-lld-M7-tests.md §3.9. One workflow, three jobs.
+#
+# The wheel cache is the whole point (R-13): every `pip` here runs `--no-index --find-links
+# vendor/wheels`, so a pruned release asset
+# (`.github/workflows/pruneAIRReleaseAssets.yml:95-97` upstream) cannot break a build. The
+# wheels themselves are **not committed** — 2.3 GB, Q-C3 — only `vendor/wheels/SHA256SUMS` is,
+# and the cache is keyed on it. A cold cache therefore FAILS the job by design rather than
+# reaching for the network; prime it out of band per `design/07-environment.md` §2.
+#
+# NFR-6 ("no test reaches the network") is enforced **in process** by `conftest._no_network`
+# and asserted by `test_NFR6_no_network`, not by a firewall step: dropping the runner's egress
+# also kills its connection to GitHub, so the job would report nothing.
+#
+# NFR-3's 180 s wall gate is likewise in process — `conftest.pytest_sessionfinish` prints the
+# ten slowest and sets a non-zero exit status — so the `pytest` step below *is* §3.9's step 10.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"   # the slow job, nightly
+  workflow_dispatch:
+
+env:
+  PIP: --no-index --find-links vendor/wheels
+
+jobs:
+  default:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"        # pyproject: requires-python == 3.12.*
+
+      - name: Restore the pinned wheel cache (never the release URLs — R-13)
+        uses: actions/cache/restore@v4
+        with:
+          path: vendor/wheels
+          key: wheels-${{ hashFiles('vendor/wheels/SHA256SUMS') }}
+          fail-on-cache-miss: true      # cold cache: prime it, do not fall back to the network
+
+      - name: Verify every wheel against SHA256SUMS
+        working-directory: vendor/wheels   # SHA256SUMS lists bare filenames
+        run: sha256sum -c SHA256SUMS
+
+      - name: Install the toolchain and the package, offline
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install $PIP 'mlir_air[aie]' numpy pytest filelock
+          .venv/bin/pip install $PIP --no-build-isolation --no-deps -e .
+
+      - name: Check the pin first, while a network could still fix it
+        run: .venv/bin/python -m pytest tests/unit/test_m6_tools.py::test_T6_versions
+
+      - name: Default suite (PYTHONHASHSEED=0), with every skip printed
+        env:
+          PYTHONHASHSEED: "0"
+        run: .venv/bin/python -m pytest -ra          # -ra: 04-test-plan §8 item 10
+
+      - name: Determinism gate (PYTHONHASHSEED=7) — NFR-1
+        env:
+          PYTHONHASHSEED: "7"
+        run: .venv/bin/python -m pytest -ra -k "golden or plan or summary"
+
+      - name: Goldens are inputs, never outputs (I-4, third guard)
+        run: git diff --exit-code -- tests/golden tests/README.md
+
+      - name: Evidence for a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: default-evidence
+          path: |
+            tests/.durations.json
+            **/*.air.mlir
+          if-no-files-found: ignore
+
+  slow:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: vendor/wheels
+          key: wheels-${{ hashFiles('vendor/wheels/SHA256SUMS') }}
+          fail-on-cache-miss: true
+      - name: Verify every wheel against SHA256SUMS
+        working-directory: vendor/wheels
+        run: sha256sum -c SHA256SUMS
+      - name: Install the toolchain and the package, offline
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install $PIP 'mlir_air[aie]' numpy pytest filelock
+          .venv/bin/pip install $PIP --no-build-isolation --no-deps -e .
+
+      - name: Level S — aircc and air-opt, on PATH via scripts/airenv.sh
+        run: |
+          source scripts/airenv.sh .venv/bin/python
+          .venv/bin/python -m pytest -m slow -ra
+        shell: bash
+
+      - name: Evidence for a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slow-evidence
+          path: |
+            tests/.durations.json
+            /tmp/aircc*
+          if-no-files-found: ignore
+
+  device:
+    # Level D. Self-hosted, because `/dev/accel*` and XRT are not on a GitHub runner.
+    # Allowed to fail: R-09 plans for there being no device, and the skip IS the evidence.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, npu]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain and the package, offline
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install $PIP 'mlir_air[aie]' numpy pytest filelock
+          .venv/bin/pip install $PIP --no-build-isolation --no-deps -e .
+      - name: Level D — the device window
+        run: .venv/bin/python -m pytest -m requires_device -ra

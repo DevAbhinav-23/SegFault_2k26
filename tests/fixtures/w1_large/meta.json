@@ -1,0 +1,17 @@
+{
+  "dtype": "bf16/f32",
+  "generator": "make_fixture.py",
+  "params": {
+    "K": 256,
+    "M": 256,
+    "N": 256,
+    "PI": 4,
+    "PJ": 4,
+    "TK": 64,
+    "TM": 64,
+    "TN": 64
+  },
+  "seed": 0,
+  "tol": null,
+  "workload": "W1"
+}
