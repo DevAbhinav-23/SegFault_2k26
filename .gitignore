@@ -20,3 +20,4 @@ vendor/tt/soc_descriptor.yaml
 generated/
 # Harness worktree metadata, not part of the project.
 .claude/
+tests/.durations.json

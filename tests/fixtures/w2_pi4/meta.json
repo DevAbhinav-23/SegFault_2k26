@@ -1,0 +1,16 @@
+{
+  "code": "DMA-CHANNELS",
+  "dtype": "f32",
+  "expect": "reject",
+  "generator": "make_fixture.py",
+  "params": {
+    "H": 16,
+    "HS": 4,
+    "PI": 4,
+    "T": 4,
+    "W": 16
+  },
+  "seed": null,
+  "tol": null,
+  "workload": "W2"
+}

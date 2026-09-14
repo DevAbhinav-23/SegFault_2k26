@@ -20,7 +20,6 @@ import pytest
 from spatial import m6_tools as m6
 from spatial.model import ToolchainError
 from tests.helpers.diagnostics import assert_diagnostic
-
 STDERR = Path(str(files("tests"))) / "fixtures" / "stderr"
 
 # (sample, returncode) — the exit codes are recorded in tests/fixtures/stderr/README.md
@@ -196,8 +195,44 @@ def test_ir_facts_rejects_an_unknown_fact(tmp_path):
         m6.ir_facts(str(tmp_path / "x.mlir"), "npu1", ["not_a_fact"], workdir=tmp_path)
 
 
-def test_device_path_is_still_a_stub():
-    """§3.4-§3.6 and §3.8 are Person C's; they must fail loudly, not silently."""
-    for name in ("has_device", "run", "diff", "trace"):
-        with pytest.raises(NotImplementedError):
-            getattr(m6, name)(*[None] * getattr(m6, name).__code__.co_argcount)
+@pytest.mark.fr("FR-T4")
+def test_T4_device_diff():
+    """FR-T4: device diff is exact; without a device this skips with the reason (R-09).
+
+    It gates on `has_device()` rather than carrying `requires_device`, deliberately. That
+    marker is deselected by the default `addopts`, and a deselected test prints nothing — but
+    04-test-plan §8 item 10 and R-09 want the *absence of the device* to appear in the default
+    run's skip list, because that list is what the honest-limits slide says out loud.
+    """
+    if not m6.has_device():
+        pytest.skip("no NPU: /dev/accel* is absent, so level D cannot run "
+                    "(04-test-plan.md §1)")
+    pytest.skip("device present but no xclbin artifact committed; D5 device window")
+
+
+def test_trace_disclaimer():
+    """I-8: anything M6 prints about air-runner carries the timing-model disclaimer."""
+    import inspect
+
+    src = inspect.getsource(m6.trace)
+    assert "NOT A CORRECTNESS ORACLE" in src
+
+
+def test_diff_denominator():
+    """I-7: `diff` raises nothing and always reports `count_mismatched` of `total`."""
+    import numpy as np
+
+    ok = m6.diff([np.zeros((2, 2))], [np.zeros((2, 2))], 0.0)
+    assert (ok.matched, ok.max_abs_err, ok.count_mismatched, ok.total) == (True, 0.0, 0, 4)
+    bad = m6.diff([np.ones((2, 2))], [np.zeros((2, 2))], 0.0)
+    assert (bad.matched, bad.count_mismatched, bad.total) == (False, 4, 4)
+    assert bad.first_mismatch == (0, 0)
+    shape = m6.diff([np.zeros((2,))], [np.zeros((3,))], 0.0)
+    assert (shape.matched, shape.count_mismatched, shape.total) == (False, 3, 3)
+
+    # A short result list used to be truncated by `zip` and reported as a match: a kernel
+    # that returned one buffer instead of two passed. Every oracle element is charged.
+    missing = m6.diff([np.zeros((2, 2))], [np.zeros((2, 2)), np.ones((3,))], 0.0)
+    assert (missing.matched, missing.count_mismatched, missing.total) == (False, 7, 7)
+    assert m6.diff([], [np.zeros((2,))], 0.0).matched is False
+    assert m6.diff([], [], 0.0).matched is True
