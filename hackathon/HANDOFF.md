@@ -188,6 +188,116 @@ proves only that no *token* edge exists, not that no *channel-slot* stall occurs
 
 ---
 
+## Integration — state at 2026-09-15
+
+*Appended by the integration pass, on branch `integration` off `main` at `78f308c` (all three
+roles merged). Companions: C's [`../progress.md`](../progress.md),
+[`../design/PROGRESS-B.md`](../design/PROGRESS-B.md),
+[`../design/PROGRESS-TT.md`](../design/PROGRESS-TT.md).*
+
+### What the architect verified on `main` before this pass
+
+* `.venv` default suite: **694 passed, 1 failed, 4 skipped**. The failure was
+  `tests/unit/test_nfr.py::test_NFR4_no_bare_raise`.
+* `-m slow` (with `source scripts/airenv.sh .venv/bin/python`): **12 passed, 1 skipped**.
+* `.venv-tt`, `source scripts/tt_env.sh`, `-m requires_ttsim tests/tt -rA`: **23 PASSED,
+  2 FAILED** — both force-failed by the harness's own 3 s per-test budget, not by ttsim.
+* A's live surface (`sp.kernel` → `sp.schedule` → `.check()/.plan()/.mlir()/.summary()`)
+  reproduces B's goldens **byte for byte** for W1, W1-flip and W2 on npu1 and npu2, and
+  `m5tt_emit.emit(live_plan) == m5tt_emit.emit(fixture_plan)` for the same three.
+* **W3 broke at M4 on the live path**: `s.plan()` raised `PROTOCOL-UNSUPPORTED`, the plan
+  charging 232 B for the staged buffers where `LegalMapping.l1_bytes` said 108 B.
+
+### Defects found, and the fix in this pass
+
+| # | Defect | Owner of the code | Fix |
+|---|---|---|---|
+| 1 | M3 charged W3's read-only `q` **4 B** (span 1 along the skewed axis `i`) where `03-lld-M3-checker.md` §6.4 says 128; `l1_bytes` 108 vs M4's 232, so `s.plan()` refused every W3 schedule | **A** | `_pinned` gains `skew_pins=`; `_check_l1_capacity` passes `skew_pins=False` for a read-only operand. Ruling **R-L9-1** below |
+| 2 | `tests/conftest.py::_EXEMPT_MARKS` lacked `requires_ttsim`, so the 3 s per-test budget force-failed two ttsim tests that take ~48 s each | **C** | `requires_ttsim` added; `test_NFR3_exempts_every_requires_marker` pins the rule against the next marker |
+| 3 | Three bare raises in `spatial/` failed NFR-4: two `raise AssertionError("unreachable")` sentinels in `m1_frontend` and `m3_legality._operand_matrix`'s bare `AssertionError` | **A** | `_raise` annotated `-> NoReturn` and the sentinels deleted; `_operand_matrix` raises `_fail("STATIONARITY", ...)`. **The condition is user-reachable** — a kernel parameter the body never touches — so the message is written for a user, not as a bug report |
+| 4 | `kernels/w2_jacobi.py`, `w3_sw.py`, `w1_gemm_bf16.py` and `rejections.py` still stubbed the surface; `demo/run_demo.py` printed nothing for three beats and `test_demo_rejections` skipped | **C** | All wired to the live surface; three rejection goldens captured; the demo runs every beat |
+| 5 | `tests/unit/test_a_smoke.py` carried no `fr()` marks, so the traceability gate reported 28 of 44 FRs uncovered | **A** | Marks for the ten FRs those tests genuinely exercise: residual **18** |
+| 6 | C changed §7.2's `m6.run` / `m6.trace` shapes and added `DiffReport` with no version bump | **C** | Contract **v6** below |
+| 7 | `kernels/w1_gemm_bf16.py` (256³, `bf16` in, `f32` out) is accepted by M1, M2, M3 and M4 (`l1_bytes` 49 152) and **rejected by M5**: `EMIT-AIR-API`, `air.api` saying *"dtype mismatch in elementwise assignment: destination is air.api.f32 but operand is air.api.bf16"* | B's emitter, `air.api`'s limit | Not forced. `schedule_os` raises `NotImplementedError` naming that stage and code; `w1_large` stays an inputs-only fixture at levels I and S |
+
+### Rulings
+
+**R-L9-1 (architect, 2026-09-15) — a skew pins a written operand's L1 footprint, never a
+read-only one.** In `spatial/m3_legality.py`'s L1 accounting, and **only** there, a
+skewed-but-unplaced axis is unpinned for an operand the kernel does not write. A written
+operand under a skew is produced and forwarded step by step (the swap pair, §3.12 swap parity),
+so only the pinned-axis span is resident; a read-only operand with no dependence on a placed
+axis is delivered **whole** by M4's multicast (HLD §7.3 — `q` is *"multicast along px"*, FR-M1),
+and a per-step stream of one is not a delivery M4 implements. `_pinned` itself is unchanged: it
+still pins the skewed axis for `_check_halo` and `_check_swap_parity`.
+Measured after the fix: **W3 232** (`q` 128 + `r` 32 + `S` 72, §6.4's own arithmetic), W1
+**12 288**, W1-flip **16 384**, W2 **1 280** — the last three unchanged.
+`design/03-lld-M3-checker.md` §3.10 carries the erratum: pseudo-code line 2 charges **every
+operand the kernel references** (not only those `reside()` names, which §6.4 and M4 already
+contradicted), line 3's pinned box is per operand, and the scope note's "for W3 they are 72 and
+80 bytes" is corrected to **232 and 240**.
+
+**Contract v6 (architect, 2026-09-15).** `CONTRACT_VERSION = 6`. `06-interfaces.md` §7.2 now
+states what `spatial/m6_tools.py` implements: `m6.run(artifact, inputs, target, kernel_name,
+workdir=None)`, `m6.trace(mlir_path, model_json, function, workdir=None)`, `m6.has_device()`,
+and `DiffReport` as the **frozen dataclass in `spatial/model.py`** it has always been. Forcing
+requirement: the frozen two-argument shapes cannot construct an `XRTBackend` nor name the
+function for `air-runner -f` (C, `progress.md` §3). No field of any §2–§5 record changes.
+`00-README.md` §4 carries change-log row 6 and the v6 signature row.
+
+### What the suite says now
+
+`.venv` default: **723 passed, 3 skipped, 37 deselected**. The three skips are each a
+deliverable, not a gap: no device (`/dev/accel*` absent), the traceability residual, and
+`test_NFR7_all_errors_are_spatial` (the negative corpus is empty). `pytest -m slow`: 12 passed,
+1 skipped. `.venv-tt -m requires_ttsim tests/tt`: **25 PASSED, exit 0**.
+`python demo/run_demo.py`: exit 0 in ~1.4 s, with and without `scripts/airenv.sh`.
+
+### Open items, by owner
+
+**Person A**
+
+1. **The negative corpus.** `tests/negative/` holds only `__init__.py`. 30 of the 43 catalogue
+   codes are raised by nothing, and `test_D1_schema` / `test_D3_catalogue_complete` do not
+   exist. `test_NFR7_all_errors_are_spatial` skips until it lands.
+2. **The 18 FRs still uncovered**, verbatim from the gate's own skip message:
+   `FR-S1, FR-S4, FR-S5, FR-S6, FR-S9, FR-S10, FR-S11, FR-S15, FR-S16, FR-S17, FR-S19, FR-L1,
+   FR-L5, FR-L6, FR-L8, FR-L10, FR-L11, FR-L13`. Every one is a *negative* or a *purity* case
+   the positive path cannot reach; most are one test each.
+3. **FR-L9's message owes a per-buffer breakdown.** §3.10 line 12 and FR-L9's acceptance both
+   want `details["per_buffer"]`; `_check_l1_capacity` puts only `total` and `budget` there.
+4. **Signatures on `06-interfaces.md` v3, v4, v5 and v6** — none has one.
+5. **`GrammarError` diagnostics built with `location=None`** (`m1_frontend.capture`'s
+   `inspect.getsource` branch, its no-statement branch, and `_fdef_of`) violate M0 invariant
+   I71 and raise `ValueError` instead of the `GrammarError` they meant — a kernel defined in a
+   REPL crashes rather than being rejected. Not fixed in this pass: it is outside the brief and
+   needs A's decision on what location to report.
+6. M1 and M2 diagnostics carry **absolute** `location` paths (`code.co_filename`,
+   `inspect.stack()`). No golden depends on one today because M3's legality diagnostics carry
+   `location=None`, but a grammar or clause golden would not be machine-independent.
+
+**Person C**
+
+1. **The CI wheel cache was never primed.** The `default` job restores `vendor/wheels` with
+   `fail-on-cache-miss: true`, so it fails at step 3 by design until someone seeds it out of
+   band (`07-environment.md` §2, Q-C3). **CI has never run on a runner at all.**
+2. **The device run.** `m6.run` / `m6.diff` / `m6.trace` are built and **untested on
+   hardware**; `test_T4_device_diff` skips on `/dev/accel*`. This is the last claim the entry
+   cannot make.
+3. **`progress.md` sits at the repository root** while every other state file is in `design/`
+   (`PROGRESS-B.md`, `PROGRESS-TT.md`). Move it or link it, but the split is a trap.
+
+**User / architect**
+
+1. **Sign v3, v4, v5 and v6** of `06-interfaces.md` (`00-README.md` §4's signature block).
+2. **The pitch decision on a Tenstorrent beat.** `demo/run_demo.py` has none, deliberately:
+   whether the five minutes can afford it is a pitch-script call, not a code one. The slide
+   text is written and ready in `design/08-tt-backend.md` §8.
+3. Adjudicate **R-TT-B** and its credit rule (still open from T3), and the B-P/B-O items listed
+   under *Person B implementation* below.
+
+---
+
 ## Design phase (2026-09-12)
 
 Phase-1 design is drafted under [`../design/`](../design/) — start at

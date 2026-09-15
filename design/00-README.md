@@ -75,21 +75,21 @@ negotiable inside the week.
 | Test plan | **drafted** | — | — |
 | Work breakdown | **drafted** | — | — |
 | Environment | **drafted**; wheel sha256s **to be filled at D0** | C | **D0** |
-| Toolchain installed on 3 machines | not started | C | **D0 / gate G1** |
-| Kernel sources W1/W2/W3 | not started | A | D0 |
-| Schedules, fixtures, demo | not started | C | D0–D6 |
-| M0 `model` | not started | A | D1 |
-| M1, M2 | not started | A | D1 |
-| M3 | not started | A | D2–D3 |
+| Toolchain installed on 3 machines | **installed on this machine** (pinned wheels cached in `vendor/wheels/`, 16/16 sha256 OK); the other two not verified | C | **D0 / gate G1** |
+| Kernel sources W1/W2/W3 | **built** — `kernels/w1_gemm.py`, `w2_jacobi.py`, `w3_sw.py`, all three decorated `@sp.kernel` and wired to the live surface (integration, 2026-09-15) | A | D0 |
+| Schedules, fixtures, demo | **built** — C 2026-09-13 (fixtures, `demo/`), schedules and demo beats wired to the live surface at integration 2026-09-15 | C | D0–D6 |
+| M0 `model` | **built** — B 2026-09-13 at `CONTRACT_VERSION = 6` (bumped 2026-09-15) | A | D1 |
+| M1, M2 | **built (A)** — 2026-09-14; `spatial/m1_frontend.py`, `spatial/m2_schedule.py`. The live surface reproduces all eight goldens byte for byte (`tests/integration/test_kernels_live.py`) | A | D1 |
+| M3 | **built (A)** — 2026-09-14; `spatial/m3_legality.py`. L1 accounting corrected at integration 2026-09-15 (ruling **R-L9-1**). Negative corpus (`tests/negative/`, 30 legality codes) **not started** | A | D2–D3 |
 | M4 (W1 / W3 / W2 / flip) | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7; gate **G2/G3/G4/G5** B-half green | B | D2 / D4 / D5 / D6 |
 | M5 | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 | B | D1 skeleton, D2 real |
-| M6 | off-device path (`invoke`, `verdict`, `artifact`, `ir_facts`, `check_pin`) **written by B at P0c/P4/P6** — flagged for C in `PROGRESS-B.md`; **device path not started** | C | D2 |
-| M7 harness, M8 fixtures | harness shell + helpers (`conftest`, `golden`, `diagnostics`, `determinism`, `plan_interp`) **written by B** — flagged, **C to own**; M8 fixtures not started | C | D1 |
+| M6 | off-device path **written by B at P0c/P4/P6**, reviewed and kept by C; **device half built by C 2026-09-13** (`has_device`, `run`, `diff`, `trace`) and **untested on hardware** — no `/dev/accel*` here | C | D2 |
+| M7 harness, M8 fixtures | **built (C)** — 2026-09-13: harness owned, NFR tests, level-O oracle diffs, CI workflow (never run on a runner), all M8 fixtures generated | C | D1 |
 | **W1 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G2** B-half: `test_W1_legal_to_text` | B, C | **gate G2, D2** |
 | **W3 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G3** B-half: `test_golden_w3`, `test_W3_aircc_none` | B, C | **gate G3, D4** |
 | **W2 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G4** B-half: `test_golden_w2`, `test_W2_aircc_none` | B, C | **gate G4, D5** |
 | **W1 weight-stationary flip** (stretch) — 1-D `grid(PK=4)`, `place(px=ax.k0)`, `j` untiled, ascending cascade | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G5** B-half: `test_golden_w1_flip`, `test_W1_flip_aircc_none`, `cascade_channels == 3` | B | **gate G5, D6 midday**; the designated cut if the plan runs over |
-| Device run (stretch) | not started | C | D5 |
+| Device run (stretch) | **not started** — `m6.run`/`m6.diff` built and untested on silicon; `test_T4_device_diff` skips on `/dev/accel*` | C | D5 |
 | **TT backend (B, stretch)** — second emitter, `MappingPlan` → TT-Metalium on ttsim; spec [`08-tt-backend.md`](08-tt-backend.md) | **T1–T4 GREEN (2026-09-13), close-out T5; see [`PROGRESS-TT.md`](PROGRESS-TT.md); merged to main** | B | **gates T1–T4**; abandoned if a gate is not green after two agent-days |
 | W4 FFT | **out of scope** | — | — |
 | Freeze | — | all | **end of D6** |

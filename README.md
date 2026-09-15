@@ -6,9 +6,8 @@ Read [`hackathon/HANDOFF.md`](hackathon/HANDOFF.md) first. Ownership: [`design/0
 
 Python is pinned to **3.12**; the toolchain is pinned in [`design/07-environment.md`](design/07-environment.md) §1.
 
-Everything — the AIE path (M0, M4, M5, M6's off-device half, harness shell) and the Tenstorrent
-stretch backend — is on `main` at `f7ecd70` (2026-09-13), `CONTRACT_VERSION = 5`; `role-b` and
-`tt-backend` are the same commit and are kept only as history.
+Everything is on `main`: the AIE path (M0–M6), the Tenstorrent stretch backend, the harness,
+the fixtures and the demo, at `CONTRACT_VERSION = 6` (all three roles merged 2026-09-15).
 
 ```bash
 uv venv --python python3.12 --seed .venv
@@ -38,6 +37,39 @@ aircc --device npu1 --output-format=none design.mlir
 ```
 
 Read `aircc`/`air-opt` **stderr**, not the exit code: `air-opt` prints `error:` and exits 0 (FR-T5).
+
+## The surface, in eight lines
+
+```python
+import spatial as sp
+
+M = N = K = 64
+
+@sp.kernel                                       # the kernel runs in CPython unchanged
+def gemm(A: sp.f32[M, K], B: sp.f32[K, N], C: sp.f32[M, N]):
+    for i in range(M):
+        for j in range(N):
+            for k in range(K):
+                C[i, j] += A[i, k] * B[k, j]
+
+s = sp.schedule(gemm, target="npu1")
+ax = s.axes()
+s.grid(2, 2); s.tile(ax.i, 32); s.tile(ax.j, 32); s.tile(ax.k, 16)
+s.reduce(ax.k, op="+"); s.place(px=ax.i0, py=ax.j0); s.stationary("C")
+s.reside(A="L1", B="L1", C="L1"); s.double_buffer("A", "B")
+
+print(s.summary())                               # deliveries, herd, L1 bytes, channels
+print(s.mlir())                                  # the AIR module text
+```
+
+Delete every `s.*` line and `gemm(A, B, C)` still computes `A @ B` — that is FR-S18, and it is
+tested. An illegal schedule is rejected by `s.check()` **before** any IR exists; the three demo
+rejections are `kernels/rejections.py`. This example is `kernels/w1_gemm.py`'s `schedule_os`
+verbatim; `kernels/w2_jacobi.py` and `kernels/w3_sw.py` are the halo and wavefront equivalents.
+
+```bash
+python demo/run_demo.py        # the six pitch beats, ~1.5 s, no device needed
+```
 
 ## Tests
 

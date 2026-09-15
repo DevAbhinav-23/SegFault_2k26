@@ -3,8 +3,11 @@
 A `@sp.kernel` plain-Python loop nest plus an ignorable `sp.schedule`: delete the schedule and
 the program still runs in CPython and *is* the specification. See design/00-README.md §6.
 
-As of 2026-09-14 (Person A's build): `model` (M0), `m1_frontend`, `m2_schedule`, `m3_legality`,
-`m4_mapping`, `m4_selfcheck`, `m5_emit` and the off-device half of `m6_tools` are built. The
+As of **2026-09-15** (the integration pass): every module of design/06-interfaces.md §7.2 is
+built at `CONTRACT_VERSION = 6` -- `model` (M0), `m1_frontend`, `m2_schedule`, `m3_legality`,
+`m4_mapping`, `m4_selfcheck`, `m5_emit`, `m6_tools` (both halves; the device half is untested
+on hardware), and the Tenstorrent second emitter `m5tt_emit` / `m6tt_run`. `kernels/w1_gemm`,
+`w2_jacobi` and `w3_sw` drive the surface end to end and reproduce every committed golden. The
 surface of design/06-interfaces.md §7.1 is re-exported below.
 """
 
