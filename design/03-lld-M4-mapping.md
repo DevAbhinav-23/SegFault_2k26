@@ -268,7 +268,9 @@ makes it unreachable, and `06-interfaces.md` §5.6 invariant 6 makes M4's self-c
 W3 is the case that bites: `q`, `r` are read, `S` is written, and any other order fails.
 
 *Note 4 — the L1 budget (invariant 5, `06-interfaces.md` §5.6).* `sum(b.bytes × (2 if
-ping_pong_candidate else 1)) ≤ 65536` (`_trace.py:100`). M3 has already charged this figure in
+ping_pong_candidate else 1)) ≤ 63488` (65 536 B of tile data memory less the 2 048 B core
+stack `air-to-aie` reserves — **R-L1-2**, `03-lld-M3-checker.md` §3.10). M3 has already
+charged this figure in
 `LegalMapping.l1_bytes`; M4 recomputes it from the plan and raises if the two disagree — an
 internal-consistency failure, §5.
 
@@ -880,7 +882,8 @@ one declared still say the dataflow is named, not emergent.)* The summary is com
 **Preconditions on `m4.plan(mapping)`** — all are M3's postconditions, and M4 asserts rather than
 re-derives them (§5 explains why an assertion failure is a bug, not a user error):
 `mapping.physical_herd` divides `mapping.schedule.grid` exactly and is within the target cap;
-`len(mapping.pi) == len(mapping.schedule.grid)` and the rank is 1 or 2; `mapping.l1_bytes ≤ 65536`;
+`len(mapping.pi) == len(mapping.schedule.grid)` and the rank is 1 or 2; `mapping.l1_bytes ≤ 63488`
+(**R-L1-2**; `L1_BUDGET` still names the tile's 65 536, `L1_USABLE` is what binds);
 `r_space` is empty or rank 1 with an A/C operator; every windowed operand's declared halo is at
 least its derived footprint.
 

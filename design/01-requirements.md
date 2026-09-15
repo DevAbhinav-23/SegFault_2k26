@@ -390,8 +390,10 @@ error code.
 **FR-L9 — L1 capacity.**
 *Shall*: compute the per-core L1 working set as the sum over herd-private buffers of
 `prod(shape) × sizeof(dtype)`, **doubled for every buffer marked `double_buffer`**, and reject
-unless the total is ≤ 65 536 bytes.
-*Rationale*: `L1_BYTES = 65536` is `air.api`'s own trace-time budget (`_trace.py:100`); the
+unless the total is ≤ **63 488** bytes (erratum, 2026-09-15: was 65 536 — ruling **R-L1-2**).
+*Rationale*: `L1_BYTES = 65536` is `air.api`'s own trace-time budget (`_trace.py:100`) and a
+core tile's data memory, but the **binding** figure is 2 048 B less, because `air-to-aie`
+reserves a core stack below the first buffer (`design/03-lld-M3-checker.md` §3.10); the
 figure that has to fit is the ping-ponged one (`_compile.py`'s `_annotate_l1_failure`
 docstring: "the declared buffers can fit in L1 and the design still not place, because the
 pipeline ping-pongs L1 buffers"); and `air-label-scf-for-to-ping-pong` itself declines on the

@@ -245,6 +245,20 @@ requirement: the frozen two-argument shapes cannot construct an `XRTBackend` nor
 function for `air-runner -f` (C, `design/PROGRESS-C.md` §3). No field of any §2–§5 record changes.
 `00-README.md` §4 carries change-log row 6 and the v6 signature row.
 
+**R-L1-2 / Contract v7 (architect, 2026-09-15, applied by the final pass).**
+`CONTRACT_VERSION = 7`. `06-interfaces.md` §5.6 invariant 5's L1 budget is **63 488**, not
+65 536: a core tile holds 65 536 B of data memory (mlir-aie
+`AIE2TargetModel::getLocalMemorySize()`, inherited by AIE2P) and `air-to-aie` reserves **2 048**
+of it for the core stack below the first buffer — its `stack-size` option default (mlir-air
+`mlir/include/air/Conversion/Passes.td:231-234`), written as `stack_size = 2048 : i32` onto every
+`aie.core` and used by `AIEAssignBuffers.cpp` as the start address. Forcing requirement: FR-L9 —
+a plan at 65 536 B passes M3 and M4 today and cannot link. It is **not** target-dependent: 2 048
+is a pass option, not a device fact. `MappingSummary.l1_budget` keeps reporting the tile's
+65 536, which is what the frozen `*.plan.json` and `*.summary.txt` goldens carry, so the binding
+figure lives in `m3_legality._L1_USABLE` and `m4_*.L1_USABLE`. `00-README.md` §4 carries
+change-log row 7 and the v7 signature row; `design/PROGRESS-B.md` B-P34 carries the measurement
+and the larger gap it does **not** close.
+
 ### What the suite says now
 
 `.venv` default: **723 passed, 3 skipped, 37 deselected**. The three skips are each a

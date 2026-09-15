@@ -254,7 +254,7 @@ Ranked by the cost of getting them wrong, each with the fact that governs it.
 | H-3 | Channel bundle indices | `ChannelPutOp::verify()` — *"channel bundle indices must not be temporal `scf.for` induction variables"* (`AIRDialect.cpp:3589-3592`) | the module fails to verify at `build()`; cheap to hit, cheap to fix, but only if the emitter knows the rule |
 | H-4 | Broadcast channel shape | `ChannelOp::verify()` rank/multiple rules (`AIRDialect.cpp:3777-3806`) and `air.api`'s own validator (`_channel.py:120-145`) | a fan-out that is off by one destination; caught by upstream, but with an AIR-level message |
 | H-5 | Per-core discrimination | a Python `if` on a herd coordinate raises because `bool()` on a `Condition` is refused (`_cond.py:41-45`); `ops.branch` is the construct (`_cond.py:18-28`) and `air-to-aie` folds it once the coordinate is literal (`_cond.py:49-54`) | the emitter picks one branch for every core, silently |
-| H-6 | L1 budget with ping-pong | `L1_BYTES = 65536` (`_trace.py:100`); `_compile.py`'s `_annotate_l1_failure` — the figure that must fit is the ping-ponged one | a design that passes our check and fails in placement |
+| H-6 | L1 budget with ping-pong | `L1_BYTES = 65536` (`_trace.py:100`) is the tile's data memory; what binds is **63 488**, that figure less the 2 048 B core stack `air-to-aie` reserves (**R-L1-2**, 2026-09-15). `_compile.py`'s `_annotate_l1_failure` — the figure that must fit is the ping-ponged one | a design that passes our check and fails in placement |
 | H-7 | Exit codes | `air-opt` prints `error:` and exits 0 (VF §B.6, §S11), from `Dependency.cpp:2063-2066` calling `emitOpError` without `signalPassFailure()` | our driver reports success on a broken module |
 | H-8 | `air-broadcast-detection` firing unasked | it walks `air::DmaMemcpyNdOp` only (`AIRDependencyScheduleOpt.cpp:3328`), needs an enclosing herd, an L1 endpoint and constant herd sizes (`:3338`, `:3386-3402`); it fired on the VF §E.5 GEMM unprompted | a multicast we did not plan appears (or does not), and our golden changes underneath us |
 | H-9 | Segment scope for L3 endpoints | the **implemented** check requires an `air.launch` for any L3 endpoint and a segment only when the endpoint is inside a herd body; the module docstring is stricter — cite the code (PC §1.1 fact 4) | an avoidable `air.api` rejection, or an unnecessary segment |
@@ -268,7 +268,9 @@ This is the "no surprises" section: what each module produces, concretely, for e
 Fixture sizes are the CPU-oracle sizes from the test plan.
 
 **The per-core L1 arithmetic, computed once.** Every other document quotes these four numbers and
-none recomputes them. The budget is `L1_BYTES = 65536` (`_trace.py:100`); a `double_buffer`
+none recomputes them. The budget is **63 488** — `L1_BYTES = 65536` (`_trace.py:100`, the
+tile's data memory) less the 2 048 B core stack `air-to-aie` reserves (**R-L1-2**); a
+`double_buffer`
 operand is charged twice (FR-L9).
 
 | Workload | Buffers (shape × dtype) | Arithmetic | Total |
