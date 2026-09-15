@@ -44,7 +44,7 @@ from kernels import w2_jacobi as w2
 from kernels import w3_sw as w3
 from spatial import m3_legality, m4_mapping as m4
 from spatial import m5_emit, m5tt_emit, m6_tools as m6
-from spatial.model import LegalityError, ToolchainError, to_json
+from spatial.model import LegalityError, MappingError, ToolchainError, to_json
 from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
 from tests.helpers import plan_interp
 from tests.helpers.golden import GOLDEN_DIR
@@ -186,7 +186,10 @@ def _aircc_verdict(text, target, tmp_path, stem):
     try:
         m6.artifact(str(path), target, "none", workdir=str(tmp_path))
     except ToolchainError as exc:
-        return exc.diagnostic.code, exc.diagnostic.details.get("diagnostics", ())
+        # `aiecc` segfaults after printing some diagnostics (B-P36), so `aircc` exits with no
+        # parsable `error:` line and the text is only in the captured tail.
+        details = exc.diagnostic.details
+        return exc.diagnostic.code, details.get("diagnostics") or details.get("stderr_tail", ())
     return None, ()
 
 
@@ -269,6 +272,10 @@ def test_live_bf16_gemm_is_refused_by_aircc_for_its_shape(target, tmp_path, caps
     monkeypatch.setattr(m3_legality, "_L1_USABLE", 1 << 24)
     monkeypatch.setattr(m4, "L1_USABLE", 1 << 24)
     monkeypatch.setattr(m4_selfcheck, "L1_USABLE", 1 << 24)
+    # B-P36's rule refuses this shape too — five fill flows into a four-row column — but the
+    # two verdicts below are both raised *before* the packet router runs, so it is the rulings
+    # under test here and P3's master-select count is switched off with them.
+    monkeypatch.setattr(m4_selfcheck, "msels", lambda plan: None)
     control = _control(target).mlir()
     assert control.count("arith.extf") == 0, "a cast-free control, or it proves nothing"
     bf16_code, bf16_said = _aircc_verdict(w1_large.schedule_os(target).mlir(),
@@ -481,6 +488,179 @@ def test_degenerate_grid_compiles(shape, target, tmp_path, capsys):
     with capsys.disabled():
         print(f"\n  aircc --device {target} {shape}: {code or 'exit 0'} {said[:1]}")
     assert code is None, f"{shape} must compile on {target}; aircc said {code}: {said[:2]}"
+
+
+# --------------------------------------------------------------------------------------------
+# B-P37's controls — a herd taller than it is wide, and the same cores laid out the other way
+# --------------------------------------------------------------------------------------------
+
+TALL_M, TALL_N = 64, 96
+"""The B-P36/B-P37 shape. `96` is divisible by 2, 3 and 4, so one kernel reaches `grid(2, 4)` —
+npu2's whole 8-PE 2-D herd (`air.api`'s `PHYSICAL_HERD`, `_trace.py:88-91`) — and every control
+beside it: the square `grid(2, 2)`, the one-column `grid(1, 4)` and `grid(1, 3)`. Every one of
+them is `repeats (1, 1)` on npu2 and between 10 240 and 22 528 B of L1 on either generation,
+far under the 63 488 B budget, which is what makes each refusal a statement about the herd's
+**shape** alone."""
+
+
+@sp.kernel
+def gemm_tall(A: sp.f32[TALL_M, SMALL], B: sp.f32[SMALL, TALL_N], C: sp.f32[TALL_M, TALL_N]):
+    for i in range(TALL_M):
+        for j in range(TALL_N):
+            for k in range(SMALL):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+def _tall(grid, target):
+    """W1's nine clauses on `gemm_tall`; the tiles follow the grid so `repeats == (1, 1)`."""
+    s = sp.schedule(gemm_tall, target=target)
+    ax = s.axes()
+    s.grid(*grid)
+    s.tile(ax.i, TALL_M // grid[0]); s.tile(ax.j, TALL_N // grid[1]); s.tile(ax.k, 16)
+    s.reduce(ax.k, op="+")
+    s.place(px=ax.i0, py=ax.j0)
+    s.stationary("C")
+    s.reside(A="L1", B="L1", C="L1")
+    s.double_buffer("A", "B")
+    s.pipeline(ax.k0)
+    return s
+
+
+@pytest.mark.fr("FR-L10")
+def test_tall_herd_is_refused_for_the_broadcast_guard_on_npu2():
+    """P3 refuses npu2's whole 8-PE herd **before codegen**, naming the guard bound (B-P37).
+
+    `air-specialize-dma-broadcast` splits `A2L1` on the column axis and bounds the *row*
+    coordinate of the guard it builds by the **column** count (`AIRMiscPasses.cpp:265-271`, the
+    argument is `herd.getNumCols()` at `:347-349`), so a 2×4 herd admits rows 0..1 and loses the
+    other two — and the first split channel then has a broadcast destination nothing allocates.
+    """
+    with pytest.raises(MappingError) as caught:
+        _tall((2, 4), "npu2").plan()
+    diagnostic = caught.value.diagnostic
+    assert diagnostic.code == "DMA-CHANNELS"
+    assert diagnostic.details["channel"] == "A2L1"
+    assert diagnostic.details["herd_physical"] == (2, 4)
+    assert (diagnostic.details["columns"], diagnostic.details["rows"]) == (2, 4)
+    assert diagnostic.details["rows_unserved"] == 2
+    assert diagnostic.details["specialize_dim"] == 0
+
+
+@pytest.mark.fr("FR-L10")
+def test_a_repeat_on_the_split_axis_takes_the_guard_out_of_range():
+    """The B-P37 rule's exemption, which is why npu1 never reaches it.
+
+    npu1's 2-D physical herd is one column, so `grid(2, 3)` folds onto `(1, 3)` with
+    `repeats (2, 1)`; the bundle index is then an `affine.apply` of the herd id and the repeat
+    variable rather than the bare id, upstream takes its `scf.if` arm (`AIRMiscPasses.cpp:
+    380-422`) which bounds nothing, and `aircc` exits 0 — measured below.
+    """
+    plan = _tall((2, 3), "npu1").plan()
+    assert (plan.summary.herd_physical, plan.summary.repeats) == ((1, 3), (2, 1))
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-L10")
+def test_square_herd_is_taken_by_the_checker(target):
+    """The control: the same kernel at `grid(2, 2)` plans on both generations.
+
+    npu1 folds it onto one column, so **R-L1-3** doubles every buffer there — 2 × (6 144 +
+    2 048 + 3 072) = 22 528 against npu2's undoubled 6 144 + 2 × 2 048 + 2 × 3 072 = 16 384.
+    """
+    plan = _tall((2, 2), target).plan()
+    assert plan.summary.l1_bytes == {"npu1": 22528, "npu2": 16384}[target]
+    assert plan.summary.herd_physical == {"npu1": (1, 2), "npu2": (2, 2)}[target]
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-L10")
+def test_four_row_column_is_refused_for_its_master_selects(target):
+    """P3 refuses a four-row column on both generations, counting flows against 4 (B-P36).
+
+    Five L3→L1 fill flows meet at the column's bottom tile — the `A2L1` multicast plus one
+    `B2L1` per row — and the multicast's `{DMA, North}` port set only partially overlaps each
+    `{DMA}`/`{North}`, so none of them share a master select. Four is the cap
+    (`numMselsPerArbiter`).
+    """
+    with pytest.raises(MappingError) as caught:
+        _tall((1, 4), target).plan()
+    diagnostic = caught.value.diagnostic
+    assert diagnostic.code == "DMA-CHANNELS"
+    assert (diagnostic.details["flows"], diagnostic.details["budget"]) == (5, 4)
+    assert diagnostic.details["herd_physical"] == (1, 4)
+    assert diagnostic.details["multicast"] == ("A2L1",)
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-L10")
+def test_three_row_column_sits_on_the_master_select_cap(target):
+    """The knife-edge control: four flows into a three-row column plan, and compile.
+
+    This is the shape that makes the B-P36 rule a **count** rather than a guess — one flow
+    fewer than the refusal above, exactly on the cap, accepted by the checker and by `aircc`.
+    """
+    plan = _tall((1, 3), target).plan()
+    assert plan.summary.herd_physical == (1, 3)
+
+
+@pytest.mark.slow
+@pytest.mark.requires_aircc
+def test_tall_herd_is_refused_by_aircc_and_the_square_one_is_not(tmp_path, capsys, monkeypatch):
+    """The checker's refusal above is right: `aircc` refuses the same npu2 module (B-P37).
+
+    The new P3 checks are switched off for the length of this test so the modules they now
+    refuse can still be built and handed to `aircc`. The square control at the same clauses, the
+    same two columns and a *larger* L1 draws exit 0, which is what makes the refusal a statement
+    about the herd's aspect and not about its size. If a later toolchain compiles `grid(2, 4)`
+    this fails and the rule is re-opened.
+    """
+    require_pin()
+    from spatial import m4_selfcheck
+
+    monkeypatch.setattr(m4_selfcheck, "broadcast_guard", lambda plan: None)
+    monkeypatch.setattr(m4_selfcheck, "msels", lambda plan: None)
+    tall_code, tall_said = _aircc_verdict(_tall((2, 4), "npu2").mlir(), "npu2", tmp_path, "tall")
+    square_code, square_said = _aircc_verdict(_tall((2, 2), "npu2").mlir(), "npu2", tmp_path,
+                                              "square")
+    with capsys.disabled():
+        print(f"\n  aircc --device npu2 grid(2,4): {tall_code or 'exit 0'} {tall_said[:1]}"
+              f"\n  aircc --device npu2 grid(2,2): {square_code or 'exit 0'} {square_said[:1]}")
+    assert square_code is None, (
+        f"the square control must compile; aircc said {square_code}: {square_said[:2]}")
+    assert tall_code is not None, (
+        "aircc now compiles grid(2, 4) on npu2; the B-P37 rule must be re-measured")
+    assert any("failed to get S2MM tile for L3 allocation" in line for line in tall_said), (
+        f"grid(2, 4) fails for a different reason now: {tall_said[:2]}")
+
+
+@pytest.mark.slow
+@pytest.mark.requires_aircc
+@pytest.mark.parametrize("target", TARGETS)
+def test_the_master_select_cap_is_where_aircc_stops(target, tmp_path, capsys, monkeypatch):
+    """B-P36's pair: five fill flows into one column are refused, four compile.
+
+    `aiecc` segfaults *after* printing its diagnostic on the failing side, so the verdict is
+    read from the diagnostic text rather than from the exit code alone. `test_W1_flip_2d_
+    aircc_none` is the third leg of this measurement: **eight** flows into the same one-column
+    four-row herd, none of them a multicast, and `aircc` exits 0.
+    """
+    require_pin()
+    from spatial import m4_selfcheck
+
+    monkeypatch.setattr(m4_selfcheck, "msels", lambda plan: None)
+    over_code, over_said = _aircc_verdict(_tall((1, 4), target).mlir(), target, tmp_path, "five")
+    at_code, at_said = _aircc_verdict(_tall((1, 3), target).mlir(), target, tmp_path, "four")
+    said = next((line for line in over_said if "error:" in line), "")
+    with capsys.disabled():
+        print(f"\n  aircc --device {target} grid(1,4) 5 flows: {over_code or 'exit 0'} {said}"
+              f"\n  aircc --device {target} grid(1,3) 4 flows: {at_code or 'exit 0'} {at_said[:1]}")
+    assert at_code is None, (
+        f"four flows must compile on {target}; aircc said {at_code}: {at_said[:2]}")
+    assert over_code is not None, (
+        f"aircc now compiles five fill flows into one column on {target}; B-P36 must be "
+        f"re-measured")
+    assert any("used up all its msels" in line for line in over_said), (
+        f"five flows fail for a different reason now on {target}: {over_said[-2:]}")
 
 
 # --------------------------------------------------------------------------------------------

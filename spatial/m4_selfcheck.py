@@ -59,6 +59,13 @@ DMA_OUT_MAX = 2
 SHIM_DMA_CHANNELS_PER_COL = 2
 """`air-dma-to-channel`'s `shim-dma-channels-per-col`, default 2 (`Passes.td:1808-1812`)."""
 
+MSELS_PER_ARBITER = 4
+"""Master selects one switchbox arbiter can hand out — mlir-aie's `int numMselsPerArbiter = 4`
+(`lib/Dialect/AIE/Transforms/AIECreatePathFindFlows.cpp`, pinned wheel `10767b5`), and the same
+number as `aie.amsel`'s `msel` bound, `ConfinedAttr<AIEI8Attr, [IntMinValue<0>, IntMaxValue<3>]>`
+(`include/aie/Dialect/AIE/IR/AIEOps.td`, re-read 2026-09-15). Exhausting it is
+*"'aie.tile' op tile op arbiter 0 has used up all its msels"* (**B-P36**)."""
+
 L1_BUDGET = 65536
 """One core tile's **data memory** — `air.api`'s `L1_BYTES` (`_trace.py:100`) and mlir-aie's
 `AIE2TargetModel::getLocalMemorySize()` (`0x00010000`), reported by `MappingSummary.l1_budget`.
@@ -1084,6 +1091,203 @@ def dma_channels(plan: MappingPlan) -> None:
             circuit_switched=list(row.hard), all_channels=list(row.all_))
 
 
+def specialize_dim(channel: ChannelPlan) -> int | None:
+    """`findSpecializeDim` (mlir-air `AIRMiscPasses.cpp:165-177`): the bundle dim upstream splits.
+
+    `SpecializeChannelBroadcastPattern` (`AIRMiscPasses.cpp:128-524`) matches a channel whose
+    `broadcast_shape` is present and not all ones, and splits it on the **first** bundle
+    dimension whose extent exceeds 1. `None` means the pattern does not fire.
+    """
+    if channel.broadcast_shape is None or all(fan == 1 for fan in channel.broadcast_shape):
+        return None
+    return next((d for d, extent in enumerate(channel.size) if extent > 1), None)
+
+
+def _herd_dim(index: Expr, coords: tuple[str, ...]) -> int | None:
+    """The herd dimension this bundle index **is**, or `None` for anything else.
+
+    Upstream's guarded dispatch (`AIRMiscPasses.cpp:321-328`) fires only when the get's index at
+    the specialised dimension is a herd id itself (`idxVal == herdIds[d]`). A constant index
+    takes case 1 (a direct rewrite) and anything else takes case 3's `scf.if`; neither builds
+    the affine set below, so neither can carry its bound.
+    """
+    if index.const or len(index.coeffs) != 1:
+        return None
+    name, coeff = index.coeffs[0]
+    return coords.index(name) if coeff == 1 and name in coords else None
+
+
+def broadcast_guard(plan: MappingPlan) -> None:
+    """P3 — the column bound upstream puts on a specialised broadcast's guard (**B-P37**).
+
+    When `air-specialize-dma-broadcast` splits a bundled multicast it wraps each split get in an
+    `affine.if` whose set pins the specialised herd coordinate and leaves the others *bounded*:
+
+    ```cpp
+    exprs.push_back(getAffineSymbolExpr(d, ctx));                 // 0 <= s_d
+    exprs.push_back(numCols - 1 - getAffineSymbolExpr(d, ctx));   // s_d <= numCols - 1
+    ```
+
+    — `AIRMiscPasses.cpp:265-271`, and the `numCols` argument is `herd.getNumCols()` at
+    `:347-349`. The bound is the herd's **column** count whichever dimension `d` is, so a herd
+    with more rows than columns, split on the column axis, admits only rows `0 .. cols-1`: every
+    row above falls into the chain's `else` arm and is served by the *last* split channel. The
+    first split channel is then short of broadcast destinations, its `S2MM_alloc[i]` is never
+    filled, and `air-to-aie` fails on the L3 put with *"'air.channel.put' op failed to get S2MM
+    tile for L3 allocation"* (`AIRToAIESchedulingUtils.cpp:3866-3868`).
+
+    Measured on this wheel (W1's clauses, `repeats (1, 1)`, `l1_bytes` 12 288, npu2): physical
+    `(2, 2)` exit 0; `(2, 3)` and `(2, 4)` this error; `(3, 2)` and `(4, 2)` — the same six and
+    eight cores, transposed, reachable only with `air.api`'s npu2 2-D cap lifted, which is open
+    item **B-P38** — exit 0. Editing only the emitted affine set of the `(2, 3)` module
+    from `-s1 + 1 >= 0` to `-s1 + 2 >= 0` and re-running `air-to-aie` gives exit 0, which is what
+    pins the cause to this bound and not to a shim resource.
+
+    **A repeat factor on the split axis takes it out of range, which is why npu1 is untouched.**
+    The guarded dispatch only fires when the get's index *is* the herd id; at `repeats[dim] > 1`
+    `air.api` folds the repeat loop into it (`affine.apply ()[%arg13, %arg17] -> (s0 * n + s1)`,
+    `run_strip_mined`, `_trace.py:1675`) and upstream takes its `scf.if` arm instead
+    (`AIRMiscPasses.cpp:380-422`), which bounds nothing. `air.api`'s 2-D physical herd on npu1 is
+    one column wide (`_trace.py:88-91`), so every multi-column logical grid arrives there with a
+    repeat on exactly this axis — measured, W1's clauses at `grid(2, 2)` and `grid(2, 3)` compile
+    on npu1 at physical `(1, 2)` and `(1, 3)`, both `repeats (2, 1)`.
+    """
+    physical = plan.mapping.physical_herd
+    if len(physical) != 2 or physical[1] <= physical[0]:
+        return
+    cols, rows = physical
+    for channel in plan.channels:
+        dim = specialize_dim(channel)
+        # A bundle dimension only names a herd dimension when the two ranks agree, which is
+        # what makes `repeats[dim]` and `_herd_dim` below mean anything.
+        if dim is None or len(channel.size) != len(physical) or plan.mapping.repeats[dim] != 1:
+            continue
+        for site in channel.sites:
+            if site.kind != "get" or site.scope != "herd" or len(site.indices) <= dim:
+                continue
+            if _herd_dim(site.indices[dim], plan.herd.coords) != 0:
+                continue
+            raise _error(
+                "DMA-CHANNELS",
+                f"the physical herd is {cols} column(s) by {rows} row(s), and channel "
+                f"{channel.name!r} (size {list(channel.size)}, broadcast_shape "
+                f"{list(channel.broadcast_shape or ())}) is a multicast that "
+                f"air-specialize-dma-broadcast splits on the column axis (bundle dim {dim}, "
+                f"mlir-air AIRMiscPasses.cpp:165-177). The affine guard it builds around each "
+                f"split bounds the *row* coordinate by the column count — "
+                f"'numCols - 1 - s_d >= 0' at AIRMiscPasses.cpp:265-271, the argument being "
+                f"herd.getNumCols() at :347-349 — so it admits rows 0..{cols - 1} where the "
+                f"herd has {rows}: {rows - cols} row(s) fall into the else arm, are served by "
+                f"the last split channel, and leave the first split channel's broadcast "
+                f"destination unallocated. air-to-aie then fails on the L3 put with "
+                f"\"'air.channel.put' op failed to get S2MM tile for L3 allocation\" "
+                f"(AIRToAIESchedulingUtils.cpp:3866-3868)",
+                f"give the herd at least as many columns as rows: exchange the two place(px=, "
+                f"py=) axes together with the two {_grid_clause(plan)} extents, or lower the "
+                f"second extent to at most the first. Measured on this wheel, the same clauses "
+                f"at physical (2, 2) compile on both generations where ({cols}, {rows}) does "
+                f"not",
+                clause=_grid_clause(plan), channel=channel.name,
+                channel_size=list(channel.size),
+                broadcast_shape=list(channel.broadcast_shape or ()), specialize_dim=dim,
+                herd_physical=list(physical), rows=rows, columns=cols,
+                rows_admitted=cols, rows_unserved=rows - cols, site=site.id)
+
+
+def fans_down_the_column(channel: ChannelPlan) -> bool:
+    """The channel multicasts along the herd's **row** axis — more rows than bundle positions."""
+    fan = channel.broadcast_shape
+    return fan is not None and len(fan) == 2 and fan[1] > channel.size[1]
+
+
+def fill_flows(plan: MappingPlan) -> int:
+    """The `aie.packet_flow` count of the L3→L1 fill — one per **specialisable** bundle position.
+
+    A bundle index runs over `size[d]` positions, but only a dimension whose repeat factor is 1
+    is split: at `repeats[d] > 1` the index is an `affine.apply` of the herd id and the repeat
+    variable, `specializeChannelBundle` cannot resolve it, and the whole bundle stays one flow
+    (the same condition `broadcast_guard` reads, `AIRMiscPasses.cpp:321-328`).
+
+    Verified against the emitted `aie.packet_flow` count, W1's clauses, every shape measured
+    this pass: physical `(1, 2)` **3**, `(1, 3)` **4** (reached both as `grid(1, 3)` and as
+    `grid(2, 3)` with `repeats (2, 1)`), `(1, 4)` **5**, `(2, 4)` from `grid(4, 4)` **5**, and
+    W1-flip 2-D at `(1, 4)` **8**.
+    """
+    repeats = plan.mapping.repeats
+    return sum(prod(extent if repeat == 1 else 1
+                    for extent, repeat in zip(channel.size, repeats))
+               for channel in plan.channels if l3_direction(channel, plan) == "in")
+
+
+def msels(plan: MappingPlan) -> None:
+    """P3 — the switchbox master selects the fill spends on a stacked herd (**B-P36**).
+
+    Every L3→L1 packet flow serving a column passes that column's bottom core tile, and each one
+    costs a master select on that tile's arbiter 0 **when one of them is a multicast down the
+    column**: the multicast's port set there is `{DMA, North}`, which only partially overlaps the
+    `{DMA}` or `{North}` of each point-to-point flow, and a partial overlap makes upstream open a
+    fresh amsel on the *same* arbiter rather than share one. `MSELS_PER_ARBITER` is the cap.
+
+    Measured this pass, W1's clauses, `aie.amsel` counted on `%tile_0_2` of the routed IR
+    (`aie-opt --aie-create-pathfinder-flows=route-packet` over `air_project/npu.src.mlir`), on
+    **both** generations unless noted:
+
+    | physical herd | fill flows | multicast | amsels on arbiter 0 | `aircc` |
+    |---|---|---|---|---|
+    | `(1, 2)` | 3 | yes | `<0>(0..2)` = 3 | exit 0 |
+    | `(1, 3)` | 4 | yes | `<0>(0..3)` = 4 | exit 0 |
+    | `(1, 4)` | 5 | yes | — | *used up all its msels* |
+    | `(2, 2)` (npu2) | 4 | yes | — | exit 0 |
+    | `(2, 4)` (npu2, from `grid(4, 4)`) | 5 | yes | — | *used up all its msels* |
+    | `(1, 4)` W1-flip 2-D | 8 | **no** | `<0>(0)`, `<1>(0)` = 2 | exit 0 |
+
+    `(1, 3)` and `(2, 2)` sit exactly on the cap and are accepted; five flows are refused at
+    both `(1, 4)` and `(2, 4)`, and `(1, 4)` is refused whether it is reached as `grid(1, 4)` or
+    as `grid(2, 4)` folded with `repeats (2, 1)`.
+
+    **The flip is the reason the count is gated on the multicast, and the reason this rule was
+    not written a pass earlier.** Its eight flows are every one of them single-destination
+    (`aie.packet_flow` with one `packet_dest`), so their port sets match exactly and they share
+    two amsels — one for `{DMA}`, one for `{North}` — on two different arbiters. A rule counting
+    flows alone would have rejected it, and §3.8's standing argument is that rejecting a program
+    the toolchain accepts is worse than no checker.
+
+    **What is assumed, not proved.** That every fill flow of a herd enters the same shim column
+    and so meets at one bottom tile. It is what all six shapes above show — every
+    `aie.packet_source` is `%shim_noc_tile_0_0`, including the two-column ones — but the column a
+    flow climbs is chosen by the shim bin packing
+    (`AIRToAIESchedulingUtils.cpp:3825-3845`) and by the pathfinder, not by the plan. A herd
+    whose fills were spread over columns would be rejected here and compile.
+    """
+    physical = plan.mapping.physical_herd
+    if len(physical) != 2 or physical[1] < 2:
+        return
+    inbound = [channel for channel in plan.channels if l3_direction(channel, plan) == "in"]
+    if not any(fans_down_the_column(channel) for channel in inbound):
+        return
+    flows = fill_flows(plan)
+    if flows <= MSELS_PER_ARBITER:
+        return
+    raise _error(
+        "DMA-CHANNELS",
+        f"the herd is {physical[0]} column(s) of {physical[1]} rows, and its {flows} L3->L1 "
+        f"fill flows ({', '.join(channel.name for channel in inbound)}) all climb through one "
+        f"column's bottom core tile. One of them multicasts down the column, so its switchbox "
+        f"port set only partially overlaps each of the others and every flow takes a master "
+        f"select of its own on one arbiter: {flows} against the {MSELS_PER_ARBITER} of "
+        f"mlir-aie's 'int numMselsPerArbiter = 4' (AIECreatePathFindFlows.cpp; aie.amsel's "
+        f"msel is confined to 0..3 in AIEOps.td). aiecc fails with \"'aie.tile' op tile op "
+        f"arbiter 0 has used up all its msels\" — measured, {MSELS_PER_ARBITER} such flows "
+        f"compile on both generations and {MSELS_PER_ARBITER + 1} do not",
+        f"shorten the column to at most {MSELS_PER_ARBITER - 1} rows, or stage one fewer "
+        f"operand from L3: this target folds {_grid_clause(plan)} onto a "
+        f"{physical[0]} x {physical[1]} herd (air.api's PHYSICAL_HERD, _trace.py:88-91), so a "
+        f"smaller second grid extent is what shortens it",
+        clause=_grid_clause(plan), herd_physical=list(physical), flows=flows,
+        budget=MSELS_PER_ARBITER, channels=[channel.name for channel in inbound],
+        multicast=[channel.name for channel in inbound if fans_down_the_column(channel)])
+
+
 def warnings(plan: MappingPlan) -> tuple[str, ...]:
     """The P3 warnings — a budget exceeded only once packet-capable channels are counted.
 
@@ -1115,8 +1319,10 @@ def warnings(plan: MappingPlan) -> tuple[str, ...]:
 def self_check(plan: MappingPlan) -> None:
     """Assert put/get balance, channel-graph acyclicity, the plan invariants and the DMA budget.
 
-    The four checks of LLD §3.7-§3.8, in this order: P1' balance, P2b acyclicity, the structural
-    invariants, the P3 DMA-channel budget. Raises `MappingError` and nothing else (NFR-7);
+    The checks of LLD §3.7-§3.8, in this order: P1' balance, P2b acyclicity, the structural
+    invariants, the P3 DMA-channel budget and — §3.8's 2026-09-15 erratum — P3's broadcast-guard
+    bound (**B-P37**) and its master-select budget (**B-P36**). Raises `MappingError` and
+    nothing else (NFR-7);
     returns `None` on success, with any P3 warning available from `warnings(plan)`.
 
     `m4.plan` calls it on its own result before returning, so a `MappingPlan` that leaves M4 has
@@ -1127,3 +1333,5 @@ def self_check(plan: MappingPlan) -> None:
     acyclicity(plan)
     structural(plan)
     dma_channels(plan)
+    broadcast_guard(plan)
+    msels(plan)
