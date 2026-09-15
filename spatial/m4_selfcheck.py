@@ -810,9 +810,14 @@ def _describe(node: Any) -> str:
     return type(node).__name__
 
 
-def l1_total(buffers: tuple[BufferPlan, ...]) -> int:
-    """`sum(bytes × (2 if ping_pong_candidate else 1))` over non-L3 buffers (§5.6 invariant 5)."""
-    return sum(b.bytes * (2 if b.ping_pong_candidate else 1)
+def l1_total(buffers: tuple[BufferPlan, ...], repeated: bool = False) -> int:
+    """`sum(bytes × (2 if ping_pong_candidate else 1))` over non-L3 buffers (§5.6 invariant 5).
+
+    `repeated` is R-L1-3: with any repeat factor above 1 the repeat loop around the herd body
+    is unrolled by 2 (mlir-air `AIRDependencyScheduleOpt.cpp:1906-1908`) and every buffer is
+    allocated twice. Same arithmetic as `m4_mapping.l1_total` and `m3_legality`'s.
+    """
+    return sum(b.bytes * (2 if repeated or b.ping_pong_candidate else 1)
                for b in buffers if b.level != "L3")
 
 
@@ -823,13 +828,15 @@ def l1_budget(plan: MappingPlan) -> None:
     (`recv`, `edge_in`/`edge_out`) are the only allowed difference from `LegalMapping.l1_bytes`
     (LLD §3.3 note 4).
     """
-    total = l1_total(plan.buffers)
+    repeated = any(r > 1 for r in plan.mapping.repeats)
+    total = l1_total(plan.buffers, repeated=repeated)
     if total > L1_USABLE:
         raise _internal(plan, 5, f"the plan's L1 total {total} B exceeds the {L1_USABLE} B "
                                  f"budget ({L1_BUDGET} B of tile memory less the "
                                  f"{L1_STACK_RESERVED} B core stack)",
                         plan_l1_bytes=total, l1_budget=L1_USABLE)
-    staged = l1_total(tuple(b for b in plan.buffers if b.operand is not None))
+    staged = l1_total(tuple(b for b in plan.buffers if b.operand is not None),
+                      repeated=repeated)
     if staged != plan.mapping.l1_bytes:
         raise _internal(plan, 5, f"the plan charges {staged} B for the operand-staging buffers "
                                  f"where LegalMapping.l1_bytes says {plan.mapping.l1_bytes} B",

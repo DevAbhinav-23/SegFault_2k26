@@ -566,11 +566,19 @@ def moved_axes(mapping: LegalMapping, operand: str) -> tuple[Axis, ...]:
 
 
 def temporal_axes(mapping: LegalMapping) -> tuple[Axis, ...]:
-    """`T` of LLD §3.9 line 3: the outer tile axes in σ order that are not placed."""
+    """`T` of LLD §3.9 line 3: the outer tile axes in σ order that are not placed.
+
+    An outer tile axis of **extent 1** is dropped: `tile(ax.j, N)` at `N == extent(j)` makes
+    one tile, its loop runs once at `lo`, and no operand's slab moves with it — it is the same
+    schedule as not tiling `j` at all, which §3.9 already excludes from `T` (an untiled axis
+    runs *inside* the tile). Keeping it made `B[k,j]` "re-fetched per `j0`" on a one-tile `j`
+    and, with a second moved axis, sent `PROTOCOL` looking for two streaming loops
+    (defect D2, fixed 2026-09-15).
+    """
     columns = len(mapping.axes)
     out = []
     for axis in _sigma_axes(mapping):
-        if not _is_outer_tile(axis):
+        if not _is_outer_tile(axis) or axis.extent == 1:
             continue
         unit = tuple(1 if a.name == axis.name else 0 for a in mapping.axes)
         if len(unit) == columns and not _in_span(mapping.pi, unit):
@@ -997,23 +1005,37 @@ def _sites(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, bo
             indices=tuple(_var(coord) for coord in herd.coords),
             buffer=by_operand[operand].name, region=EMPTY_REGION)
         herd_index += 1
-    for operand, kind, along, _declared in delivery:
-        if operand in fills:
-            size = (multicast_geometry(herd.grid, PE_AXIS_NAME.index(along))[0]
-                    if kind == "MULTICAST" else herd.grid)
-            out[(f"{operand}2L1", "put")] = _site(
-                f"{operand}2L1", "put", 0, "segment",
-                indices=tuple(_var(bundle_name(mapping, d)) if extent > 1 else ZERO
-                              for d, extent in enumerate(size)),
-                buffer=operand,
-                region=l3_region(mapping, operand, _fill_origins(mapping, operand, size)))
-        if operand in drains:
-            out[(f"{operand}2L3", "get")] = _site(
-                f"{operand}2L3", "get", 0, "segment",
-                indices=tuple(_var(drain_name(mapping, d)) if extent > 1 else ZERO
-                              for d, extent in enumerate(herd.grid)),
-                buffer=operand,
-                region=l3_region(mapping, operand, _drain_origins(mapping, herd.grid)))
+    # The segment body is `PROTOCOL`'s: one fill per filled operand, then the herd, then one
+    # drain per drained operand. A fill is wrapped in its bundle loops (one per bundle dim of
+    # extent > 1) and its streaming loop, a drain in the PE-grid bundle loops; a site inside any
+    # wrapper is the first node of that wrapper's body and carries order 0. When **no** wrapper
+    # is built — `_bundle_nest` makes no loop for a dim of extent 1, so a `grid(1)` or `grid(1,
+    # 1)` drain has none — the site sits in the segment body itself and its order is its index
+    # there (the defect D1 fixed 2026-09-15: a single-PE schedule failed `_check_orders`).
+    kinds = {operand: (kind, along) for operand, kind, along, _declared in delivery}
+    index = 0
+    for operand in fills:
+        kind, along = kinds[operand]
+        size = (multicast_geometry(herd.grid, PE_AXIS_NAME.index(along))[0]
+                if kind == "MULTICAST" else herd.grid)
+        wrapped = any(extent > 1 for extent in size) or streaming_axis(mapping, operand)
+        out[(f"{operand}2L1", "put")] = _site(
+            f"{operand}2L1", "put", 0 if wrapped else index, "segment",
+            indices=tuple(_var(bundle_name(mapping, d)) if extent > 1 else ZERO
+                          for d, extent in enumerate(size)),
+            buffer=operand,
+            region=l3_region(mapping, operand, _fill_origins(mapping, operand, size)))
+        index += 1
+    index += 1                                                # the herd itself
+    for operand in drains:
+        wrapped = any(extent > 1 for extent in herd.grid)
+        out[(f"{operand}2L3", "get")] = _site(
+            f"{operand}2L3", "get", 0 if wrapped else index, "segment",
+            indices=tuple(_var(drain_name(mapping, d)) if extent > 1 else ZERO
+                          for d, extent in enumerate(herd.grid)),
+            buffer=operand,
+            region=l3_region(mapping, operand, _drain_origins(mapping, herd.grid)))
+        index += 1
     return out
 
 
@@ -1116,9 +1138,20 @@ def protocol(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, 
     streamed = [b for b in buffers if b.loop_depth >= 1]
     axis = streaming_axis(mapping, streamed[0].operand) if streamed else None
     if any(streaming_axis(mapping, b.operand) != axis for b in streamed):
-        raise NotImplementedError(
-            f"the streamed buffers {[b.name for b in streamed]} are re-fetched per "
-            f"different axes, so the herd body needs more than one streaming loop; {_LATER}")
+        # A user-facing limit, not an internal one (NFR-7, defect D2): the schedule left two
+        # outer tile axes temporal and two operands moving with different ones, and this cut
+        # builds one streaming loop per herd body (§6.1).
+        moves = {b.operand: streaming_axis(mapping, b.operand) for b in streamed}
+        raise _fail(
+            "the staged operands move with different outer tile axes ("
+            + ", ".join(f"{operand} per {name}" for operand, name in sorted(moves.items()))
+            + "), so the herd body would need one streaming loop per axis and this cut "
+              "synthesises one (design/03-lld-M4-mapping.md §6.1)",
+            f"place one of {sorted({name for name in moves.values() if name})} on a PE axis, "
+            f"or leave its kernel axis untiled, so every staged operand is re-fetched per the "
+            f"same axis",
+            clause="tile(...)/place(...)",
+            streaming_axes={operand: name for operand, name in sorted(moves.items())})
     elements, slab = compute_frame(mapping, herd, axis, names)
     target = _statement(mapping).target
     _, stored = _in_l1(mapping, by_operand, elements, slab, target.operand,
@@ -2457,7 +2490,10 @@ def summary(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, b
     for buffer in buffers:
         lines.append(f"  {buffer.name} {buffer.shape} {buffer.dtype.mlir} = {buffer.bytes} B"
                      + ("  x2 (ping-pong)" if buffer.ping_pong_candidate else ""))
-    total = l1_total(buffers)
+    # R-L1-3: the `x2 (ping-pong)` annotations above stay a property of the buffer; the repeat
+    # loop's unroll is a property of the herd, already printed on the `herd:` line, and it is
+    # the `L1:` total that has to agree with M3 and with the lowered IR.
+    total = l1_total(buffers, repeated=any(r > 1 for r in mapping.repeats))
     lines.append(f"L1: {total} of {L1_BUDGET} bytes")
     for channel in channels:
         lines.append(f"  {channel.name} size={channel.size}"
@@ -2471,9 +2507,16 @@ def summary(mapping: LegalMapping, delivery: tuple[tuple[str, str, str | None, b
                           channels=tuple((c.name, c.size, c.broadcast_shape) for c in channels))
 
 
-def l1_total(buffers: tuple[BufferPlan, ...]) -> int:
-    """`sum(bytes × (2 if ping_pong_candidate else 1))` (§5.6 invariant 5, LLD §3.3 note 4)."""
-    return sum(b.bytes * (2 if b.ping_pong_candidate else 1)
+def l1_total(buffers: tuple[BufferPlan, ...], repeated: bool = False) -> int:
+    """`sum(bytes × (2 if ping_pong_candidate else 1))` (§5.6 invariant 5, LLD §3.3 note 4).
+
+    `repeated` is architect ruling **R-L1-3** (2026-09-15): when any repeat factor exceeds 1
+    the whole herd body sits in the repeat loop, which the ping-pong machinery unrolls by 2
+    (mlir-air `AIRDependencyScheduleOpt.cpp:1906-1908`), so **every** buffer is allocated
+    twice — and the ping-pong pair is not doubled a second time. It is the same figure M3
+    charges in `LegalMapping.l1_bytes` (`03-lld-M3-checker.md` §3.10).
+    """
+    return sum(b.bytes * (2 if repeated or b.ping_pong_candidate else 1)
                for b in buffers if b.level != "L3")
 
 
@@ -2533,14 +2576,19 @@ def _with_warnings(out: MappingPlan) -> MappingPlan:
 
 
 def _check_l1(mapping: LegalMapping, buffers: tuple[BufferPlan, ...]) -> None:
-    """The staged buffers must charge exactly what M3 charged (LLD §3.3 note 4, §7)."""
-    staged = l1_total(tuple(b for b in buffers if b.operand is not None))
+    """The staged buffers must charge exactly what M3 charged (LLD §3.3 note 4, §7).
+
+    Both totals carry R-L1-3's repeat factor, so M4's staged figure and M3's `l1_bytes` are
+    the same arithmetic on the same buffers.
+    """
+    repeated = any(r > 1 for r in mapping.repeats)
+    staged = l1_total(tuple(b for b in buffers if b.operand is not None), repeated=repeated)
     if staged != mapping.l1_bytes:
         raise _internal(
             f"the plan charges {staged} B for the staged buffers where LegalMapping.l1_bytes "
             f"says {mapping.l1_bytes} B (design/03-lld-M4-mapping.md §3.3 note 4)",
             plan_l1_bytes=staged, mapping_l1_bytes=mapping.l1_bytes)
-    total = l1_total(buffers)
+    total = l1_total(buffers, repeated=repeated)
     if total > L1_USABLE:
         raise _internal(
             f"the plan's L1 total {total} B exceeds the {L1_USABLE} B budget "

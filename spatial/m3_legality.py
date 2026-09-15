@@ -525,10 +525,26 @@ def pingpong_mode(f: _Frames, operand: str) -> str:
     return "PASS"
 
 
-def _check_l1_capacity(f: _Frames) -> int:
+def _check_l1_capacity(f: _Frames, repeats: tuple[int, ...] = ()) -> int:
+    """Sec 3.10, with architect ruling **R-L1-3** (2026-09-15) on `repeats`.
+
+    When any repeat factor exceeds 1 the herd body sits inside the repeat `scf.for`
+    (`air.api` `run_strip_mined`, `_trace.py:1675`), mlir-air labels that loop for the
+    ping-pong pattern and unrolls it **by 2** -- `AIRDependencyScheduleOpt.cpp:1906-1908`
+    (*"int unroll_factor = 2; // Unroll factor hardened as 2"*), the pass
+    `Passes.td:916-923` describes as unrolling *"a scf.for loop by 2"* -- so **every** L1
+    buffer the body allocates exists twice on the core. Measured on the lowered IR at the
+    `design/07-environment.md` pin: W1 base on npu1 (`repeats (2,1)`) carries six
+    `aie.buffer`s per tile, 2 x 4096 + 2 x 2048 + 2 x 2048 = 16 384 B, where the same
+    schedule on npu2 (`repeats (1,1)`) carries five, 12 288 B.
+
+    The repeat factor replaces the ping-pong doubling rather than compounding it: the
+    measured count is two copies of each buffer, never four (`design/PROGRESS-B.md` B-P34).
+    """
     total = 0
     breakdown: list[tuple[str, tuple[int, ...], str, int]] = []
     doubled: list[str] = []
+    repeated = any(r > 1 for r in repeats)
     pinned = _pinned(f)
     read_only_pinned = _pinned(f, skew_pins=False)
     explicit_l1 = {name for name, level in f.schedule.residency if level == "L1"}
@@ -543,14 +559,16 @@ def _check_l1_capacity(f: _Frames) -> int:
         for s in span:
             nbytes *= s
         nbytes *= _DTYPE_BYTES[param.dtype.value]
+        pingpong = False
         if name in f.schedule.double_buffer:
             try:
                 mode = pingpong_mode(f, name)
             except LegalityError:
                 mode = None
-            if mode == "PASS":
-                nbytes *= 2
-                doubled.append(name)
+            pingpong = mode == "PASS"
+        if pingpong or repeated:                       # R-L1-3: twice, never four times
+            nbytes *= 2
+            doubled.append(name)
         total += nbytes
         breakdown.append((name, tuple(span), param.dtype.value, nbytes))
     if total > _L1_USABLE:
@@ -558,15 +576,26 @@ def _check_l1_capacity(f: _Frames) -> int:
         # `(operand, span, dtype, bytes)` order of line 7, and the operands charged twice.
         # "the computed bytes, the budget, and the per-buffer breakdown" is FR-L9's own
         # acceptance; `total` alone does not say which tile to halve.
+        because = ""
+        # The repeat facts join `details` only when a repeat loop exists, so a plan whose
+        # grid fits its herd carries the same message it always did.
+        extra = {"repeats": list(repeats), "repeat_unroll": 2} if repeated else {}
+        if repeated:
+            # R-L1-3: say which mechanism charged the second copy, and where it is written.
+            because = (f"; every buffer is allocated twice because the repeat loop over "
+                       f"repeats {tuple(repeats)} is unrolled by 2 (mlir-air "
+                       f"AIRDependencyScheduleOpt.cpp:1906-1908, Passes.td:916-923)")
         raise _fail("L1-CAPACITY",
                    f"the per-core L1 working set is {total} bytes, over the {_L1_USABLE}-byte "
                    f"budget ({_L1_TILE_BYTES} B of tile data memory less the "
-                   f"{_L1_STACK_RESERVED} B core stack air-to-aie reserves)",
-                   "halve a tile factor, or drop a double_buffer(...) entry",
+                   f"{_L1_STACK_RESERVED} B core stack air-to-aie reserves){because}",
+                   "halve a tile factor, or drop a double_buffer(...) entry"
+                   + (", or shrink the logical grid to the physical herd so no repeat loop is "
+                      "emitted" if repeated else ""),
                    "tile(...)/double_buffer(...)", total=total, budget=_L1_USABLE,
                    tile_bytes=_L1_TILE_BYTES, stack_reserved=_L1_STACK_RESERVED,
                    per_buffer=[[n, list(s), d, b] for n, s, d, b in breakdown],
-                   doubled=doubled)
+                   doubled=doubled, **extra)
     return total
 
 
@@ -587,6 +616,43 @@ def _resolve_physical(grid: tuple[int, ...], target: str) -> tuple[tuple, tuple]
                      for g, cap in zip(grid, caps))
     repeats = tuple(g // p for g, p in zip(grid, physical))
     return physical, repeats
+
+
+_REPEAT_MAX = 2
+"""R-HERD-1: the largest repeat factor `air-to-aie` can lower, and it is the unroll factor.
+
+The repeat loop `air.api` emits around the herd body (`run_strip_mined`, `_trace.py:1675`) is
+unrolled **by 2** by the ping-pong machinery (mlir-air
+`AIRDependencyScheduleOpt.cpp:1906-1908`, *"int unroll_factor = 2; // Unroll factor hardened as
+2"*). A trip-2 loop therefore disappears and every channel bundle index becomes a constant per
+core; a trip-4 loop leaves a trip-2 loop behind, its induction variable still in the bundle
+index, and `specializeChannelBundle` cannot resolve the bundle position -- measured as
+`'air.channel.get' op failed to get MM2S tile for L3 allocation`
+(`AIRToAIESchedulingUtils.cpp:3892-3894`), the cause upstream states in its own regression
+`mlir/test/Conversion/AIRToAIE/segment_id_remap_no_unroll.mlir:14-19`."""
+
+
+def _check_repeats(grid: tuple[int, ...], target: str, physical: tuple[int, ...],
+                   repeats: tuple[int, ...]) -> None:
+    """R-HERD-1 (architect, 2026-09-15): reject a repeat factor above the unroll factor."""
+    if all(r <= _REPEAT_MAX for r in repeats):
+        return
+    caps = ("; ".join(f"{name} 1-D {_REPEAT_MAX * table[1][0]}, 2-D "
+                      f"{tuple(_REPEAT_MAX * c for c in table[2])}"
+                      for name, table in sorted(_PHYSICAL_HERD.items())))
+    raise _fail("HERD-PHYSICAL",
+               f"the logical grid {tuple(grid)} is folded onto the physical herd "
+               f"{tuple(physical)} with repeats {tuple(repeats)}, and the repeat loop is "
+               f"unrolled by {_REPEAT_MAX} (mlir-air AIRDependencyScheduleOpt.cpp:1906-1908), "
+               f"so a factor above {_REPEAT_MAX} leaves a loop induction variable in the "
+               f"channel bundle index that air-to-aie cannot specialise "
+               f"(AIRToAIESchedulingUtils.cpp:3892-3894 'failed to get MM2S tile for L3 "
+               f"allocation'; upstream states the cause in "
+               f"mlir/test/Conversion/AIRToAIE/segment_id_remap_no_unroll.mlir:14-19)",
+               f"use a logical grid at most twice the physical herd on this target "
+               f"({caps}) or split the launch",
+               "grid(...)", grid=list(grid), physical_herd=list(physical),
+               repeats=list(repeats), unroll_factor=_REPEAT_MAX, target=target)
 
 
 # ------------------------------------------------------------------------------------------
@@ -622,6 +688,7 @@ def check(kernel: KernelModel, schedule: ScheduleModel) -> LegalMapping:
     """Verify (sigma, pi) before any IR exists. Raises `LegalityError`."""
     f, sigma, pi, pi_u = _build(kernel, schedule)
     physical, repeats = _resolve_physical(schedule.grid or (), schedule.target)
+    _check_repeats(schedule.grid or (), schedule.target, physical, repeats)   # R-HERD-1
     _check_l1(tuple(sigma), tuple(pi))
     _check_l2(f, tuple(sigma))
     stationary_ops = _check_stationarity(kernel, schedule, tuple(pi_u))
@@ -630,7 +697,7 @@ def check(kernel: KernelModel, schedule: ScheduleModel) -> LegalMapping:
     halo_footprint = _check_halo(f)
     for name in schedule.double_buffer:
         pingpong_mode(f, name)
-    l1_bytes = _check_l1_capacity(f)
+    l1_bytes = _check_l1_capacity(f, repeats)                                 # R-L1-3
     _check_swap_parity(f)
 
     kernel_axis_by_name = {a.name: a for a in kernel.axes}
