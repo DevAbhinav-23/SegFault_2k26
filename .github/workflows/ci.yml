@@ -1,11 +1,17 @@
-# design/03-lld-M7-tests.md §3.9. One workflow, three jobs.
+# design/03-lld-M7-tests.md §3.9. One workflow, four jobs: three that test, one that primes.
 #
 # The wheel cache is the whole point (R-13): every `pip` here runs `--no-index --find-links
 # vendor/wheels`, so a pruned release asset
 # (`.github/workflows/pruneAIRReleaseAssets.yml:95-97` upstream) cannot break a build. The
 # wheels themselves are **not committed** — 2.3 GB, Q-C3 — only `vendor/wheels/SHA256SUMS` is,
-# and the cache is keyed on it. A cold cache therefore FAILS the job by design rather than
-# reaching for the network; prime it out of band per `design/07-environment.md` §2.
+# and the cache is keyed on it. A cold cache therefore FAILS the three test jobs by design
+# rather than reaching for the network.
+#
+# **How to prime it: Actions → ci → Run workflow → type `prime` in `confirm`.** That is the one
+# and only run in this file allowed to reach the network, it is the `prime-wheels` job at the
+# foot, and it skips the other three jobs so nothing races the cache it is filling. Every other
+# job keeps `fail-on-cache-miss: true` (R-13). `design/07-environment.md` §2 says the same in
+# one line.
 #
 # NFR-6 ("no test reaches the network") is enforced **in process** by `conftest._no_network`
 # and asserted by `test_NFR6_no_network`, not by a firewall step: dropping the runner's egress
@@ -22,13 +28,21 @@ on:
   schedule:
     - cron: "0 3 * * *"   # the slow job, nightly
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "prime" to download and cache the 16 pinned wheels. Leave empty to run the tests.'
+        required: false
+        default: ""
 
 env:
   PIP: --no-index --find-links vendor/wheels
 
+# A priming dispatch (`confirm: prime`) skips the three test jobs: they restore the very cache
+# it is about to save, and a job that started alongside it would race a cold restore. The `env`
+# context is not available in a job-level `if`, so the condition is spelled out per job.
 jobs:
   default:
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.confirm == 'prime')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +94,7 @@ jobs:
           if-no-files-found: ignore
 
   slow:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.confirm != 'prime')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -120,7 +134,7 @@ jobs:
   device:
     # Level D. Self-hosted, because `/dev/accel*` and XRT are not on a GitHub runner.
     # Allowed to fail: R-09 plans for there being no device, and the skip IS the evidence.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.confirm != 'prime')
     runs-on: [self-hosted, npu]
     continue-on-error: true
     steps:
@@ -132,3 +146,62 @@ jobs:
           .venv/bin/pip install $PIP --no-build-isolation --no-deps -e .
       - name: Level D — the device window
         run: .venv/bin/python -m pytest -m requires_device -ra
+
+  prime-wheels:
+    # The out-of-band step the three jobs above depend on and cannot do themselves: fill the
+    # wheel cache. Manual only, and only when the operator types `prime` — a cache write is not
+    # something a push should do, and this is the one job in the file that reaches the network.
+    #
+    # **Where the 16 wheels come from.** `design/07-environment.md` §2 documents the install as
+    # three `-f` release pages plus PyPI for what they do not carry, and lists no per-wheel URL,
+    # so the `-f` pages are named here verbatim and the versions are pinned to the sha256 list:
+    #
+    #   https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels
+    #     -> mlir_air-0.0.1.2026091204+ff95a9b-cp312-cp312-linux_x86_64.whl
+    #   https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+    #     -> mlir_aie-1.4.3.dev55+g10767b5-cp312-cp312-manylinux_2_35_x86_64.whl
+    #   https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+    #     -> llvm_aie-22.0.0.2026091201+386ca5c6-py3-none-manylinux_2_27_x86_64.…whl
+    #
+    # An `expanded_assets/<tag>` page is the asset list for that tag; the file itself is served
+    # from `https://github.com/<org>/<repo>/releases/download/<tag>/<filename>`, which is what
+    # `pip` follows. The other thirteen are PyPI's, whose per-file URLs are content-addressed
+    # (`files.pythonhosted.org/packages/<hash>/…`) and cannot be written down here — which is
+    # exactly why step 2 exists: **identity is established by sha256, not by URL.** A wheel that
+    # resolves to different bytes fails `sha256sum -c` and nothing is cached.
+    #
+    # `--no-deps` with all sixteen spelled out means pip fetches these files and no others, so
+    # the directory the cache saves is byte-for-byte the list `SHA256SUMS` pins.
+    if: github.event_name == 'workflow_dispatch' && inputs.confirm == 'prime'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"        # the wheels are cp312- and manylinux-x86_64-tagged
+
+      - name: Download the 16 pinned wheels (the only network step in this file)
+        run: |
+          python -m pip download --no-deps --only-binary=:all: --dest vendor/wheels \
+            -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4 \
+            -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly \
+            'mlir_air==0.0.1.2026091204+ff95a9b' \
+            'mlir_aie==1.4.3.dev55+g10767b5' \
+            'llvm_aie==22.0.0.2026091201+386ca5c6' \
+            'numpy==2.5.3' 'ml_dtypes==0.6.0' 'filelock==3.13.1' 'aiofiles==25.1.0' \
+            'cloudpickle==3.1.2' 'rich==15.0.0' 'pygments==2.21.0' 'markdown-it-py==4.2.0' \
+            'mdurl==0.1.2' 'pytest==9.1.1' 'pluggy==1.6.0' 'iniconfig==2.3.0' \
+            'packaging==26.3'
+
+      - name: Verify every wheel against SHA256SUMS — identity, not the URL
+        working-directory: vendor/wheels   # SHA256SUMS lists bare filenames
+        run: |
+          sha256sum -c SHA256SUMS
+          echo "wheels present: $(ls -1 ./*.whl | wc -l) (SHA256SUMS pins $(wc -l < SHA256SUMS))"
+
+      - name: Save the cache the other three jobs restore
+        uses: actions/cache/save@v4
+        with:
+          path: vendor/wheels
+          key: wheels-${{ hashFiles('vendor/wheels/SHA256SUMS') }}
