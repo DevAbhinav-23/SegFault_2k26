@@ -24,7 +24,14 @@ from tests.helpers import golden
 NFR3_TOTAL_BUDGET = 180.0
 NFR3_PER_TEST_BUDGET = 3.0
 DURATIONS: dict[str, float] = {}
-_EXEMPT_MARKS = ("slow", "requires_air_opt", "requires_aircc", "requires_device")
+_EXEMPT_MARKS = ("slow", "requires_air_opt", "requires_aircc", "requires_device",
+                 "requires_ttsim")
+"""Marks the §3.6 per-test budget does not apply to.
+
+Every `requires_*` marker belongs here: the budget measures *our* code, and a test gated on an
+external tool is measuring the tool. `test_NFR3_exempts_every_requires_marker` pins the rule so
+a marker added to `_MARKERS` cannot silently start failing on wall clock.
+"""
 
 _MARKERS = (
     ("slow", "minutes, not seconds; excluded by default"),

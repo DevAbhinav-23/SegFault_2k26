@@ -111,6 +111,23 @@ def test_NFR3_budget():
     assert not conftest._is_default_run(session("tests/unit"))
 
 
+def test_NFR3_exempts_every_requires_marker():
+    """Every `requires_*` marker is exempt from the §3.6 per-test budget.
+
+    The budget measures our own code; a test gated on an external tool measures the tool. The
+    rule was broken once: `requires_ttsim` was added to `_MARKERS` and not to `_EXEMPT_MARKS`,
+    and two ttsim tests that take ~48 s each were force-failed by the 3 s budget on a suite
+    that has no other way to run them.
+    """
+    import tests.conftest as conftest
+    gated = sorted(name for name, _doc in conftest._MARKERS if name.startswith("requires_"))
+    assert gated, "no requires_* marker declared — the lint would be vacuous"
+    missing = [name for name in gated if name not in conftest._EXEMPT_MARKS]
+    assert not missing, (
+        f"{missing} are declared in conftest._MARKERS but missing from _EXEMPT_MARKS, so a "
+        f"test carrying one would be failed on wall clock by pytest_runtest_makereport")
+
+
 def test_NFR3_budget_fires(monkeypatch):
     """The gate **bites**: an over-budget default run leaves a non-zero exit status.
 

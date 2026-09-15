@@ -15,7 +15,7 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 from spatial import intlin
 from spatial.model import (
@@ -39,7 +39,7 @@ def _loc(node: ast.AST | None, filename: str) -> tuple[str, int] | None:
 
 
 def _raise(code: str, reason: str, fix: str, node: ast.AST | None, filename: str,
-           **details: Any) -> None:
+           **details: Any) -> NoReturn:
     raise GrammarError(Diagnostic(
         code=code, stage="grammar", clause=None, reason=reason, fix=fix,
         location=_loc(node, filename), details=details))
@@ -273,7 +273,6 @@ def _affine(node: ast.AST, allowed: set[str], filename: str,
     _raise("GRAMMAR-NONAFFINE-SUBSCRIPT", f"unsupported subscript node {type(node).__name__}",
           "subscripts must be affine: c1*i + c2*j + c0 with integer c", node, filename,
           construct=type(node).__name__)
-    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _full_subscript(sub: ast.Subscript, axes: tuple[str, ...], shape_params: set[str],
@@ -402,7 +401,6 @@ def _value_expr(node: ast.expr, ctx: "_Ctx") -> ExprNode:
           "kernel subset", "the subset has for/range, x[...] = e, x[...] += e and max/min only; "
           "move the condition into the data or precompute it", node, ctx.filename,
           construct=type(node).__name__)
-    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _classify(body: list[ast.stmt], axes: tuple[str, ...], shape_params: set[str],

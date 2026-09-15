@@ -218,7 +218,16 @@ def _operand_matrix(kernel: KernelModel, operand: str) -> tuple[tuple[int, ...],
         for r in st.reads:
             if r.operand == operand:
                 return r.matrix
-    raise AssertionError(f"operand {operand} is never accessed")  # pragma: no cover
+    # Reachable from a user path: a parameter that the loop body never reads or writes has no
+    # access matrix, so it has no reuse space to check. `STATIONARITY` is the closest code in
+    # the frozen 43-entry catalogue (06-interfaces.md §6.3) -- it is §3.6's own code, and §3.6
+    # is the only check that asks every parameter for its matrix. M4 treats the same shape as
+    # its own defect (`m4_mapping._internal`, ruling B-P23) because by then M3 owed it.
+    raise _fail("STATIONARITY",
+               f"operand {operand} is declared in the kernel signature but is never read or "
+               f"written, so it has no access matrix and no reuse space",
+               f"remove {operand} from the kernel signature, or access it in the loop body",
+               "(kernel signature)", operand=operand)
 
 
 def _check_stationarity(kernel: KernelModel, schedule: ScheduleModel,
@@ -342,9 +351,16 @@ def _check_cascade(f: _Frames, r_space: tuple, pi_u: tuple, physical: tuple,
 # ------------------------------------------------------------------------------------------
 
 
-def _pinned(f: _Frames) -> dict[str, bool]:
+def _pinned(f: _Frames, skew_pins: bool = True) -> dict[str, bool]:
     """True for a Coord axis that is pinned to a single value within one PE's trip
-    (placed, an outer tile handle, sequential, or a skewed-but-unplaced axis)."""
+    (placed, an outer tile handle, sequential, or a skewed-but-unplaced axis).
+
+    `skew_pins=False` drops only the skewed-but-unplaced term. It is used by the L1
+    footprint of a **read-only** operand -- architect ruling R-L9-1, 2026-09-15, written
+    into design/03-lld-M3-checker.md Sec 3.10: a written operand under a skew is produced
+    and forwarded step by step, so only the pinned-axis span is resident, but a read-only
+    operand with no dependence on a placed axis is delivered whole by M4's multicast
+    (02-hld.md Sec 7.3, FR-M1) -- a per-step stream of it is not a delivery M4 implements."""
     schedule = f.schedule
     pinned = {}
     skewed = set(schedule.skew or ())
@@ -352,7 +368,8 @@ def _pinned(f: _Frames) -> dict[str, bool]:
         is_placed = c in schedule.place
         is_outer = c in f.created_from and f.created_from[c][2]
         is_sequential = c in schedule.sequential or f.root(c) in schedule.sequential
-        is_skewed_unplaced = (f.root(c) in skewed or c in skewed) and not is_placed
+        is_skewed_unplaced = (skew_pins and (f.root(c) in skewed or c in skewed)
+                              and not is_placed)
         pinned[c] = is_placed or is_outer or is_sequential or is_skewed_unplaced
     return pinned
 
@@ -474,13 +491,15 @@ def pingpong_mode(f: _Frames, operand: str) -> str:
 def _check_l1_capacity(f: _Frames) -> int:
     total = 0
     pinned = _pinned(f)
+    read_only_pinned = _pinned(f, skew_pins=False)
     explicit_l1 = {name for name, level in f.schedule.residency if level == "L1"}
     # Every operand actually referenced in the herd body needs an L1 buffer to compute
     # against, whether or not reside() names it explicitly (03-lld-M3-checker.md Sec 6.4's
     # worked total counts q/r alongside the explicitly-declared S).
     for param in sorted(f.kernel.params, key=lambda p: p.name):
         name = param.name
-        span, _ = _footprint(f, name, pinned)
+        # R-L9-1: a skew pins a written operand's footprint, never a read-only one.
+        span, _ = _footprint(f, name, pinned if param.is_written else read_only_pinned)
         nbytes = 1
         for s in span:
             nbytes *= s

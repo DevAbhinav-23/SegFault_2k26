@@ -461,8 +461,8 @@ W1's `k0` is pinned as an outer tile handle, so `A`'s `k` span is `TK = 16`, not
 ```pseudo
 CHECK_L1(kernel, schedule, ...):
  1  total := 0 ; breakdown := []
- 2  for each operand a with residency[a] == "L1", sorted by name:
- 3      span, _ := FOOTPRINT(a, PINNED_BOX(...))
+ 2  for each operand a referenced by the kernel, sorted by name:   # erratum 2026-09-15
+ 3      span, _ := FOOTPRINT(a, PINNED_BOX(a))                     # per-operand box, R-L9-1
  4      bytes := product(span) * dtype(a).sizeof
  5      if a in schedule.double_buffer and pingpong_mode(a) == "PASS":
  6          bytes := bytes * 2                        # the ping-ponged figure, FR-L9
@@ -476,6 +476,25 @@ CHECK_L1(kernel, schedule, ...):
 14  return total
 ```
 
+**Erratum, 2026-09-15 — architect ruling R-L9-1.** Two corrections to the pseudo-code above,
+both made because §6.4's worked totals (normative) and M4's own charge disagreed with the
+literal text.
+
+1. **Line 2 charges every operand the kernel references**, not only those `reside()` names.
+   §6.4's W3 row already counts `q` and `r` alongside the explicitly declared `S`, and M4
+   stages all three; the old wording would have made `l1_bytes` 72 where §6.4 says 232.
+2. **Line 3's pinned box is per operand: a skewed-but-unplaced axis is pinned only for
+   operands the kernel *writes*.** For a read-only operand it is unpinned (full extent).
+   A written operand under a skew is produced and forwarded step by step (the swap pair,
+   §3.12 swap parity), so only the pinned-axis span is resident. A read-only operand with no
+   dependence on a placed axis is delivered **whole** by M4's multicast — HLD §7.3 makes `q`
+   "multicast along px" (FR-M1) — and a per-step stream of a read-only operand is not a
+   delivery M4 implements. This is what §6.4's W3 row means by "every PE holds the **whole**
+   vector: `32 · 4` = 128"; the old uniform box charged `q` 4 bytes and M4's §3.3 note-4
+   self-check then rejected the plan.
+   `PINNED_BOX` itself is unchanged — it still pins the skewed axis for `_check_halo` and
+   `_check_swap_parity`; the override lives in `CHECK_L1` alone.
+
 Line 6 doubles only in **`PASS` mode**: in `PAIR` mode (§3.13) the pair is already in the span
 (§3.9), and doubling again would charge four buffers for two. `L1_BYTES = 65536` is `air.api`'s
 own trace-time budget (`_trace.py:100`); the figure that has to fit is the ping-ponged one, which
@@ -486,7 +505,9 @@ is what `_compile.py`'s `_annotate_l1_failure` docstring warns about and what
 term the user controls with `tile`, `reside` and `double_buffer`. Staging scalars that only the
 protocol needs (W3's `edge_in`/`edge_out`, HLD §7.3) are added by M4 and charged by
 `06-interfaces.md` §5.6 invariant 5 against the same budget. M3's figure is therefore a **lower
-bound** on M4's; for W3 they are 72 and 80 bytes. A design within a few bytes of 65536 would
+bound** on M4's; for W3 they are 232 and 240 bytes (the erratum's figures, matching §6.4; the
+old text said 72 and 80, which was the pre-erratum reading of line 2). A design within a few
+bytes of 65536 would
 pass M3 and fail M4 — acceptable, because M4's is the binding check and it runs before emission.
 
 ### 3.11 Physical herd resolution (FR-L10)
