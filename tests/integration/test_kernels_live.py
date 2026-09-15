@@ -342,7 +342,10 @@ def test_live_bf16_gemm_compiles_when_the_grid_fits_the_herd(target, tmp_path, c
     """
     require_pin()
     schedule = _fits(target)
-    assert schedule.check().l1_bytes == w1_large.schedule_os(target).check().l1_bytes == 49152
+    # 49 152 B: the tiles W1-large carries, charged once each because this grid fits the herd.
+    # W1-large's own 4×4 grid charged the same 49 152 until R-L1-3 made it 65 536 and refused
+    # it; `check()` on it now raises, which is why the equality is spelled out here instead.
+    assert schedule.check().l1_bytes == 49152
     assert schedule.check().repeats == (1, 1), "the control's grid must fit the herd"
     text = schedule.mlir()
     assert text.count("arith.extf") == 2, "the control compiles B-P32's cast, not a cast-free IR"
