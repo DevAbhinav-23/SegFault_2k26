@@ -49,16 +49,23 @@
   Tenstorrent side **TileLoom**, `tenstorrent/tt-lang` and
   `kernelize-ai/triton-tenstorrent`, and `qualcomm/hexagon-mlir` for the
   "why not Hexagon?" question (one DSP core, no PE grid).
-- **What the checker does not model.** It models the rules upstream documents,
-  and two measured refusals sit outside them (`design/PROGRESS-B.md` B-P36,
-  B-P37). A one-column herd of four rows makes `aiecc` fail in its packet
-  router — *"'aie.tile' op tile op arbiter 0 has used up all its msels"* — and
-  we did not write the rule, because the flip's own 2-D variant puts **twice**
-  as many flows into one column and compiles: the master selects are spent per
-  switchbox output-port set, which is the router's choice and not the plan's.
-  A two-column herd deeper than two rows makes `air-to-aie` fail in its shim
-  bin-packing — *"'air.channel.put' op failed to get S2MM tile for L3
-  allocation"* — and we did not write that rule either, because npu2 has eight
-  shim NOC columns and far more S2MM channels than the plan asks for, so what
-  runs out is a per-column assignment no upstream document states.
+- **The herd shapes the checker refuses, and why.** Two of them, and neither is
+  in an upstream document — both were traced to a line of mlir-air or mlir-aie
+  and turned into a counted rule that fires before codegen
+  (`design/PROGRESS-B.md` B-P36, B-P37). A herd with **more rows than columns**
+  whose fill multicasts along the column axis is mis-lowered upstream: the
+  affine guard `air-specialize-dma-broadcast` builds bounds the *row*
+  coordinate by the **column** count (`AIRMiscPasses.cpp:265-271`, the argument
+  is `herd.getNumCols()`), so on npu2's own 2×4 herd two rows fall into the
+  wrong arm and `air-to-aie` reports *"'air.channel.put' op failed to get S2MM
+  tile for L3 allocation"*. A **five-flow fill into one column** exhausts a
+  switchbox arbiter's four master selects, because the multicast's
+  `{DMA, North}` port set only partially overlaps each point-to-point flow's
+  and none of them may share one. Both counts were measured on the routed IR,
+  including the shapes that sit exactly on the cap and compile.
+- **So npu2's whole 8-PE 2-D herd is not reachable as `grid(2, 4)`.** That is
+  an upstream defect, not a device limit, and it is stated rather than papered
+  over: the checker refuses it with the arithmetic, and a herd at least as wide
+  as it is tall compiles — measured `(3, 2)` and `(4, 2)` at exit 0 with the
+  physical cap lifted. Adopting that wider cap is an open item, not a claim.
 - **Out of scope**: multi-kernel fusion, autotuning, GPUs.

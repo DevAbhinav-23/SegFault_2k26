@@ -822,28 +822,49 @@ as a condition on `repeats`, not on the index: `_check_repeats` rejects `max(rep
 `HERD-PHYSICAL` (`03-lld-M3-checker.md` §3.11 erratum). P3 is unchanged, and the argument stands
 — the resource that ran out was never a DMA channel.
 
-**Erratum, 2026-09-15 — two more measured refusals P3 does *not* model (B-P36, B-P37).** Both
-are outside the two-S2MM/two-MM2S budget this section counts, and neither became a rule:
+**Erratum, 2026-09-15 — P3 gains two more counted rules, and the earlier "not modelled" note
+is withdrawn (B-P36, B-P37).** Both refusals are outside the two-S2MM/two-MM2S budget this
+section counts, and an earlier pass recorded them without a rule. Traced this pass, each has a
+resource with a quotable capacity and a demand the *plan* can count, so each is now a
+`DMA-CHANNELS` error raised by `m4_selfcheck.self_check` before anything is emitted.
 
-* **Switchbox master selects.** `grid(1, 4)` — one column of four rows — makes `aiecc` fail in
-  `AIEPathfinderPass::runOnPacketFlow` with *"'aie.tile' op tile op arbiter 0 has used up all
-  its msels"* on both generations. The capacity is quotable (`int numMselsPerArbiter = 4` in
-  mlir-aie's `AIECreatePathFindFlows.cpp`; `aie.amsel`'s `msel` is confined to 0..3,
-  `AIEOps.td:615`) and a GEMM wall sits exactly there — 3 and 4 L3→L1 packet flows per column
-  compile, 5 does not. **But the flip's 2-D variant puts 8 flows into one column and compiles**,
-  because flows whose switchbox output-port set matches share an amsel, so the demand is a
-  property of the routes the pathfinder picks and not of the plan. A rule counting flows was
-  written, refuted by that control, and reverted.
-* **The shim's S2MM bins.** On npu2, `grid(2, 3)` and `grid(2, 4)` fail in `air-to-aie` with
-  *"'air.channel.put' op failed to get S2MM tile for L3 allocation"* on the multicast fill's
-  second bundle position, where `grid(2, 2)` compiles. The resource is named upstream — *"L3
-  shim allocation is bin-packing onto a fixed set of ShimNOC cols (hard cap =
-  device.getNumShimNOCCols(), per-bin cap = 2 MM2S + 2 S2MM)"*, `AIRToAIESchedulingUtils.cpp`
-  — but npu2 has eight ShimNOC columns and the plan needs far fewer than their 16 S2MM, so what
-  fails is the allocator's per-column bin choice, which no upstream document states.
+* **B-P37 — the broadcast guard's column bound.** Not a shim resource at all. When
+  `air-specialize-dma-broadcast` splits a bundled multicast it wraps each split get in an
+  `affine.if`; the set pins the specialised herd coordinate and bounds **every other** one by
+  `numCols - 1` (`mlir/lib/Transform/AIRMiscPasses.cpp:265-271`), and the `numCols` argument is
+  `herd.getNumCols()` (`:347-349`) whichever dimension is being bounded. A herd with more rows
+  than columns, split on the column axis, therefore admits only rows `0 .. cols-1`; the rows
+  above fall into the chain's `else` arm, are served by the *last* split channel — a wrong-data
+  lowering in its own right — and leave the *first* split channel one broadcast destination
+  short, so `f.S2MM_alloc[i]` is never filled and
+  `AIRToAIESchedulingUtils.cpp:3866-3868` reports *"'air.channel.put' op failed to get S2MM tile
+  for L3 allocation"*. **Pinned by construction:** editing only `#set` in the placed IR of the
+  `(2, 3)` module from `-s1 + 1 >= 0` to `-s1 + 2 >= 0` and re-running `air-to-aie` gives exit 0.
+  Measured on npu2 with W1's clauses: physical `(2, 2)` exit 0, `(2, 3)` and `(2, 4)` this error,
+  `(3, 2)` and `(4, 2)` — the same six and eight cores transposed, with the physical cap lifted —
+  exit 0. `m4_selfcheck.broadcast_guard` is the rule; a repeat factor on the split axis exempts
+  it, because the index is then an `affine.apply` rather than a bare herd id and upstream takes
+  its `scf.if` arm (`AIRMiscPasses.cpp:380-422`), which bounds nothing. That exemption is why
+  npu1, whose 2-D physical herd is one column, never reaches it.
+* **B-P36 — switchbox master selects, and the count the earlier pass could not find.** The
+  capacity was always quotable (`int numMselsPerArbiter = 4`, mlir-aie
+  `AIECreatePathFindFlows.cpp`; `aie.amsel`'s `msel` confined to 0..3, `AIEOps.td`). What was
+  missing was the demand, because the flip's 2-D variant puts **eight** flows into one column and
+  compiles. Counted this pass, on the *routed* IR (`aie-opt
+  --aie-create-pathfinder-flows=route-packet` over `air_project/npu.src.mlir`), the demand is the
+  number of L3→L1 fill flows **when one of them multicasts down the column**: that flow's port
+  set at the bottom tile is `{DMA, North}`, which only partially overlaps each point-to-point
+  flow's `{DMA}` or `{North}`, and a partial overlap opens a fresh amsel on the *same* arbiter
+  instead of sharing one. Measured, `aie.amsel` on `%tile_0_2`: physical `(1, 2)` 3 flows → 3,
+  `(1, 3)` 4 → 4, `(2, 2)` 4 → exit 0, `(1, 4)` and `(2, 4)` 5 → *used up all its msels*; the
+  flip at `(1, 4)`, whose eight flows are **every one single-destination**, → 2 amsels on two
+  arbiters, exit 0. `m4_selfcheck.msels` is the rule and `fill_flows` the count, which reproduces
+  the emitted `aie.packet_flow` count on all six shapes.
 
-Both are in `demo/honest_limits.md` under *"What the checker does not model"*, and
-`design/PROGRESS-B.md` B-P36/B-P37 carry the verbatim errors and the counts.
+What neither rule models is stated in `m4_selfcheck.msels`'s docstring: that every fill flow of
+a herd enters the same shim column. It is what all six shapes show, but the column a flow climbs
+is the shim bin packing's choice (`AIRToAIESchedulingUtils.cpp:3825-3845`), not the plan's.
+`design/PROGRESS-B.md` B-P36/B-P37 carry the verbatim errors and the full tables.
 
 **`DMA-CHANNELS` is in the catalogue.** It landed in `06-interfaces.md` v2 before the D0 freeze
 (REVIEW-round1 RULING 5), so the earlier `PROTOCOL-UNSUPPORTED` fallback is deleted and **B-O6 is
@@ -972,7 +993,7 @@ M4 raises `MappingError` and nothing else (`06-interfaces.md` §6.2, NFR-7). Cod
 | `CHANNEL-CYCLE` | §3.7.2 found an SCC containing a channel edge | the ordered edge list of the cycle, with each site's channel, index and coordinate |
 | `BUNDLE-INDEX-IS-IV` | §3.7.3 found a bundle index referencing a temporal IV | the site, the offending `Expr`, and the loop it came from |
 | `PROTOCOL-UNSUPPORTED` | a declared protocol has no synthesis rule — a non-neighbour partner map, `rank(R_space) > 1` reaching M4, a `Pattern` with no builder, or `reside(x="L2")` (§3.3 note 5) | the clause, the operand, and what was asked for |
-| `DMA-CHANNELS` | §3.8's **circuit-switched** inbound or outbound budget exceeded | the PE coordinate, the channel names, the count, the budget, and which endpoints were counted as circuit-switched |
+| `DMA-CHANNELS` | one of §3.8's three counted resources is exceeded: the per-core **circuit-switched** inbound/outbound budget, the broadcast guard's column bound (B-P37), or a switchbox arbiter's master selects (B-P36) | the demand, the capacity, and the resource: for the budget the PE coordinate, the channel names and which endpoints were counted as circuit-switched; for the guard the channel, its `size`/`broadcast_shape`, the split dimension and the rows left unserved; for the master selects the fill-flow count, the herd shape and which channel multicasts |
 
 **What must never reach the user** (HLD §4.3). The self-check exists to catch *our* construction
 bugs, and a self-check failure on a plan M4 itself built is an internal-consistency failure, not a
@@ -1472,6 +1493,12 @@ which multiplex onto one shim MM2S, and the whole program is measured to compile
 | `test_P3_dma_inbound` | W2 at `PI=4` | `DMA-CHANNELS` **error** naming PE 1, inbound `{UIn, ToNorth, ToSouth}`, budget 2, and the words `circuit-switched` and `2 S2MM` |
 | `test_P3_dma_exclusive_branches` | W3 | PE 0's west inbound count is **1**, not 2 — the two gets are on exclusive branches |
 | `test_P3_dma_packet_warns` | W3 | inbound is 3 and `self_check` **does not raise**: it records a warning naming `QIn`/`RIn` as packet-capable. A checker that rejected this would reject a program `aircc` accepts (P-R4, §3.8) |
+| `test_tall_herd_is_refused_for_the_broadcast_guard_on_npu2` | W1's clauses at `grid(2, 4)` | `DMA-CHANNELS` naming `A2L1`, herd `(2, 4)`, split dim 0 and **2** rows unserved (B-P37) |
+| `test_a_repeat_on_the_split_axis_takes_the_guard_out_of_range` | the same at `grid(2, 3)` on npu1 | physical `(1, 3)` with `repeats (2, 1)` plans — the exemption that keeps npu1 out of B-P37 |
+| `test_four_row_column_is_refused_for_its_master_selects` | `grid(1, 4)`, both targets | `DMA-CHANNELS` with `flows == 5` against `budget == 4`, `multicast == ("A2L1",)` (B-P36) |
+| `test_three_row_column_sits_on_the_master_select_cap` | `grid(1, 3)`, both targets | four flows, exactly on the cap, accepted — the control that makes B-P36 a count |
+| `test_tall_herd_is_refused_by_aircc_and_the_square_one_is_not` (`slow`) | `grid(2, 4)` vs `grid(2, 2)`, npu2 | `aircc` prints *failed to get S2MM tile for L3 allocation* on the first and exits 0 on the second |
+| `test_the_master_select_cap_is_where_aircc_stops` (`slow`) | `grid(1, 4)` vs `grid(1, 3)`, both targets | `aircc` prints *used up all its msels* on the first and exits 0 on the second |
 | `test_M11_summary_golden` | W1 | summary matches the golden byte for byte and contains the three literal delivery lines |
 | `test_M11_residency_line` | W1 and W1-flip | the residency block of §3.9, one line per operand: W1 prints `C: stationary (spatial), resident for the whole run` and `A: multicast along py, re-fetched per k0`; the **flip** prints `B: stationary (spatial), resident for the whole run` and `A: stationary (spatial), re-fetched per i0` — the two facts FR-K2's acceptance names. Also asserts `summary.residency == (("A","re-fetched per i0"),("B","resident for the whole run"),("C","re-fetched per i0"))` on the flip, and that a flip variant with `tile(ax.j, 32)` restored prints `B: … re-fetched per j0` — the bug RULING 9 exists to make visible |
 | `test_M12_plan_stable` | W1 twice in one process, once in a fresh one with a different `PYTHONHASHSEED` | equal plans |

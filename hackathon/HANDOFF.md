@@ -294,21 +294,22 @@ shape and is untouched). `03-lld-M3-checker.md` §3.11 carries the erratum;
 
 ### What the suite says now
 
-`.venv` default: **723 passed, 3 skipped, 37 deselected**. The three skips are each a
-deliverable, not a gap: no device (`/dev/accel*` absent), the traceability residual, and
-`test_NFR7_all_errors_are_spatial` (the negative corpus is empty). `pytest -m slow`: 12 passed,
-1 skipped. `.venv-tt -m requires_ttsim tests/tt`: **25 PASSED, exit 0**.
-`python demo/run_demo.py`: exit 0 in ~1.4 s, with and without `scripts/airenv.sh`.
+`.venv` default: **791 passed, 1 skipped, 52 deselected**. The one skip is the absent device
+(`/dev/accel*`), which is a deliverable and not a gap. `pytest -m slow`: 26 passed, 1 skipped
+(W2's ttsim deadlock demonstration, which needs `.venv-tt`). `.venv-tt -m requires_ttsim
+tests/tt` and `python demo/run_demo.py` were **not re-run** by the herd-shape pass — nothing
+it touched reaches either — so their rows below stand from the pass before it. The table is
+otherwise the same run as this paragraph, itemised.
 
-*The figures of record are the **B-side correctness pass's**, measured on its branch,
-2026-09-15, on this machine at the `design/07-environment.md` pin (the union's, which they
+*The figures of record are the **herd-shape pass's**, measured on its branch, 2026-09-15, on
+this machine at the `design/07-environment.md` pin (the B-side correctness pass's, which they
 supersede, are in brackets):*
 
 | Run | Result |
 |---|---|
-| `.venv` default (`pytest -rA`) | **783 passed, 1 skipped, 49 deselected in 17.9 s** *(was 765/1/42)* |
-| `pytest -m slow` (with `scripts/airenv.sh`) | **23 passed, 1 skipped, 809 deselected in 8.4 s** *(was 16/1/791)* |
-| `PYTHONHASHSEED=7 -k "golden or plan or summary"` | **174 passed, 659 deselected in 3.5 s** *(was 168/640)* |
+| `.venv` default (`pytest -rA`) | **791 passed, 1 skipped, 52 deselected in 19.6 s** *(was 783/1/49)* |
+| `pytest -m slow` (with `scripts/airenv.sh`) | **26 passed, 1 skipped, 817 deselected in 15.0 s** *(was 23/1/809)* |
+| `PYTHONHASHSEED=7 -k "golden or plan or summary"` | **174 passed, 670 deselected in 3.9 s** *(unchanged; the new tests are neither)* |
 | `.venv-tt -m requires_ttsim tests/tt` (with `scripts/tt_env.sh`) | **26 PASSED, exit 0** |
 | `python demo/run_demo.py` (airenv + `.venv-tt`) | **exit 0, 3.7 s**, and beat 4:05 prints `W3 on ttsim: EXACT (1089 cells compared)` — the seconds it appends are the simulator's own wall clock and vary run to run (0.4 s to 2.2 s here) |
 
@@ -316,13 +317,12 @@ supersede, are in brackets):*
 W2's ttsim deadlock demonstration, which needs `.venv-tt` and therefore skips under `.venv` — it
 runs, and passes, in the TT suite. The earlier waypoints, for the record: `.venv` default was
 **723 passed / 3 skipped** after the integration pass, **746/3** after the B-side pass and
-**757/1** after the A-side pass, and **765/1** after the final pass; the row above is the B-side
-correctness pass on top of that. That last step is **+18** default tests (the degenerate-grid
-family — plan, emit and interpret, three shapes × two targets — plus the two checker-level
-refusal tests and R-HERD-1's) and **+7** `slow` (six degenerate-grid `aircc` runs and
-R-HERD-1's refusal/acceptance pair); the count had moved by **−16** against `integration2`'s 780
-earlier, because `KNOWN_UNDOCUMENTED`'s 16 parametrised cases were deleted when the list
-emptied.*
+**757/1** after the A-side pass, **765/1** after the final pass and **783/1** after the B-side
+correctness pass; the row above is the herd-shape pass on top of that. That last step is **+8**
+default tests (B-P36's and B-P37's checker-level refusals and their controls, five names over
+both targets) and **+3** `slow` (the `aircc` pair either side of each wall, the master-select
+one on both generations). The **−16** against `integration2`'s 780 earlier still stands: it is
+`KNOWN_UNDOCUMENTED`'s 16 parametrised cases, deleted when the list emptied.*
 
 ### Tenstorrent in the project
 
@@ -446,15 +446,31 @@ v3–v7 are still A's to give (B's are in, 2026-09-15).
      W1-large's 4×4 grid is now refused before codegen — `HERD-PHYSICAL` on npu1, `L1-CAPACITY`
      on npu2 — and the `slow` `aircc` evidence stays, built with the two rulings monkeypatched
      off so it remains a measurement rather than a quotation.
-   * **Two refusals left unmodelled, on purpose** (**B-P36**, **B-P37**, and one bullet each in
-     `demo/honest_limits.md` under *"What the checker does not model"*). `grid(1, 4)` exhausts a
-     switchbox arbiter's four master selects in `aiecc`'s packet router; the capacity is
-     quotable but the **demand is not ours to count** — the flip's own 2-D variant puts eight
-     flows into one column and compiles, so a rule counting flows was written, refuted by that
-     control and reverted. On npu2, `grid(2, 3)` and `grid(2, 4)` fail in `air-to-aie`'s shim
-     bin-packing (*"failed to get S2MM tile for L3 allocation"*) where `grid(2, 2)` compiles,
-     and npu2's eight ShimNOC columns are nowhere near exhausted, so what ran out is an
-     allocator's per-column choice no upstream document states.
+   * **Both of the previously unmodelled refusals are now counted rules** (**B-P36** and
+     **B-P37**, closed 2026-09-15 by the herd-shape pass; `03-lld-M4-mapping.md` §3.8's erratum
+     and the rewritten `demo/honest_limits.md` bullet). Each was traced to a line, not guessed.
+     **B-P37 is not a shim resource at all:** `air-specialize-dma-broadcast` bounds *every*
+     free herd coordinate of the guard it builds by the **column** count
+     (`AIRMiscPasses.cpp:265-271`, the argument is `herd.getNumCols()` at `:347-349`), so a herd
+     with more rows than columns, split on the column axis, serves rows `cols..rows-1` from the
+     wrong channel and leaves the first one a broadcast destination short — which is the
+     *"failed to get S2MM tile for L3 allocation"*. Editing only that bound in the placed IR of
+     the `(2, 3)` module makes `air-to-aie` exit 0. **B-P36's demand *is* ours to count** after
+     all: measured on the routed IR, an arbiter spends one master select per L3→L1 fill flow
+     **when one of them multicasts down the column**, because that flow's `{DMA, North}` port
+     set only partially overlaps each point-to-point flow's and stops them sharing — physical
+     `(1, 2)` 3 amsels, `(1, 3)` 4 (exactly the cap, accepted), `(1, 4)` and `(2, 4)` 5 and
+     refused, and the flip's eight *single-destination* flows share 2. Both raise
+     `DMA-CHANNELS` before codegen, with `slow` `aircc` controls on both sides of each wall.
+   * **What this costs the demo, stated plainly** (**B-P38**, open, needs an architect ruling).
+     npu2's whole 8-PE 2-D herd is `air.api`'s `(2, 4)` — 2 columns by 4 rows — which is exactly
+     B-P37's shape, and a logical `grid(2, 4)` cannot be given more columns because `air.api`
+     requires the physical shape to divide the logical grid per axis. The measured route to
+     eight cores is the **transpose**: with the npu2 2-D cap monkeypatched to `(4, 2)`,
+     `grid(4, 2)` resolves to physical `(4, 2)` and `aircc` exits 0. Adopting it means either a
+     shape-aware physical-herd resolver (a blanket cap swap regresses `grid(1, 4)` and
+     `grid(2, 3)`) or having M4 transpose the herd silently, which reverses what
+     `place(px=, py=)` records — neither is a pass-level decision.
 
 **Person C**
 
