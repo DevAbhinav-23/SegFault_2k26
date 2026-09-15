@@ -490,6 +490,8 @@ def pingpong_mode(f: _Frames, operand: str) -> str:
 
 def _check_l1_capacity(f: _Frames) -> int:
     total = 0
+    breakdown: list[tuple[str, tuple[int, ...], str, int]] = []
+    doubled: list[str] = []
     pinned = _pinned(f)
     read_only_pinned = _pinned(f, skew_pins=False)
     explicit_l1 = {name for name, level in f.schedule.residency if level == "L1"}
@@ -511,12 +513,20 @@ def _check_l1_capacity(f: _Frames) -> int:
                 mode = None
             if mode == "PASS":
                 nbytes *= 2
+                doubled.append(name)
         total += nbytes
+        breakdown.append((name, tuple(span), param.dtype.value, nbytes))
     if total > 65536:
+        # FR-L9 and Sec 3.10 line 12: the message owes the per-buffer breakdown, in the
+        # `(operand, span, dtype, bytes)` order of line 7, and the operands charged twice.
+        # "the computed bytes, the budget, and the per-buffer breakdown" is FR-L9's own
+        # acceptance; `total` alone does not say which tile to halve.
         raise _fail("L1-CAPACITY",
                    f"the per-core L1 working set is {total} bytes, over the 65536-byte budget",
                    "halve a tile factor, or drop a double_buffer(...) entry",
-                   "tile(...)/double_buffer(...)", total=total, budget=65536)
+                   "tile(...)/double_buffer(...)", total=total, budget=65536,
+                   per_buffer=[[n, list(s), d, b] for n, s, d, b in breakdown],
+                   doubled=doubled)
     return total
 
 

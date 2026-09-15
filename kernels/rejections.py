@@ -83,11 +83,15 @@ def bad_capacity(target):
     §3.5's worked table and the checker agree on 86 016 (measured 2026-09-15), so the
     docstring's old figure needed no correction.
 
-    Rendered message, measured::
+    Rendered message, measured 2026-09-15 **after** FR-L9's per-buffer breakdown landed
+    (`03-lld-M3-checker.md` §3.10 line 12); the `because:` line is one line in the rendered
+    text and is wrapped here only to fit the margin::
 
         L1-CAPACITY: the per-core L1 working set is 86016 bytes, over the 65536-byte budget
           in clause: tile(...)/double_buffer(...)
-          because:   budget=65536, total=86016
+          because:   budget=65536, doubled=('A', 'B'), per_buffer=(('A', (96, 32), 'f32',
+                     24576), ('B', (32, 96), 'f32', 24576), ('C', (96, 96), 'f32', 36864)),
+                     total=86016
           fix:       halve a tile factor, or drop a double_buffer(...) entry
     """
     s = sp.schedule(gemm_192, target=target)

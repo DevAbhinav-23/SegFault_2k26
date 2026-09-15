@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 import textwrap
+from pathlib import Path
 from typing import Any, Callable, NoReturn
 
 from spatial import intlin
@@ -32,10 +34,44 @@ _DTYPES = {"f32": Dtype.f32, "f16": Dtype.f16, "bf16": Dtype.bf16, "i32": Dtype.
 # ------------------------------------------------------------------------------------------
 
 
+def _relative_path(filename: str) -> str:
+    """A source path rendered relative to the working directory when it lies under it.
+
+    Architect ruling, 2026-09-15: a diagnostic that carries an absolute path is not
+    machine-independent, so a grammar or clause golden could never be committed. A path
+    outside the working directory is left exactly as it is, and so is one that cannot be
+    resolved at all. **This is the one helper M1 and M2 share** -- `m2_schedule`'s
+    `_caller_location` imports it, so both surfaces render a location the same way.
+    """
+    try:
+        path = Path(filename).resolve()
+        cwd = Path.cwd()
+        if path.is_relative_to(cwd):
+            return os.path.relpath(path, cwd)
+    except (OSError, ValueError):  # unresolvable path, or no working directory
+        pass
+    return filename
+
+
 def _loc(node: ast.AST | None, filename: str) -> tuple[str, int] | None:
     if node is None or not hasattr(node, "lineno"):
         return None
-    return (filename, node.lineno)
+    return (_relative_path(filename), node.lineno)
+
+
+def _fn_location(fn: Callable) -> tuple[str, int]:
+    """The location of `fn` itself, for a diagnostic that has no AST node to point at.
+
+    `fn.__code__` carries a filename and a first line even when `inspect.getsource` cannot
+    read the source -- a kernel built by `exec`, or typed at a REPL. M0 invariant I71 requires
+    every `stage="grammar"` diagnostic to carry a location, so a `GrammarError` built with
+    `location=None` used to raise `ValueError` out of `Diagnostic` instead of rejecting the
+    kernel (HANDOFF, Person A item 5; architect ruling, 2026-09-15).
+    """
+    code = getattr(fn, "__code__", None)
+    if code is None:
+        return ("<kernel>", 0)
+    return (_relative_path(code.co_filename), code.co_firstlineno)
 
 
 def _raise(code: str, reason: str, fix: str, node: ast.AST | None, filename: str,
@@ -535,7 +571,7 @@ def _load_to_access(ld: Load, axes: tuple[str, ...]) -> AccessMap:
 # ------------------------------------------------------------------------------------------
 
 
-def _dependences(statements: tuple[Statement, ...]) -> tuple[Dependence, ...]:
+def _dependences(statements: tuple[Statement, ...], filename: str) -> tuple[Dependence, ...]:
     out: dict[tuple[str, tuple[int, ...]], Dependence] = {}
     written: dict[str, AccessMap] = {}
     for st in statements:
@@ -555,7 +591,7 @@ def _dependences(statements: tuple[Statement, ...]) -> tuple[Dependence, ...]:
                     reason=f"{r.operand} is read at a different linear access than it is "
                            f"written; the dependence distance is not constant",
                     fix="make every access to a written array a constant shift of the write",
-                    location=None,
+                    location=(_relative_path(filename), st.line),
                     details={"operand": r.operand, "write_matrix": [list(row) for row in
                              w.matrix], "read_matrix": [list(row) for row in r.matrix]}))
             if any(o.coeffs for o in w.offsets) or any(o.coeffs for o in r.offsets):
@@ -564,7 +600,8 @@ def _dependences(statements: tuple[Statement, ...]) -> tuple[Dependence, ...]:
                     reason=f"{r.operand}'s offset has a surviving shape-parameter "
                            f"coefficient; the dependence distance is not constant",
                     fix="make every access to a written array a constant shift of the write",
-                    location=None, details={"operand": r.operand}))
+                    location=(_relative_path(filename), st.line),
+                    details={"operand": r.operand}))
             c_w = tuple(o.const for o in w.offsets)
             c_r = tuple(o.const for o in r.offsets)
             rhs = tuple(cw - cr for cw, cr in zip(c_w, c_r))
@@ -627,30 +664,31 @@ def _reduction(statements: tuple[Statement, ...]) -> ReductionSpec | None:
 # ------------------------------------------------------------------------------------------
 
 
-def _fdef_of(tree: ast.Module) -> ast.FunctionDef:
+def _fdef_of(tree: ast.Module, location: tuple[str, int]) -> ast.FunctionDef:
     for node in tree.body:
         if isinstance(node, ast.FunctionDef):
             return node
     raise GrammarError(Diagnostic(
         code="GRAMMAR-UNSUPPORTED-STMT", stage="grammar", clause=None,
         reason="no function definition found in the decorated source",
-        fix="decorate a single def", location=None, details={}))
+        fix="decorate a single def", location=location, details={}))
 
 
 def capture(fn: Callable) -> KernelModel:
     """Walk `fn`'s AST into a `KernelModel`. Raises `GrammarError`."""
+    location = _fn_location(fn)                  # I71: a grammar diagnostic always has one
     try:
         src = textwrap.dedent(inspect.getsource(fn))
     except OSError as exc:
         raise GrammarError(Diagnostic(
             code="GRAMMAR-UNSUPPORTED-STMT", stage="grammar", clause=None,
             reason="the source of the kernel could not be read; kernels must live in a file",
-            fix="define the kernel in a .py file, not interactively", location=None,
+            fix="define the kernel in a .py file, not interactively", location=location,
             details={"error": str(exc)}))
     code = getattr(fn, "__code__", None)
     filename = code.co_filename if code is not None else "<kernel>"
     tree = ast.parse(src)
-    fdef = _fdef_of(tree)
+    fdef = _fdef_of(tree, location)
     globals_ = fn.__globals__
 
     params, shape_param_names = _parse_params(fdef.args, filename, globals_)
@@ -666,13 +704,13 @@ def capture(fn: Callable) -> KernelModel:
         raise GrammarError(Diagnostic(
             code="GRAMMAR-UNSUPPORTED-STMT", stage="grammar", clause=None,
             reason="a kernel must have at least one store or accumulate statement",
-            fix="write x[...] = e or x[...] += e in the innermost loop body", location=None,
-            details={}))
+            fix="write x[...] = e or x[...] += e in the innermost loop body",
+            location=(_relative_path(filename), fdef.lineno), details={}))
 
     written = {st.target.operand for st in statements}
     params = _mark_written(params, written)
 
-    deps = _dependences(statements)
+    deps = _dependences(statements, filename)
     red = _reduction(statements)
 
     bindings = tuple((n, v if type(v := globals_.get(n)) is int else 0) for n in shape_params)

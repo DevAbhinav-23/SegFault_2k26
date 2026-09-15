@@ -1,4 +1,4 @@
 L1-CAPACITY: the per-core L1 working set is 86016 bytes, over the 65536-byte budget
   in clause: tile(...)/double_buffer(...)
-  because:   budget=65536, total=86016
+  because:   budget=65536, doubled=('A', 'B'), per_buffer=(('A', (96, 32), 'f32', 24576), ('B', (32, 96), 'f32', 24576), ('C', (96, 96), 'f32', 36864)), total=86016
   fix:       halve a tile factor, or drop a double_buffer(...) entry

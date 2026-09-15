@@ -12,8 +12,10 @@ M2 performs no legality reasoning and does not lower: no `air`, no MLIR, at modu
 from __future__ import annotations
 
 import inspect
+import os
 from typing import TYPE_CHECKING, Any
 
+from spatial.m1_frontend import _relative_path
 from spatial.model import (
     ClauseError, Delivery, Diagnostic, Direction, ExchangeClause, Level, Pattern, ReduceOp,
     ScheduleModel, StreamClause, Target, WindowClause,
@@ -30,11 +32,20 @@ _DIRECTIONS = {"W->E", "E->W", "N->S", "S->N"}
 
 
 def _caller_location() -> tuple[str, int] | None:
-    # frame 0 = this function, 1 = the clause method, 2 = the user's call site.
-    stack = inspect.stack()
-    if len(stack) > 2:
-        f = stack[2]
-        return (f.filename, f.lineno)
+    """The user's call site: the first frame outside this package.
+
+    Counting frames does not work -- `_fail` sits between this function and the clause method,
+    and `Schedule.__init__` is reached through `schedule()`, so a fixed index reported a line
+    of `m2_schedule.py` itself rather than the clause the user wrote (erratum, 2026-09-15).
+
+    `_relative_path` is M1's, shared so both surfaces render a location the same way: a path
+    under the working directory is made relative to it (architect ruling, 2026-09-15), because
+    an absolute one is not machine-independent and no golden could carry it.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for frame in inspect.stack()[1:]:
+        if os.path.dirname(os.path.abspath(frame.filename)) != here:
+            return (_relative_path(frame.filename), frame.lineno)
     return None
 
 
