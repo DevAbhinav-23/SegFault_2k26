@@ -2,9 +2,12 @@
 
 Same triple loop as `w1_gemm`, same clause shape as its `schedule_os`; only the
 shapes, the dtypes and the grid differ. No expected/oracle fixture (levels I and S
-only), so this module has no golden: the live test asserts that it checks, plans and
+only), so this module has no golden: the live tests assert that it checks, plans and
 emits — with the `bf16`→`f32` widening cast — and that `aircc`'s refusal is about the
-shape rather than the dtype (`schedule_os`'s docstring has the two diagnostics).
+**grid** rather than the dtype. Two controls say so, both in
+`tests/integration/test_kernels_live.py`: a cast-free f32 kernel at this grid draws
+the *same* two diagnostics, and the same bf16 cast at `grid(1, 2)` compiles to exit 0
+on both generations.
 """
 
 import spatial as sp
@@ -29,26 +32,34 @@ def schedule_os(target):
 
     M1, M2, M3 and M4 accept it (`check()` gives `l1_bytes == 49152` — a/b doubled at 16 384
     each, acc 16 384 — with `physical_herd == (1, 4)`, `repeats == (4, 1)` on npu1 and
-    `(2, 4)` / `(2, 1)` on npu2), and **M5 now emits it**: each `bf16` load is widened to the
+    `(2, 4)` / `(2, 1)` on npu2), and **M5 emits it**: each `bf16` load is widened to the
     destination's `f32` with `air.api.ops.cast` before the arithmetic, so the accumulate is
     `f32` throughout. Measured 2026-09-15: 200 lines, two `arith.extf`, no `truncf`, on both
-    generations. Until B-P32 this raised `NotImplementedError` because `air.api` refused the
-    mixed store (*"dtype mismatch in elementwise assignment: destination is air.api.f32 but
-    operand is air.api.bf16"*).
+    generations.
 
-    **`aircc` still does not compile it, and the reason is the shape, not the dtype.** At
-    this fixed 256³ / 4×4 / `TM = TN = TK = 64` shape (`03-lld-M8-kernels-demo.md` §4, VF §E.5)
-    `aircc --output-format=none` exits 1 on both targets, measured 2026-09-15:
+    **`aircc` does not compile it, and the reason is the grid, not the dtype.** At this fixed
+    256³ / 4×4 / `TM = TN = TK = 64` shape (`03-lld-M8-kernels-demo.md` §4, VF §E.5) the
+    logical 4×4 grid is larger than either physical herd, so M4 emits a **repeat loop**, and
+    both refusals follow from it (measured 2026-09-15, `design/PROGRESS-B.md` B-P33/B-P34):
 
-    * npu1 — `air-to-aie`: `'air.channel.get' op failed to get MM2S tile for L3 allocation`;
-    * npu2 — `aiecc`: `'aie.tile' op allocated buffers exceeded available memory`, the lowered
-      module asking 65 536 B of a 64 KB tile.
+    * **npu1**, `repeats == (4, 1)` — `air-to-aie`: *"'air.channel.get' op failed to get MM2S
+      tile for L3 allocation"* (`AIRToAIESchedulingUtils.cpp:3892-3894`). The herd-side `C2L3`
+      put indexes its bundle with the repeat loop's induction variable, so the bundle position
+      never resolves to a producer.
+    * **npu2**, `repeats == (2, 1)` — `aiecc`: *"'aie.tile' op allocated buffers exceeded
+      available memory"*. The repeat loop gives each core two accumulators:
+      2 × 16 384 + 4 × 8 192 = 65 536 B of buffers plus the 2 048 B core stack, in a 65 536 B
+      tile.
 
-    The control that says it is not the cast is in
-    `tests/integration/test_kernels_live.py::test_live_bf16_gemm_is_refused_by_aircc_for_its_shape`:
-    the same clauses over an **`f32`** kernel at the same grid and the same 49 152 B of L1
-    (`TK = 32`) emit **zero** casts and draw the **same two diagnostics**. `w1_large` therefore
-    stays an inputs-only fixture at levels I and S, and this schedule is real up to `.mlir()`.
+    Neither number is `l1_bytes`, which is 49 152 here **and** at the passing control — so this
+    schedule's refusal is not something M3's L1 check can see. The two controls are in
+    `tests/integration/test_kernels_live.py`:
+    `test_live_bf16_gemm_is_refused_by_aircc_for_its_shape` runs a cast-free **f32** kernel at
+    the same grid and the same 49 152 B and gets the *same two diagnostics*; and
+    `test_live_bf16_gemm_compiles_when_the_grid_fits_the_herd` runs **this cast** at
+    `grid(1, 2)` — one parameter moved, `repeats == (1, 1)` — and `aircc` exits 0 on npu1 and
+    npu2. `w1_large` therefore stays an inputs-only fixture at levels I and S, and this
+    schedule is real up to `.mlir()`.
     """
     return _schedule_os_clauses(target)
 

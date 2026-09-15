@@ -19,8 +19,10 @@ Three artefacts are compared per (variant, target):
   canonical JSON.
 
 `w1_gemm_bf16` has no golden (`03-lld-M8-kernels-demo.md` §4 gives `w1_large` levels I and S
-only). It **is** emittable since B-P32 and the two tests at the foot of this module are what
-that item rests on; `aircc` still refuses it, for its shape and not for its dtypes.
+only). It **is** emittable since B-P32 and the three tests at the foot of this module are what
+that item rests on; `aircc` still refuses it, for its **grid** and not for its dtypes — and the
+passing control at `grid(1, 2)` compiles the same `bf16`→`f32` cast on both generations
+(B-P33, B-P34).
 
 The TT test at the foot is the same claim as the golden ones for the **second** backend: the
 `MappingPlan` is backend-neutral, so the plan the live surface builds must produce the very same
@@ -208,12 +210,28 @@ def test_live_bf16_gemm_is_refused_by_aircc_for_its_shape(target, tmp_path, caps
     """`aircc` refuses W1-large — and refuses the **f32 control** at the same grid identically.
 
     The fixture's shape is fixed at 256³ / 4×4 / `TM = TN = TK = 64` by
-    `03-lld-M8-kernels-demo.md` §4 (VF §E.5's measured probe), and at that shape the AIE
-    pipeline gives up: `air-to-aie` cannot place the L3 transfer on npu1, and `aiecc` cannot
-    fit the lowered module's buffers on npu2. The control is what makes that a statement about
-    the **shape** rather than about B-P32's cast: same clauses, same grid, same 49 152 B of L1,
-    **zero** casts, and the assertion is that the two verdicts agree. If a later toolchain
-    compiles W1-large, this fails on the control too and the whole row is re-measured.
+    `03-lld-M8-kernels-demo.md` §4 (VF §E.5's measured probe). At that shape the logical 4×4
+    grid does not fit either physical herd — `(1, 4)` on npu1, `(2, 4)` on npu2 — so M4 emits a
+    **repeat loop**, and both failures are downstream of that (measured 2026-09-15,
+    `design/PROGRESS-B.md` B-P33 and B-P34):
+
+    * **npu1, `repeats == (4, 1)`** — `air-to-aie` at
+      `AIRToAIESchedulingUtils.cpp:3892-3894`: *"'air.channel.get' op failed to get MM2S tile
+      for L3 allocation."* The herd-side `C2L3` put still indexes the bundle with a loop
+      induction variable (`affine.apply ()[%arg10, %arg14] -> (s0 * 4 + s1)`), so the bundle
+      position never resolves to a producer. Upstream names this cause in
+      `test/Conversion/AIRToAIE/segment_id_remap_no_unroll.mlir:14-19`.
+    * **npu2, `repeats == (2, 1)`** — the repeat loop gives each core **two** accumulators, so
+      the tile asks 2 × 16 384 + 4 × 8 192 = 65 536 B and `AIEAssignBuffers` answers *"'aie.tile'
+      op allocated buffers exceeded available memory"*, its `MemoryMap` note ending at `0x107FF`
+      — the 2 048 B stack plus 65 536 B of buffers in a 65 536 B tile.
+
+    Neither figure is what our checker charges: `l1_bytes` is 49 152 for this schedule **and**
+    for the control below, which is exactly why the control is the test. The f32 control here
+    makes it a statement about the shape rather than about B-P32's cast: same clauses, same
+    grid, same 49 152 B of L1, **zero** casts, and the assertion is that the two verdicts agree.
+    If a later toolchain compiles W1-large, this fails on the control too and the whole row is
+    re-measured.
     """
     require_pin()
     control = _control(target).mlir()
@@ -228,3 +246,69 @@ def test_live_bf16_gemm_is_refused_by_aircc_for_its_shape(target, tmp_path, caps
     assert bf16_code == control_code, (
         f"bf16 and the cast-free f32 control get different aircc verdicts on {target} "
         f"({bf16_code} vs {control_code}); the dtype decides something after all")
+
+
+# --------------------------------------------------------------------------------------------
+# The passing control — the same tiles and the same L1, one grid that fits the herd
+# --------------------------------------------------------------------------------------------
+
+FITS_M, FITS_N, FITS_K = 64, 128, 256
+"""The control's shape. `M // TM == 1` and `N // TN == 2` give `grid(1, 2)`, which is inside
+both physical herds (`(1, 4)` on npu1, `(2, 4)` on npu2), so `repeats == (1, 1)` and M4 emits no
+repeat loop. Everything else is `w1_gemm_bf16`'s: `TM = TN = TK = 64`, `bf16` in and `f32` out,
+the same nine clauses, and the same **49 152 B** of L1."""
+
+
+@sp.kernel
+def gemm_bf16_fits(A: sp.bf16[FITS_M, FITS_K], B: sp.bf16[FITS_K, FITS_N],
+                   C: sp.f32[FITS_M, FITS_N]):
+    for i in range(FITS_M):
+        for j in range(FITS_N):
+            for k in range(FITS_K):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+def _fits(target):
+    """`w1_gemm_bf16._schedule_os_clauses` clause for clause, at `grid(1, 2)`."""
+    s = sp.schedule(gemm_bf16_fits, target=target)
+    ax = s.axes()
+    s.grid(FITS_M // w1_large.TM, FITS_N // w1_large.TN)
+    s.tile(ax.i, w1_large.TM)
+    s.tile(ax.j, w1_large.TN)
+    s.tile(ax.k, w1_large.TK)
+    s.reduce(ax.k, op="+")
+    s.place(px=ax.i0, py=ax.j0)
+    s.stationary("C")
+    s.reside(A="L1", B="L1", C="L1")
+    s.double_buffer("A", "B")
+    s.pipeline(ax.k0)
+    return s
+
+
+@pytest.mark.slow
+@pytest.mark.requires_aircc
+@pytest.mark.parametrize("target", TARGETS)
+def test_live_bf16_gemm_compiles_when_the_grid_fits_the_herd(target, tmp_path, capsys):
+    """The control for the test above: **`aircc` exit 0, zero `error:` lines, both targets.**
+
+    One parameter moves — the grid, `(4, 4)` → `(1, 2)`. The tiles, the dtypes, the clauses and
+    the 49 152 B of L1 are W1-large's, and the module still carries B-P32's two `arith.extf`, so
+    this compiles the *same cast* that W1-large does. What it does not carry is a repeat loop:
+    `grid(1, 2)` fits both physical herds, so `repeats == (1, 1)`, the `C2L3` bundle index is
+    constant per core and each core allocates one accumulator, not two.
+
+    Together with the refusal above this is the whole of B-P33/B-P34's claim: at this shape our
+    `l1_bytes` (49 152) is identical on both sides of the line, so **`l1_bytes` is not what
+    decides** — `repeats` is, and M3/M4 do not charge it. Measured per tile in the lowered IR:
+    five buffers, 49 152 B, against six and 65 536 B at `repeats == (2, 1)`.
+    """
+    require_pin()
+    schedule = _fits(target)
+    assert schedule.check().l1_bytes == w1_large.schedule_os(target).check().l1_bytes == 49152
+    assert schedule.check().repeats == (1, 1), "the control's grid must fit the herd"
+    text = schedule.mlir()
+    assert text.count("arith.extf") == 2, "the control compiles B-P32's cast, not a cast-free IR"
+    code, said = _aircc_verdict(text, target, tmp_path, "fits")
+    with capsys.disabled():
+        print(f"\n  aircc --device {target} bf16 grid(1,2): {code or 'exit 0'} {said[:1]}")
+    assert code is None, f"the control must compile on {target}; aircc said {code}: {said[:2]}"
