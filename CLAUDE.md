@@ -5,7 +5,9 @@ Entry for **SegFault 2026**, the hackathon of the Innovations In Compiler Techno
 workshop (segfault.compilertech.org). Final online evaluation listed **Sept 19–20 2026**;
 grand finale **Oct 2–3 2026 at IISc Bengaluru**. Judging = **5-minute pitch + 2–3 min Q&A**;
 **no published rubric**. Our entry sits in the open theme *"Domain specific compilers and
-languages"*: a **Spatial DSL for NPUs lowering to MLIR-AIR**.
+languages"*: a **Spatial DSL for NPUs, lowering to Tenstorrent (TT-Metalium, run on ttsim) and to
+MLIR-AIR (AMD AIE)**. Direction set 2026-09-16 (user decision): **Tenstorrent is the primary
+execution target**; AIR is the second emitter, kept at the level it has honestly reached.
 
 Parent research repo: **amd-npus** (`/home/adi/Projects/Honours/amd-npus`). This repo is
 **independent** of it — context here was copied, not linked. Do not write to amd-npus.
@@ -21,7 +23,17 @@ Parent research repo: **amd-npus** (`/home/adi/Projects/Honours/amd-npus`). This
 - **"2–3 backends via AIR"** honestly means AIE generations **NPU1 (Phoenix/AIE2)** and
   **NPU2 (Strix/AIE2P)** on one `air-to-aie` lowering path; possibly **Versal** (unverified).
   **Qualcomm Hexagon** and **Tenstorrent** are separate backend builds, **not AIR targets**.
-- **Tenstorrent (Wormhole, functional simulator ttsim) is B's second backend via a second emitter from the backend-neutral MappingPlan — not an AIR target; performance only as measured and labelled per the rule above; spec in design/08-tt-backend.md. Qualcomm Hexagon stays out (single DSP core, disjoint stack).
+- **Direction, 2026-09-16 (user decision).** Tenstorrent (Wormhole, functional simulator ttsim) is the
+  **primary execution target**: every kernel runs and is checked on ttsim in the default flow and the
+  demo; GEMM plans use the Tensix matrix engine, the stencil the vector engine, the wavefront DP stays
+  scalar. AMD/AIR stays as the **second emitter** at "compiles for npu1 and npu2; device run on XDNA1
+  when the team has the box"; no compute-engine work there. **M1–M4 (DSL, schedule, legality checker,
+  MappingPlan) are unchanged and stay backend-neutral — never emit Tenstorrent code straight from the
+  DSL, bypassing the plan.** Why: ttsim executes bit-exactly with no hardware while AIR has no
+  simulator; TT-Metalium exposes the compute engines directly while AIR's vector route disables its
+  own double-buffering; the AIR toolchain's undocumented limits (2 KB stack reserve, repeat-loop
+  unroll, broadcast-specialisation bug, msel wall) cost the most for the least return.
+- **Tenstorrent emitter facts:** a second emitter from the backend-neutral MappingPlan — not an AIR target; performance only as measured and labelled per the rule above; spec in design/08-tt-backend.md. Qualcomm Hexagon stays out (single DSP core, disjoint stack).
 
 ## Where the state lives
 - `hackathon/HANDOFF.md` — **read first**.

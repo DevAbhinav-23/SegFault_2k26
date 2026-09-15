@@ -1,4 +1,11 @@
-# Design — Spatial DSL for NPUs, lowering to MLIR-AIR
+# Design — Spatial DSL for NPUs, lowering to Tenstorrent and MLIR-AIR
+
+*Direction, 2026-09-16 (user decision, recorded by the architect): Tenstorrent (TT-Metalium on ttsim) is
+the **primary execution target**; MLIR-AIR (AMD AIE) is the **second emitter**, kept at "compiles for
+npu1/npu2, device run on XDNA1 when available". M1–M4 and the MappingPlan are unchanged. Documents
+below that say "lowering to MLIR-AIR" or call the TT backend "stretch"/"second" predate this and
+are history, not intent; the requirements (`01-requirements.md`) are to be re-baselined when work
+resumes. Decision record: `hackathon/HANDOFF.md` "Direction — 2026-09-16".*
 
 *Phase 1 (design) document set, 2026-09-12. **As of 2026-09-13, Person B's modules — M0, M4, M5
 and M6's off-device half — are built, verified and merged to `main` (`f7ecd70`, 2026-09-13) (see

@@ -1,4 +1,4 @@
-# SegFault_2k26 — a spatial DSL for NPUs, lowering to MLIR-AIR
+# SegFault_2k26 — a spatial DSL for NPUs, lowering to Tenstorrent and MLIR-AIR
 
 Read [`hackathon/HANDOFF.md`](hackathon/HANDOFF.md) first. Ownership: [`design/00-README.md`](design/00-README.md) §2.
 
@@ -6,8 +6,11 @@ Read [`hackathon/HANDOFF.md`](hackathon/HANDOFF.md) first. Ownership: [`design/0
 
 Python is pinned to **3.12**; the toolchain is pinned in [`design/07-environment.md`](design/07-environment.md) §1.
 
-Everything is on `main`: the AIE path (M0–M6), the Tenstorrent second backend, the harness,
-the fixtures and the demo, at `CONTRACT_VERSION = 7` (all three roles merged 2026-09-15).
+Everything is on `main`: the AIE path (M0–M6), the Tenstorrent backend, the harness, the
+fixtures and the demo, at `CONTRACT_VERSION = 7` (all three roles merged 2026-09-15).
+**Direction since 2026-09-16:** Tenstorrent (ttsim) is the primary execution target and AMD/AIR the
+second emitter — see `hackathon/HANDOFF.md` "Direction — 2026-09-16" for the decision, the evidence
+and the resume list.
 
 ```bash
 uv venv --python python3.12 --seed .venv

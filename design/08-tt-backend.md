@@ -30,6 +30,14 @@ backend JITs the *lowered* module, so off-device the AIE path establishes semant
 **structurally** — three static checks plus `tests/helpers/plan_interp.py`, which executes the
 plan over numpy rather than the emitted IR.
 
+**Direction, 2026-09-16 (user decision):** this backend is now the project's **primary execution
+target**; AIR is the second emitter. The text below still says "second emitter" and "stretch" where
+it was written before that decision — the mechanics it specifies are unchanged. Work in flight when the
+decision was taken: a Tensix **matrix-engine compute path** for GEMM plans (selection rule FR-TT14, two
+compute paths §3.7, "what a simulated cycle is" §3.8, a measurement table) sits on branch
+`worktree-agent-a7ae6af326cc4d7f8` (5 commits, `b795cbe`..`70fe3c3`), **built but its verification
+runs were not completed** — see `hackathon/HANDOFF.md` "Direction — 2026-09-16" for the resume list.
+
 This document specifies a **second emitter** from the same, unchanged `MappingPlan` to
 **TT-Metalium**, run on Tenstorrent's functional simulator **ttsim**. It buys two things and
 only two:

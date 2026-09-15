@@ -188,6 +188,71 @@ proves only that no *token* edge exists, not that no *channel-slot* stall occurs
 
 ---
 
+## Direction — 2026-09-16 (user decision, architect record)
+
+**Decision.** Tenstorrent (TT-Metalium, executed on the functional simulator ttsim) is the
+**primary execution target**. MLIR-AIR (AMD AIE, npu1/npu2) is the **second emitter**, kept at the
+level it has honestly reached: compiles for both targets (`aircc --output-format=none`), device run
+on XDNA1 when the team has the box, no compute-engine work. **M1–M4 — the DSL, the schedule, the
+legality checker and the backend-neutral `MappingPlan` — are unchanged.** Tenstorrent code is emitted
+from the plan, never straight from the DSL: bypassing the plan would drop the checker and the AMD
+path for no gain, since the TT emitter already reads the plan and not AIR.
+
+**Why (evidence from 2026-09-13..16, all measured in this repo).**
+- ttsim executes the emitted program bit-exactly with no hardware; all four workloads plus the live
+  W3 run are exact against the CPython kernel. AIR has no functional simulator — every AMD claim
+  stops at "compiles" until a device run.
+- TT-Metalium exposes the compute engines (`matmul_tiles`, SFPU, tile layout, CBs, semaphores)
+  directly. On AIR compute is scalar `air.sequential` loops, and the vectorised route (`air.extern`)
+  disables the ping-pong passes on the buffers it touches first (`honest_limits.md`).
+- The AIR toolchain's undocumented limits consumed the most effort: the 2 KB `stack-size` reserve
+  (contract v7, budget 63 488), the repeat-loop unroll doubling on-tile buffers (R-L1-3), repeats > 2
+  unspecialisable (R-HERD-1, B-P33), the `air-specialize-dma-broadcast` bug that makes the full
+  eight-core npu2 herd uncompilable as `grid(2,4)` (B-P37/B-P38), the msel wall (B-P36).
+- Iteration: a W3 run on ttsim is ~2 s wall.
+
+**What it does not buy.** ttsim's cycle counter has no documented timing model (its README calls it
+a functional simulator, "slower than silicon"); any utilisation figure from it is a proxy until a
+Wormhole card is available, and must be labelled per `CLAUDE.md`'s performance rule. The matrix
+engine wants tile-granular (multiples of 32), bf16-centric shapes; the wavefront DP stays scalar on
+either device.
+
+**Performance rule (user, 2026-09-15).** Scalar soft-float on the data-movement RISC-V is a
+correctness scaffold, not a compute path: W1 64³ measured 0.046 flop per simulated cycle on 4 cores
+against a documented peak of 1024 (HiFi4) to 4096 (LoFi) flop/cycle/core
+(tt-metal `tech_reports/matrix_engine/matrix_engine.md`). Target is of the order of **40 % of the
+documented peak**, standard blocking, no saturation work; every figure states fidelity mode, the peak
+it is measured against, and what a simulated cycle means.
+
+**State when work paused (2026-09-16).**
+- `main` = this commit: everything of 2026-09-15 plus the two npu2 pre-codegen rules (`broadcast_guard`,
+  `msels`, both `DMA-CHANNELS`, with `aircc` controls) and the scope amendment. Suites at `1e49109`
+  (architect-run): `.venv` **791 passed, 1 skipped** (no device); `-m slow` **26 passed, 1 skipped**;
+  `PYTHONHASHSEED=7` gate 174; ttsim 26 (unchanged since `672aa87`).
+- **Stopped, unmerged — Tensix matrix-engine GEMM path**: branch `worktree-agent-a7ae6af326cc4d7f8`
+  (worktree `.claude/worktrees/agent-a7ae6af326cc4d7f8`), 5 commits `b795cbe`..`70fe3c3`: selection
+  rule FR-TT14 (Tensix path for GEMM-shaped, tile-compatible plans; scalar otherwise, W1's `TK=16`
+  stays scalar), reader/compute/writer kernels, `design/08-tt-backend.md` §3.7 two compute paths and
+  §3.8 "what a simulated cycle is", a measurement table. **Its verification runs (default suite,
+  ttsim suite, golden diff) were not completed** — treat every number on that branch as unverified
+  until re-run. The brief it was built to is in the architect's session record; its report is
+  missing.
+- **Stopped, nothing built — R-HERD-2**: physical-herd resolution over a candidate set including the
+  measured transpose `(4,2)` on npu2 (B-P38: `grid(4,2)`/`grid(3,2)` compile on all eight cores with
+  the cap patched). Branch `worktree-agent-a2dfab2b6a95b987d` is empty.
+
+**Resume list, in order.**
+1. Re-verify and merge the Tensix GEMM path: `pytest` default; `source scripts/tt_env.sh` then
+   `-m requires_ttsim tests/tt` (expect the previous 26 plus the new tests, exit 0); `git diff main --
+   tests/golden` empty; read §3.8 before quoting any utilisation number.
+2. Stencil (W2) on the vector engine (SFPU) with the same selection discipline; W3 stays scalar.
+3. R-HERD-2 as specified (candidate caps, controls for `grid(4,2)`, `grid(3,2)`, `grid(4,4)` on npu2).
+4. Re-baseline `design/01-requirements.md` and `02-hld.md` wording ("lowering to MLIR-AIR") to the
+   direction above; AMD FRs keep their acceptance at the compile level.
+5. AMD: `air.extern` vectorised GEMM microkernel, compile-clean here, measured only on XDNA1
+   (deprioritised by this decision).
+6. Device runs: XDNA1 for AIR; a Wormhole card for real Tenstorrent timing.
+
 ## Integration — state at 2026-09-15
 
 *Appended by the integration pass, on branch `integration` off `main` at `78f308c` (all three
