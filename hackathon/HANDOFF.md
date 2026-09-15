@@ -275,6 +275,10 @@ deliverable, not a gap: no device (`/dev/accel*` absent), the traceability resid
 6. M1 and M2 diagnostics carry **absolute** `location` paths (`code.co_filename`,
    `inspect.stack()`). No golden depends on one today because M3's legality diagnostics carry
    `location=None`, but a grammar or clause golden would not be machine-independent.
+7. **An unused kernel parameter is rejected by M3 under `STATIONARITY`** (`_operand_matrix`, this pass). Architect ruling 2026-09-15: accepted as the closest code in the
+   frozen catalogue; the right home is an M1 grammar rejection at capture, which needs a new
+   catalogue code and therefore the next contract round. Until then the message says what is
+   wrong in plain words.
 
 **Person C**
 
