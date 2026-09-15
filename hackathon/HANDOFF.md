@@ -259,6 +259,39 @@ figure lives in `m3_legality._L1_USABLE` and `m4_*.L1_USABLE`. `00-README.md` §
 change-log row 7 and the v7 signature row; `design/PROGRESS-B.md` B-P34 carries the measurement
 and the larger gap it does **not** close.
 
+**R-L1-3 (architect, 2026-09-15, applied by the B-side correctness pass) — a repeat loop
+charges every L1 buffer twice.** When any repeat factor exceeds 1, `air.api` wraps the herd body
+in an `scf.for` (`run_strip_mined`, `_trace.py:1675`) and mlir-air's ping-pong machinery labels
+**that** loop with `unroll = 2` (*"int unroll_factor = 2; // Unroll factor hardened as 2"*,
+`AIRDependencyScheduleOpt.cpp:1906-1908`; the consuming pass is `Passes.td:916-923`), so the
+placed IR carries two copies of the whole body and every buffer exists twice on the core — the
+ping-pong pair included, and never four times. Charged in `m3_legality._check_l1_capacity`
+(`L1-CAPACITY`, whose message names the unroll and its source) and in `m4_mapping.l1_total`,
+`m4_selfcheck.l1_total` and `MappingSummary`, which agree by construction. Measured
+`aie.buffer`s per tile: W1 base **5 / 12 288 B** on npu2 (`repeats (1,1)`) and **6 / 16 384 B**
+on npu1 (`repeats (2,1)`); W1-large **5 / 49 152 B** at `grid(1,2)` and **6 / 65 536 B** at
+`grid(4,4)` on npu2. Consequences carried through: `l1_bytes` is **target-dependent** wherever
+`repeats` is; W1-large's own 4×4 grid is now refused by `L1-CAPACITY` on npu2 (65 536 > 63 488)
+**before** codegen; two goldens moved, on their L1 numbers only (`w1.base.npu1.plan.json`,
+`w1.base.npu1.summary.txt`) and no `*.air.mlir` or `*.ir_facts.json` golden changed.
+`03-lld-M3-checker.md` §3.10 and `03-lld-M4-mapping.md` §3.3 carry the dated errata;
+`design/PROGRESS-B.md` B-P34 is closed.
+
+**R-HERD-1 (architect, 2026-09-15, applied by the B-side correctness pass) — a repeat factor
+above 2 is rejected.** The repeat loop is unrolled by 2, so a trip-2 loop disappears and every
+channel bundle index becomes constant per core, while a trip-4 loop leaves a trip-2 loop with
+its induction variable still in the index; `specializeChannelBundle` then cannot resolve the
+bundle position and `air-to-aie` fails with *"'air.channel.get' op failed to get MM2S tile for
+L3 allocation"* (`AIRToAIESchedulingUtils.cpp:3892-3894`), the cause upstream states in
+`mlir/test/Conversion/AIRToAIE/segment_id_remap_no_unroll.mlir:14-19`. `m3_legality`'s
+`_check_repeats` raises `HERD-PHYSICAL` naming the logical grid, the physical herd, the repeats,
+the unroll factor and those lines, and its fix is *"use a logical grid at most twice the physical
+herd on this target (npu1 1-D 8, 2-D (2, 8); npu2 1-D 16, 2-D (4, 8)) or split the launch"*.
+Controls, both measured on this machine: `repeats (4,1)` refused by `aircc` **and** by the
+checker, `repeats (2,1)` at the same tiles accepted by both (W1 base on npu1 is the accepted
+shape and is untouched). `03-lld-M3-checker.md` §3.11 carries the erratum;
+`design/PROGRESS-B.md` B-P33 is closed.
+
 ### What the suite says now
 
 `.venv` default: **723 passed, 3 skipped, 37 deselected**. The three skips are each a
@@ -267,14 +300,15 @@ deliverable, not a gap: no device (`/dev/accel*` absent), the traceability resid
 1 skipped. `.venv-tt -m requires_ttsim tests/tt`: **25 PASSED, exit 0**.
 `python demo/run_demo.py`: exit 0 in ~1.4 s, with and without `scripts/airenv.sh`.
 
-*The figures of record are the **union's**, measured on the final pass's branch, 2026-09-15,
-on this machine at the `design/07-environment.md` pin:*
+*The figures of record are the **B-side correctness pass's**, measured on its branch,
+2026-09-15, on this machine at the `design/07-environment.md` pin (the union's, which they
+supersede, are in brackets):*
 
 | Run | Result |
 |---|---|
-| `.venv` default (`pytest -rA`) | **765 passed, 1 skipped, 42 deselected in 15.4 s** |
-| `pytest -m slow` (with `scripts/airenv.sh`) | **16 passed, 1 skipped, 791 deselected** |
-| `PYTHONHASHSEED=7 -k "golden or plan or summary"` | **168 passed, 640 deselected in 3.6 s** |
+| `.venv` default (`pytest -rA`) | **783 passed, 1 skipped, 49 deselected in 17.9 s** *(was 765/1/42)* |
+| `pytest -m slow` (with `scripts/airenv.sh`) | **23 passed, 1 skipped, 809 deselected in 8.4 s** *(was 16/1/791)* |
+| `PYTHONHASHSEED=7 -k "golden or plan or summary"` | **174 passed, 659 deselected in 3.5 s** *(was 168/640)* |
 | `.venv-tt -m requires_ttsim tests/tt` (with `scripts/tt_env.sh`) | **26 PASSED, exit 0** |
 | `python demo/run_demo.py` (airenv + `.venv-tt`) | **exit 0, 3.7 s**, and beat 4:05 prints `W3 on ttsim: EXACT (1089 cells compared)` — the seconds it appends are the simulator's own wall clock and vary run to run (0.4 s to 2.2 s here) |
 
@@ -282,9 +316,13 @@ on this machine at the `design/07-environment.md` pin:*
 W2's ttsim deadlock demonstration, which needs `.venv-tt` and therefore skips under `.venv` — it
 runs, and passes, in the TT suite. The earlier waypoints, for the record: `.venv` default was
 **723 passed / 3 skipped** after the integration pass, **746/3** after the B-side pass and
-**757/1** after the A-side pass; the union plus the final pass is the row above. The count moved
-by **−16** against `integration2`'s 780 because `KNOWN_UNDOCUMENTED`'s 16 parametrised cases were
-deleted when the list emptied, and `slow` gained the two W1-large controls.*
+**757/1** after the A-side pass, and **765/1** after the final pass; the row above is the B-side
+correctness pass on top of that. That last step is **+18** default tests (the degenerate-grid
+family — plan, emit and interpret, three shapes × two targets — plus the two checker-level
+refusal tests and R-HERD-1's) and **+7** `slow` (six degenerate-grid `aircc` runs and
+R-HERD-1's refusal/acceptance pair); the count had moved by **−16** against `integration2`'s 780
+earlier, because `KNOWN_UNDOCUMENTED`'s 16 parametrised cases were deleted when the list
+emptied.*
 
 ### Tenstorrent in the project
 
@@ -393,6 +431,30 @@ v3–v7 are still A's to give (B's are in, 2026-09-15).
      serving `repeats` of them allocates `repeats` accumulators. Charging that would move
      W1-base's own `l1_bytes` on npu1 (12 288 → 16 384) and every plan and summary golden with
      it, so it needs its own ruling.
+6. **The B-side correctness pass (2026-09-15, after the union).** Four defects in B's own code,
+   two rulings applied, two refusals measured and deliberately **not** turned into rules.
+   * **`grid(1, 1)` and `grid(1,)` now plan, emit and compile** (**B-P35**). A single-PE
+     schedule tripped M4's own `order` self-check — with every bundle extent 1 the drain builds
+     no loop, so its `get` sits in the segment body and its `order` is its index there — and a
+     1-D grid over a one-tile `j` made `temporal_axes` claim `B` moved with `j0` while `A` moved
+     with `k0`, which the fill/compute/drain shape cannot express. Both fixed; the remaining
+     genuinely unsupported case is now a user-facing `PROTOCOL-UNSUPPORTED` naming the two axes,
+     not an internal `NotImplementedError` (NFR-7). Three shapes × two targets plan, self-check,
+     emit, run through `plan_interp` to the **exact** CPython result, and `aircc` exits 0 on all
+     six.
+   * **R-L1-3 and R-HERD-1 applied** (the Rulings block above; **B-P33** and **B-P34** closed).
+     W1-large's 4×4 grid is now refused before codegen — `HERD-PHYSICAL` on npu1, `L1-CAPACITY`
+     on npu2 — and the `slow` `aircc` evidence stays, built with the two rulings monkeypatched
+     off so it remains a measurement rather than a quotation.
+   * **Two refusals left unmodelled, on purpose** (**B-P36**, **B-P37**, and one bullet each in
+     `demo/honest_limits.md` under *"What the checker does not model"*). `grid(1, 4)` exhausts a
+     switchbox arbiter's four master selects in `aiecc`'s packet router; the capacity is
+     quotable but the **demand is not ours to count** — the flip's own 2-D variant puts eight
+     flows into one column and compiles, so a rule counting flows was written, refuted by that
+     control and reverted. On npu2, `grid(2, 3)` and `grid(2, 4)` fail in `air-to-aie`'s shim
+     bin-packing (*"failed to get S2MM tile for L3 allocation"*) where `grid(2, 2)` compiles,
+     and npu2's eight ShimNOC columns are nowhere near exhausted, so what ran out is an
+     allocator's per-column choice no upstream document states.
 
 **Person C**
 

@@ -274,6 +274,33 @@ charged this figure in
 `LegalMapping.l1_bytes`; M4 recomputes it from the plan and raises if the two disagree — an
 internal-consistency failure, §5.
 
+**Erratum, 2026-09-15 — architect ruling R-L1-3.** The factor is `2 if (repeated or
+ping_pong_candidate) else 1`, where `repeated = any(r > 1 for r in mapping.repeats)`: when a
+repeat loop exists the ping-pong machinery labels **it** rather than the streaming loop and
+unrolls it by 2 (`AIRDependencyScheduleOpt.cpp:1906-1908`), so every buffer the herd body
+allocates exists twice on the core and the ping-pong pair is not doubled again. `l1_total` takes
+the flag, `_check_l1`, `m4_selfcheck.l1_budget` and `SUMMARY`'s `L1:` line all pass it, so M4
+and M3 charge the same arithmetic — W1 base is 16 384 B on npu1 (`repeats (2,1)`) and 12 288 B
+on npu2. The per-buffer lines keep their `x2 (ping-pong)` annotation, which is a property of the
+buffer; the repeat loop is a property of the herd and is already on the `herd:` line.
+`03-lld-M3-checker.md` §3.10 carries the measured buffer counts.
+
+**Erratum, 2026-09-15 — degenerate grids (B-P35).** Two defects the worked examples never
+reached, both fixed:
+
+1. **`ChannelSite.order` at a bundle of extent 1.** §3.1's table says `order` is the site's index
+   in its enclosing body. `_bundle_nest` builds **no** loop for a dim of extent 1, so at
+   `grid(1)` or `grid(1, 1)` the drain `get` has no wrapper and sits in the segment body itself,
+   where its index is `len(fills) + 1 + position` and not 0. Counting it as 0 made M4's own
+   `_check_orders` refuse every single-PE schedule.
+2. **An outer tile axis of extent 1 is not temporal** (§3.9 line 3's `T`). `tile(ax.j, N)` at the
+   full extent makes one tile whose loop runs once, so no operand's slab moves with it and it is
+   the same schedule as leaving `j` untiled — which §3.9 already excludes. Counting it made
+   `B[k,j]` "re-fetched per `j0`" while `A[i,k]` moved with `k0`, and §6.1's shape synthesises
+   **one** streaming loop. That genuinely unsupported case (two staged operands, two axes with
+   trips) is now a `PROTOCOL-UNSUPPORTED` naming both axes and the clause to edit, rather than an
+   internal `NotImplementedError` (NFR-7).
+
 ### 3.4 Regions: access maps → offsets / sizes / strides (FR-M8)
 
 Every `ChannelSite` carries a `Region` (`06-interfaces.md` §5.2). The L1 end is always the whole
@@ -788,6 +815,35 @@ cover this would name a resource that is not the one that ran out. The honest co
 bundle-index one (`06-interfaces.md` §5.6 invariant 3's territory) and is **not** implemented,
 because the unroll factor 2 is measured on this wheel and is not a documented contract (R-19,
 R-21). `design/PROGRESS-B.md` B-P33 carries the full table.
+
+**Erratum, 2026-09-15 — B-P33 is closed by R-HERD-1, and P3 is still not where it lives.** The
+bundle-index condition the paragraph above declined to write **is** written now, but in M3 and
+as a condition on `repeats`, not on the index: `_check_repeats` rejects `max(repeats) > 2` with
+`HERD-PHYSICAL` (`03-lld-M3-checker.md` §3.11 erratum). P3 is unchanged, and the argument stands
+— the resource that ran out was never a DMA channel.
+
+**Erratum, 2026-09-15 — two more measured refusals P3 does *not* model (B-P36, B-P37).** Both
+are outside the two-S2MM/two-MM2S budget this section counts, and neither became a rule:
+
+* **Switchbox master selects.** `grid(1, 4)` — one column of four rows — makes `aiecc` fail in
+  `AIEPathfinderPass::runOnPacketFlow` with *"'aie.tile' op tile op arbiter 0 has used up all
+  its msels"* on both generations. The capacity is quotable (`int numMselsPerArbiter = 4` in
+  mlir-aie's `AIECreatePathFindFlows.cpp`; `aie.amsel`'s `msel` is confined to 0..3,
+  `AIEOps.td:615`) and a GEMM wall sits exactly there — 3 and 4 L3→L1 packet flows per column
+  compile, 5 does not. **But the flip's 2-D variant puts 8 flows into one column and compiles**,
+  because flows whose switchbox output-port set matches share an amsel, so the demand is a
+  property of the routes the pathfinder picks and not of the plan. A rule counting flows was
+  written, refuted by that control, and reverted.
+* **The shim's S2MM bins.** On npu2, `grid(2, 3)` and `grid(2, 4)` fail in `air-to-aie` with
+  *"'air.channel.put' op failed to get S2MM tile for L3 allocation"* on the multicast fill's
+  second bundle position, where `grid(2, 2)` compiles. The resource is named upstream — *"L3
+  shim allocation is bin-packing onto a fixed set of ShimNOC cols (hard cap =
+  device.getNumShimNOCCols(), per-bin cap = 2 MM2S + 2 S2MM)"*, `AIRToAIESchedulingUtils.cpp`
+  — but npu2 has eight ShimNOC columns and the plan needs far fewer than their 16 S2MM, so what
+  fails is the allocator's per-column bin choice, which no upstream document states.
+
+Both are in `demo/honest_limits.md` under *"What the checker does not model"*, and
+`design/PROGRESS-B.md` B-P36/B-P37 carry the verbatim errors and the counts.
 
 **`DMA-CHANNELS` is in the catalogue.** It landed in `06-interfaces.md` v2 before the D0 freeze
 (REVIEW-round1 RULING 5), so the earlier `PROTOCOL-UNSUPPORTED` fallback is deleted and **B-O6 is

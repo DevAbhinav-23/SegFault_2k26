@@ -522,6 +522,38 @@ generations carry the same 64 KB tile. In the code this is `_L1_USABLE` (M3) and
 (M4). `L1_BUDGET` keeps naming the tile's 65 536 B, because that is what `MappingSummary`
 reports as `l1_budget` and renders as *"L1: n of 65536 bytes"*, and those are frozen goldens.
 
+**Erratum, 2026-09-15 — architect ruling R-L1-3: a repeat factor above 1 charges every buffer
+twice.** Line 5's condition becomes `if (a in schedule.double_buffer and pingpong_mode(a) ==
+"PASS") or any(r > 1 for r in repeats)`, and `CHECK_L1` therefore takes `repeats` (M3 already
+computes it at §3.11, before this check runs). The factor is **2, never 4**: a buffer that is
+both ping-ponged and inside a repeat loop still exists twice.
+
+Why: `air.api` wraps the herd body in one `scf.for` per non-unit repeat factor
+(`run_strip_mined`, `_trace.py:1675`), and mlir-air's ping-pong machinery labels one `scf.for`
+per nest with `unroll = 2` — *"int unroll_factor = 2; // Unroll factor hardened as 2"*
+(`mlir/lib/Transform/AIRDependencyScheduleOpt.cpp:1906-1908`; the pass that consumes the label
+is `Passes.td:916-923`, *"unrolls a loop by an integer factor … to unroll a scf.for loop by
+2"*). When a repeat loop exists it is that loop which is labelled, so the whole herd body is
+duplicated and the operand allocs inside the streaming loop are **not** additionally hoisted
+into a ping-pong pair. Measured on the pinned wheel, `aie.buffer` per core tile:
+
+| schedule | physical | repeats | buffers | bytes |
+|---|---|---|---|---|
+| W1 base, npu2 | `(2,2)` | `(1,1)` | 5 | 12 288 |
+| W1 base, npu1 | `(1,2)` | `(2,1)` | **6** | **16 384** |
+| W1-large (bf16), `grid(1,2)` | `(1,2)` | `(1,1)` | 5 | 49 152 |
+| W1-large (bf16), `grid(4,4)` npu2 | `(2,4)` | `(2,1)` | **6** | **65 536** |
+
+The last row is over the 63 488 B budget, so `L1-CAPACITY` now refuses it *before* codegen where
+`AIEAssignBuffers` used to refuse it after. `l1_bytes` is therefore **target-dependent** wherever
+`repeats` is: W1 base is 12 288 on npu2 and 16 384 on npu1. The message says so — it appends
+*"; every buffer is allocated twice because the repeat loop over repeats (r) is unrolled by 2
+(mlir-air AIRDependencyScheduleOpt.cpp:1906-1908, Passes.td:916-923)"* and adds *"or shrink the
+logical grid to the physical herd so no repeat loop is emitted"* to the fix — and `details` gains
+`repeats` and `repeat_unroll` **only** when a repeat loop exists, so a plan whose grid fits its
+herd carries the message it always did. M4's `l1_total` takes the same flag, so §3.3 note 4's
+self-check still compares like with like. `design/PROGRESS-B.md` B-P34 carries the measurement.
+
 Line 6 doubles only in **`PASS` mode**: in `PAIR` mode (§3.13) the pair is already in the span
 (§3.9), and doubling again would charge four buffers for two; the figure that has to fit is the
 ping-ponged one, which is what `_compile.py`'s `_annotate_l1_failure` docstring warns about and
@@ -549,8 +581,27 @@ RESOLVE_PHYSICAL(grid, target):
  4  return physical, repeats
 ```
 
+**Erratum, 2026-09-15 — architect ruling R-HERD-1: a repeat factor above 2 is rejected.** After
+line 3, `check()` calls `_check_repeats(grid, target, physical, repeats)`, which raises
+`HERD-PHYSICAL` when `max(repeats) > 2`. `RESOLVE_PHYSICAL` itself is unchanged and still pure,
+so §3.11's table below (whose last row is `(3,5)` → `repeats (3,5)`) still describes the
+function; what changed is that `check()` no longer *accepts* such a schedule.
+
+Why 2: the repeat loop is unrolled by **2** (`AIRDependencyScheduleOpt.cpp:1906-1908`), so a
+trip-2 loop disappears and every channel bundle index becomes a constant per core, while a
+trip-4 loop leaves a trip-2 loop behind with its induction variable still in the bundle index.
+`specializeChannelBundle` then cannot resolve the bundle position and `air-to-aie` fails with
+*"'air.channel.get' op failed to get MM2S tile for L3 allocation"*
+(`AIRToAIESchedulingUtils.cpp:3892-3894`) — the cause upstream states in its own regression,
+`mlir/test/Conversion/AIRToAIE/segment_id_remap_no_unroll.mlir:14-19`. Measured, W1's tiles and
+clauses on npu1: `repeats (4,1)` → that error; `repeats (2,1)` → `aircc` exit 0. The diagnostic
+names the logical grid, the physical herd, the repeats, the unroll factor and those two upstream
+lines, and its fix is *"use a logical grid at most twice the physical herd on this target (npu1
+1-D 8, 2-D (2, 8); npu2 1-D 16, 2-D (4, 8)) or split the launch"*. `design/PROGRESS-B.md` B-P33
+carries the measurement.
+
 Every extent has the divisor 1, so this never fails on its own — which is why `HERD-PHYSICAL`
-fires only from §3.8 line 27, the cascade rider. `target == "auto"` is resolved to `npu2` here
+fires from §3.8 line 27 (the cascade rider) and from the repeat rider above. `target == "auto"` is resolved to `npu2` here
 with a recorded note, **never** by shelling out to `xrt-smi` (`_trace.py:182`; decision D-13 —
 a check must not spawn a subprocess).
 

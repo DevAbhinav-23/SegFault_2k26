@@ -49,4 +49,16 @@
   Tenstorrent side **TileLoom**, `tenstorrent/tt-lang` and
   `kernelize-ai/triton-tenstorrent`, and `qualcomm/hexagon-mlir` for the
   "why not Hexagon?" question (one DSP core, no PE grid).
+- **What the checker does not model.** It models the rules upstream documents,
+  and two measured refusals sit outside them (`design/PROGRESS-B.md` B-P36,
+  B-P37). A one-column herd of four rows makes `aiecc` fail in its packet
+  router — *"'aie.tile' op tile op arbiter 0 has used up all its msels"* — and
+  we did not write the rule, because the flip's own 2-D variant puts **twice**
+  as many flows into one column and compiles: the master selects are spent per
+  switchbox output-port set, which is the router's choice and not the plan's.
+  A two-column herd deeper than two rows makes `air-to-aie` fail in its shim
+  bin-packing — *"'air.channel.put' op failed to get S2MM tile for L3
+  allocation"* — and we did not write that rule either, because npu2 has eight
+  shim NOC columns and far more S2MM channels than the plan asks for, so what
+  runs out is a per-column assignment no upstream document states.
 - **Out of scope**: multi-kernel fusion, autotuning, GPUs.
