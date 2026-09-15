@@ -606,4 +606,4 @@ def test_schedule_model_is_pure_data():
 
 
 def test_contract_version_is_five():
-    assert m.CONTRACT_VERSION == 6
+    assert m.CONTRACT_VERSION == 7

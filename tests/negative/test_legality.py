@@ -407,7 +407,10 @@ def test_L9_capacity_breakdown():
     """
     diagnostic = _diagnostic("raises_l1_capacity")
     assert diagnostic.code == "L1-CAPACITY"
-    assert (diagnostic.details["total"], diagnostic.details["budget"]) == (86016, 65536)
+    assert (diagnostic.details["total"], diagnostic.details["budget"]) == (86016, 63488)
+    # R-L1-2: the budget is the tile's 65 536 B less the 2 048 B core stack air-to-aie reserves.
+    assert (diagnostic.details["tile_bytes"],
+            diagnostic.details["stack_reserved"]) == (65536, 2048)
     assert diagnostic.details["doubled"] == ("A", "B")
     per_buffer = {row[0]: row for row in diagnostic.details["per_buffer"]}
     assert per_buffer["C"] == ("C", (96, 96), "f32", 36864)

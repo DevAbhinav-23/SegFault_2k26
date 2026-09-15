@@ -18,6 +18,25 @@ from spatial import intlin
 from spatial.model import Axis, Diagnostic, Expr, KernelModel, LegalMapping, LegalityError, ScheduleModel
 
 _CLAUSE_UNKNOWN = "(schedule)"
+"""The `clause` string a diagnostic carries when no single clause the user wrote is to blame
+(HLD §4.2's four-part shape still owes a clause field)."""
+
+_L1_TILE_BYTES = 65536
+"""One AIE2/AIE2P core tile's data memory, `0x00010000` — mlir-aie's
+`AIE2TargetModel::getLocalMemorySize()` (`include/aie/Dialect/AIE/IR/AIETargetModel.h`,
+inherited unchanged by the AIE2P/NPU2 models), and `air.api`'s own `L1_BYTES`
+(`_trace.py:100`)."""
+
+_L1_STACK_RESERVED = 2048
+"""The per-core stack `air-to-aie` reserves *below* the first buffer: the `stack-size` option
+default of mlir-air's `-air-to-aie` (`mlir/include/air/Conversion/Passes.td:231-234`, *"Default
+is 2048 bytes"*), written onto every `aie.core` as `stack_size = 2048 : i32`
+(`AIRToAIEPass.cpp:415-416`) and used by mlir-aie's `AIEAssignBuffers.cpp` as the starting
+address of buffer allocation. Not target-dependent: it is a pass option, not a device fact."""
+
+_L1_USABLE = _L1_TILE_BYTES - _L1_STACK_RESERVED
+"""The binding L1 budget, 63 488 B — architect ruling **R-L1-2**, 2026-09-15
+(`design/03-lld-M3-checker.md` §3.10, `design/06-interfaces.md` §5.6 invariant 5)."""
 
 
 def _fail(code: str, reason: str, fix: str, clause: str, **details: Any) -> LegalityError:
@@ -469,6 +488,9 @@ def _check_halo(f: _Frames) -> tuple[tuple, ...]:
 # ------------------------------------------------------------------------------------------
 
 _DTYPE_BYTES = {"f32": 4, "f16": 2, "bf16": 2, "i32": 4, "i8": 1}
+"""Element sizes in bytes for the L1 charge of §3.10 line 4 — `model._BITS // 8` over
+`06-interfaces.md` §1's five element types, written out here so M3 borrows no
+arithmetic from M0."""
 
 
 def pingpong_mode(f: _Frames, operand: str) -> str:
@@ -531,15 +553,18 @@ def _check_l1_capacity(f: _Frames) -> int:
                 doubled.append(name)
         total += nbytes
         breakdown.append((name, tuple(span), param.dtype.value, nbytes))
-    if total > 65536:
+    if total > _L1_USABLE:
         # FR-L9 and Sec 3.10 line 12: the message owes the per-buffer breakdown, in the
         # `(operand, span, dtype, bytes)` order of line 7, and the operands charged twice.
         # "the computed bytes, the budget, and the per-buffer breakdown" is FR-L9's own
         # acceptance; `total` alone does not say which tile to halve.
         raise _fail("L1-CAPACITY",
-                   f"the per-core L1 working set is {total} bytes, over the 65536-byte budget",
+                   f"the per-core L1 working set is {total} bytes, over the {_L1_USABLE}-byte "
+                   f"budget ({_L1_TILE_BYTES} B of tile data memory less the "
+                   f"{_L1_STACK_RESERVED} B core stack air-to-aie reserves)",
                    "halve a tile factor, or drop a double_buffer(...) entry",
-                   "tile(...)/double_buffer(...)", total=total, budget=65536,
+                   "tile(...)/double_buffer(...)", total=total, budget=_L1_USABLE,
+                   tile_bytes=_L1_TILE_BYTES, stack_reserved=_L1_STACK_RESERVED,
                    per_buffer=[[n, list(s), d, b] for n, s, d, b in breakdown],
                    doubled=doubled)
     return total
@@ -550,6 +575,9 @@ def _check_l1_capacity(f: _Frames) -> int:
 # ------------------------------------------------------------------------------------------
 
 _PHYSICAL_HERD = {"npu1": {1: (4,), 2: (1, 4)}, "npu2": {1: (8,), 2: (2, 4)}}
+"""The physical array caps, per target and grid rank — `air.api`'s own table
+(`_trace.py:88-91`, applied at `_trace.py:1347-1373`), `03-lld-M3-checker.md`
+§3.11."""
 
 
 def _resolve_physical(grid: tuple[int, ...], target: str) -> tuple[tuple, tuple]:

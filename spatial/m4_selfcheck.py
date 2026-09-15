@@ -60,7 +60,16 @@ SHIM_DMA_CHANNELS_PER_COL = 2
 """`air-dma-to-channel`'s `shim-dma-channels-per-col`, default 2 (`Passes.td:1808-1812`)."""
 
 L1_BUDGET = 65536
-"""`L1_BYTES` (`_trace.py:100`) — `06-interfaces.md` §5.6 invariant 5's budget."""
+"""One core tile's **data memory** — `air.api`'s `L1_BYTES` (`_trace.py:100`) and mlir-aie's
+`AIE2TargetModel::getLocalMemorySize()` (`0x00010000`), reported by `MappingSummary.l1_budget`.
+What a plan must fit into is `L1_USABLE`."""
+
+L1_STACK_RESERVED = 2048
+"""The per-core stack `air-to-aie` reserves below the first buffer — the `stack-size` option
+default of mlir-air's `-air-to-aie` (`mlir/include/air/Conversion/Passes.td:231-234`)."""
+
+L1_USABLE = L1_BUDGET - L1_STACK_RESERVED
+"""`06-interfaces.md` §5.6 invariant 5's budget, 63 488 B — architect ruling **R-L1-2**."""
 
 CASCADE = "npu_cascade"
 """A cascade channel lowers to `aie.put_cascade` / `aie.get_cascade`
@@ -815,10 +824,11 @@ def l1_budget(plan: MappingPlan) -> None:
     (LLD §3.3 note 4).
     """
     total = l1_total(plan.buffers)
-    if total > L1_BUDGET:
-        raise _internal(plan, 5, f"the plan's L1 total {total} B exceeds the {L1_BUDGET} B "
-                                 f"budget (_trace.py:100)",
-                        plan_l1_bytes=total, l1_budget=L1_BUDGET)
+    if total > L1_USABLE:
+        raise _internal(plan, 5, f"the plan's L1 total {total} B exceeds the {L1_USABLE} B "
+                                 f"budget ({L1_BUDGET} B of tile memory less the "
+                                 f"{L1_STACK_RESERVED} B core stack)",
+                        plan_l1_bytes=total, l1_budget=L1_USABLE)
     staged = l1_total(tuple(b for b in plan.buffers if b.operand is not None))
     if staged != plan.mapping.l1_bytes:
         raise _internal(plan, 5, f"the plan charges {staged} B for the operand-staging buffers "

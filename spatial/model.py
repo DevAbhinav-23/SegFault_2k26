@@ -9,7 +9,7 @@ invariants that are *structural* and *local to the one object being constructed*
 cross-check belongs to M2 (clause time), M3 (legality) or M4 (self-check), so that the error
 codes of design/06-interfaces.md §6.3 stay reachable. In particular M0 does **not** check
 `ScheduleModel` grid rank, `len(place) == len(grid)`, tile-divides, `sequential ∩ place`,
-`l1_bytes <= 65536`, `physical_herd` divides the grid, put/get balance, channel acyclicity,
+`l1_bytes <= 63488`, `physical_herd` divides the grid, put/get balance, channel acyclicity,
 bundle-index-is-IV, the tensor read-before-write ordering, `LoopPlan.kind == "unrolled"`
 placement, or any *reference* from one object to another (an operand naming a `Param`, a site
 naming a channel or a buffer, a shape entry naming a `shape_param`) — except where the
@@ -128,7 +128,7 @@ from functools import lru_cache
 from math import prod
 from typing import Any, Literal, Union, get_args, get_origin
 
-CONTRACT_VERSION = 6
+CONTRACT_VERSION = 7
 """The version of design/06-interfaces.md this module implements."""
 
 
@@ -137,6 +137,8 @@ CONTRACT_VERSION = 6
 # --------------------------------------------------------------------------------------------
 
 _BITS = {"f32": 32, "f16": 16, "bf16": 16, "i32": 32, "i8": 8}
+"""Element widths in bits, keyed by `Dtype.value` — `06-interfaces.md` §1's table, and
+what `Dtype.bytes` divides by eight."""
 
 
 class Dtype(Enum):
@@ -223,7 +225,13 @@ STAGES = frozenset(get_args(Stage))
 """The allowed `Stage` values."""
 
 _MLIR_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_$.]*$")
+"""A bare MLIR symbol name (MLIR's own `bare-id` production): what a channel, buffer,
+launch or segment name must match before M5 may print it after an `@`
+(`06-interfaces.md` §5.2 and §5.6 invariant 7)."""
+
 _CODE = re.compile(r"^[A-Z0-9]+(-[A-Z0-9]+)*$")
+"""The shape of a `Diagnostic.code` — SCREAMING-KEBAB, as every entry of
+`06-interfaces.md` §6.3's 43-code catalogue is spelled."""
 
 
 # --------------------------------------------------------------------------------------------
@@ -889,6 +897,8 @@ ExprNode = Union[Load, Const, BinOp, Neg, MaxMin, Select]
 """The frozen expression-tree union of design/06-interfaces.md §5.5."""
 
 _EXPR_NODES: tuple[type, ...] = get_args(ExprNode)
+"""The concrete classes of the `ExprNode` union (`06-interfaces.md` §5.5), read off the
+alias itself so the tuple cannot drift from the type."""
 
 
 def _loads(node: ExprNode) -> Iterator[Load]:
@@ -1213,7 +1223,13 @@ class ToolchainError(SpatialError):
 
 _TAGGED: tuple[type, ...] = (Expr, Load, Const, BinOp, Neg, MaxMin, Select, StoreNode,
                              BranchNode, BufferPlan, ChannelSite, LoopPlan, HerdPlan)
+"""The records whose JSON carries a `__tag__`: every member of a union-typed field,
+which `from_json` cannot recover from the shape alone (`06-interfaces.md` §5.5's
+`PlanNode` and `ExprNode`)."""
+
 _TAG_REGISTRY = {cls.__name__: cls for cls in _TAGGED}
+"""`__tag__` string → class, for `from_json`. Derived from `_TAGGED`, so a new tagged
+record is registered by adding it there and nowhere else."""
 
 
 def _to_jsonable(obj: Any) -> Any:

@@ -6,7 +6,18 @@ sign it in `00-README.md` §4 and a version bump of `CONTRACT_VERSION` below.*
 **This file is specification text, not code.** Field lists and signatures describe what must be
 built; no implementation exists.
 
-`CONTRACT_VERSION = 6`
+`CONTRACT_VERSION = 7`
+
+*Version 7 (architect ruling **R-L1-2**, 2026-09-15) makes §5.6 invariant 5's L1 budget
+**63488**, not 65536: a core tile has 65536 B of data memory, and `air-to-aie` reserves 2048 B
+of it for the core stack below the first buffer (`stack-size` option default, mlir-air
+`mlir/include/air/Conversion/Passes.td:231-234`; `AIRToAIEPass.cpp:415-416` writes
+`stack_size = 2048 : i32` onto every `aie.core`, and mlir-aie's `AIEAssignBuffers.cpp` starts
+allocation there). Forcing requirement: FR-L9 — a plan at 65536 B passes M3 and M4 today and
+cannot link, `aiecc` answering `'aie.tile' op allocated buffers exceeded available memory`
+(measured 2026-09-15, `design/PROGRESS-B.md` B-P34). §4.1's `l1_bytes` bound moves with it. No
+field of any §2-§5 record changes, and `MappingSummary.l1_budget` keeps reporting the tile's
+65536. Pending A, B and C signatures in `00-README.md` §4.*
 
 *Version 6 (architect ruling, 2026-09-15) corrects §7.2's device half to what M6 implements.
 `m6.run` gains `target` and `kernel_name` and an optional `workdir`; `m6.trace` gains `function`
@@ -205,7 +216,7 @@ and no reference to the kernel function. It is serialisable to JSON by field ord
 | `stationary_ops` | `tuple[str, ...]` | operands proved stationary (declared **or** derived) | sorted |
 | `physical_herd` | `tuple[int, ...]` | the resolved physical shape | each entry divides the corresponding grid entry and is ≤ the target cap |
 | `repeats` | `tuple[int, ...]` | `grid // physical_herd` | — |
-| `l1_bytes` | `int` | the per-core estimate **with `double_buffer` doubling applied** | ≤ 65536 |
+| `l1_bytes` | `int` | the per-core estimate **with `double_buffer` doubling applied** | ≤ 63488 (§5.6 invariant 5, v7) |
 | `halo_footprint` | `tuple[tuple[str, tuple[int, ...]], ...]` | per-operand derived footprint per windowed dim | — |
 
 **Two frames.** `sigma`, `pi`, `ker_pi` are over the post-tiling axis order (`axes`, `Coord`);
@@ -374,7 +385,11 @@ further `BranchNode`s. `ChannelSite.guard` stays for the single-site case and is
    `LoopPlan`, its first touching site is a `get`, it has exactly one `get` per iteration, and
    every enclosing `LoopPlan` has constant bounds.
 5. **L1 budget**: `sum(b.bytes × (2 if ping_pong_candidate else 1))` over herd-private buffers
-   ≤ 65536 (`_trace.py:100`).
+   ≤ **63488** — a core tile's 65536 B of data memory (mlir-aie
+   `AIE2TargetModel::getLocalMemorySize()`; `air.api`'s `L1_BYTES`, `_trace.py:100`) less the
+   2048 B core stack `air-to-aie` reserves below the first buffer (its `stack-size` option
+   default, mlir-air `Passes.td:231-234`). Architect ruling **R-L1-2**, v7, 2026-09-15.
+   `MappingSummary.l1_budget` keeps reporting the tile's 65536.
 6. **Tensor order**: `tensors` has one entry per `KernelModel.param`, in the order *all read-only
    params, then all written params* (each group keeping declaration order). Every `BufferPlan`
    the kernel only reads precedes every one it writes; `air.api`'s `_check_interface` raises
@@ -396,7 +411,7 @@ further `BranchNode`s. `ChannelSite.guard` stays for the single-site case and is
 | `residency` | `tuple[tuple[str, str], ...]` | one `(operand, duration)` pair per operand, sorted by operand: how long that operand's L1 tile stays put. `duration` is `"resident for the whole run"` or `"[resident across <axes>, ]re-fetched per <axis>"`, computed by `03-lld-M4-mapping.md` §3.9. The rendered line is `"<a>: <delivery>, <duration>"`, e.g. `B: stationary (spatial), resident for the whole run` |
 | `herd_logical`, `herd_physical`, `repeats` | `tuple[int, ...]` | — |
 | `reduction_split` | `tuple[str, str]` | rendered `R_time` / `R_space` bases |
-| `l1_bytes`, `l1_budget` | `int` | — |
+| `l1_bytes`, `l1_budget` | `int` | `l1_budget` is the tile's data memory, 65536 — not the binding budget, which is §5.6 invariant 5's 63488 |
 | `channels` | `tuple[tuple[str, tuple[int, ...], tuple[int, ...] \| None], ...]` | `(name, size, broadcast_shape)` |
 
 ### 5.8 `EmitResult`

@@ -25,10 +25,24 @@ if TYPE_CHECKING:
     from spatial.m1_frontend import Kernel
 
 _TARGETS = {"npu1", "npu2", "auto"}
+"""`schedule(target=)`'s closed vocabulary (`06-interfaces.md` §3.1). `"auto"` resolves
+to npu2 at physical-herd resolution (`03-lld-M3-checker.md` §3.11)."""
+
 _LEVELS = {"L1", "L2", "L3"}
+"""`reside()`'s memory levels (`06-interfaces.md` §3.1, `residency`). Only `L1` has a
+synthesis rule; `L2` and `L3` parse here and are refused later as
+`PROTOCOL-UNSUPPORTED` (`03-lld-M4-mapping.md` §3.3 note 5)."""
+
 _REDUCE_OPS = {"+", "max", "min"}
+"""`reduce(op=)`'s operators — the associative-commutative set of `06-interfaces.md`
+§3.1 (`01-requirements.md` SD-02 §4)."""
+
 _PATTERNS = {"broadcast", "forward", "cascade"}
+"""`communicate(pattern=)`'s vocabulary (`06-interfaces.md` §3.1)."""
+
 _DIRECTIONS = {"W->E", "E->W", "N->S", "S->N"}
+"""`communicate(direction=)`'s vocabulary — the four nearest-neighbour directions of
+`06-interfaces.md` §3.1."""
 
 
 def _caller_location() -> tuple[str, int] | None:

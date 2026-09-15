@@ -210,8 +210,29 @@ def test_skips_are_explained():
     assert not bad, "\n".join(bad)
 
 
+ASSERT_EXEMPT: frozenset[str] = frozenset()
+"""Files in `spatial/` whose `assert` statements NFR-4 tolerates — **empty**, 2026-09-15.
+
+The exemption the rule was written expecting is M0's `__post_init__` machinery, which enforces
+I01-I78 on a path NFR-4 does not govern (`spatial/model.py`'s own docstring: those are
+programmer errors, not user diagnostics). It needs no entry: `_need` raises `TypeError` or
+`ValueError` with the class, the field and the value, and M0 contains no `assert` at all. Keep
+it empty. An entry here is a promise that no user input can reach that statement, and `-O`
+deletes every one of them.
+"""
+
+
 def test_NFR4_no_bare_raise():
-    """AST lint over spatial/: no bare `raise Exception/AssertionError/RuntimeError`."""
+    """AST lint over `spatial/`: no bare `raise Exception/AssertionError/RuntimeError`, **and
+    no `assert`** (2026-09-15).
+
+    `assert` is the same defect as a bare `AssertionError` with a worse failure mode: it says
+    nothing a user can act on, it names no `06-interfaces.md` §6.3 code, and `python -O` removes
+    the check entirely, so a condition the code relied on silently stops being checked. A
+    condition a user can reach is a `Diagnostic`; one only the compiler can reach is the
+    `internal:` spelling of B-P23. Neither is an `assert`. `ASSERT_EXEMPT` above is the escape
+    hatch and is empty.
+    """
     root = Path(__file__).resolve().parents[2] / "spatial"
     if not root.is_dir():
         pytest.skip("spatial/ not present")
@@ -223,8 +244,11 @@ def test_NFR4_no_bare_raise():
                 func = node.exc.func
                 name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
                 if name in ("Exception", "AssertionError", "RuntimeError"):
-                    bad.append(f"{path.name}:{node.lineno}")
-    assert not bad, f"bare raises on user paths: {bad}"
+                    bad.append(f"{path.name}:{node.lineno} bare raise {name}")
+            elif isinstance(node, ast.Assert) and path.name not in ASSERT_EXEMPT:
+                bad.append(f"{path.name}:{node.lineno} assert (NFR-4: `-O` deletes it; raise a "
+                           f"Diagnostic, or the `internal:` spelling of B-P23)")
+    assert not bad, f"bare raises or asserts on user paths: {bad}"
 
 
 def test_NFR6_no_network():

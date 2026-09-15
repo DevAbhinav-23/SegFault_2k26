@@ -756,6 +756,37 @@ The diagnostic names the PE coordinate, the channel list, the budget, and the cl
 failure mode in the design into one of our own messages, and it is the third of the four
 properties AMD's own document specifies and does not implement.
 
+**Erratum, 2026-09-15 — what P3 does *not* cover, and why it was not widened (B-P33).** An
+architect ruling (R-P3-2) offered to extend `DMA-CHANNELS` to whatever resource makes
+`air-to-aie` refuse `kernels/w1_gemm_bf16` on npu1. Measured, the refusal is **not** a DMA or
+column resource. `AIRToAIESchedulingUtils.cpp:3892-3894` fails the launch-side
+`air.channel.get @C2L3[0,0]`:
+
+```cpp
+if (f.MM2S_alloc.empty() || !f.MM2S_alloc[0].getDmaTile())
+  return memcpyOpIf->emitOpError("failed to get MM2S tile for L3 allocation.");
+```
+
+`MM2S_alloc[0]` is empty because the **herd-side put's bundle index is still a loop induction
+variable**. With `repeats == (4, 1)` the placed module carries
+`%29 = affine.apply ()[%arg10, %arg14] -> (s0 * 4 + s1)` inside a surviving `scf.for %arg14`, so
+`specializeChannelBundle` never resolves bundle position `[0,0]` to a producer. Upstream names
+this cause in its own regression,
+`mlir/test/Conversion/AIRToAIE/segment_id_remap_no_unroll.mlir:14-19`: *"channel operations using
+them as indices fail to specialize, causing: 'air.channel.get' op failed to get MM2S tile for L3
+allocation."*
+
+The discriminator is `repeats`, not a channel count — measured over five grids at the same tiles
+and the same 49 152 B of L1: `repeats[0] == 1` compiles (exit 0, both targets); `== 2` clears
+`air-to-aie` (the ping-pong unroll factor 2 folds a trip-2 repeat loop away, leaving `s0*2` and
+`s0*2+1`); `== 4` gives this error. Grid 2×4 and grid 4×2 both put **8** outbound `C2L3` flows on
+the shim and land on opposite sides of the line, which is what rules the channel count out. So
+`DMA-CHANNELS` was left alone: it names two S2MM and two MM2S per core tile, and widening it to
+cover this would name a resource that is not the one that ran out. The honest condition is a
+bundle-index one (`06-interfaces.md` §5.6 invariant 3's territory) and is **not** implemented,
+because the unroll factor 2 is measured on this wheel and is not a documented contract (R-19,
+R-21). `design/PROGRESS-B.md` B-P33 carries the full table.
+
 **`DMA-CHANNELS` is in the catalogue.** It landed in `06-interfaces.md` v2 before the D0 freeze
 (REVIEW-round1 RULING 5), so the earlier `PROTOCOL-UNSUPPORTED` fallback is deleted and **B-O6 is
 closed**. `PROTOCOL-UNSUPPORTED` now means only what it says: a declared protocol with no

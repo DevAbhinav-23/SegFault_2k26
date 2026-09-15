@@ -54,7 +54,20 @@ HERD_COORDS = ("tx", "ty")
 """The herd body's coordinate parameter names, in rank order (LLD §3.3 step 1)."""
 
 L1_BUDGET = 65536
-"""`L1_BYTES` (`_trace.py:100`) — the budget `06-interfaces.md` §5.6 invariant 5 charges."""
+"""One core tile's **data memory** — `air.api`'s `L1_BYTES` (`_trace.py:100`) and mlir-aie's
+`AIE2TargetModel::getLocalMemorySize()` (`0x00010000`). This is the figure `MappingSummary`
+reports as `l1_budget` and renders as *"L1: n of 65536 bytes"*; what a plan must actually fit
+into is `L1_USABLE` below, which is smaller."""
+
+L1_STACK_RESERVED = 2048
+"""The per-core stack `air-to-aie` reserves below the first buffer — its `stack-size` option
+default (mlir-air `mlir/include/air/Conversion/Passes.td:231-234`), written onto every
+`aie.core` as `stack_size = 2048 : i32` and used by mlir-aie's `AIEAssignBuffers.cpp` as the
+start address of buffer allocation."""
+
+L1_USABLE = L1_BUDGET - L1_STACK_RESERVED
+"""The binding budget of `06-interfaces.md` §5.6 invariant 5 — 63 488 B, architect ruling
+**R-L1-2**, 2026-09-15."""
 
 EMPTY_REGION = Region((), (), ())
 """The L1 end of a whole-buffer transfer (LLD §3.4, measured as `(%alloc[] [] [])`)."""
@@ -327,11 +340,11 @@ def preconditions(mapping: LegalMapping) -> None:
             f"pi has {len(mapping.pi)} row(s) for a rank-{len(grid)} grid; the rank must be 1 "
             f"or 2 and must match (design/06-interfaces.md §4.1)",
             pi_rows=len(mapping.pi), grid=list(grid))
-    if mapping.l1_bytes > L1_BUDGET:
+    if mapping.l1_bytes > L1_USABLE:
         raise _internal(
-            f"l1_bytes {mapping.l1_bytes} exceeds the {L1_BUDGET} byte budget; M3 raises "
+            f"l1_bytes {mapping.l1_bytes} exceeds the {L1_USABLE} byte budget; M3 raises "
             f"L1-CAPACITY before M4 sees it (design/06-interfaces.md §4.1)",
-            l1_bytes=mapping.l1_bytes, l1_budget=L1_BUDGET)
+            l1_bytes=mapping.l1_bytes, l1_budget=L1_USABLE)
     if mapping.r_space:
         if _rank(mapping.r_space) != 1:
             raise _internal(
@@ -2528,11 +2541,11 @@ def _check_l1(mapping: LegalMapping, buffers: tuple[BufferPlan, ...]) -> None:
             f"says {mapping.l1_bytes} B (design/03-lld-M4-mapping.md §3.3 note 4)",
             plan_l1_bytes=staged, mapping_l1_bytes=mapping.l1_bytes)
     total = l1_total(buffers)
-    if total > L1_BUDGET:
+    if total > L1_USABLE:
         raise _internal(
-            f"the plan's L1 total {total} B exceeds the {L1_BUDGET} B budget "
+            f"the plan's L1 total {total} B exceeds the {L1_USABLE} B budget "
             f"(design/06-interfaces.md §5.6 invariant 5)",
-            plan_l1_bytes=total, l1_budget=L1_BUDGET)
+            plan_l1_bytes=total, l1_budget=L1_USABLE)
 
 
 def _check_allocation_order(buffers: tuple[BufferPlan, ...],

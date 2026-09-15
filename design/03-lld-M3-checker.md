@@ -467,11 +467,14 @@ CHECK_L1(kernel, schedule, ...):
  5      if a in schedule.double_buffer and pingpong_mode(a) == "PASS":
  6          bytes := bytes * 2                        # the ping-ponged figure, FR-L9
  7      total += bytes ; breakdown.append((a, span, dtype, bytes))
- 8  if total > 65536:                                 # L1_BYTES, _trace.py:100
+ 8  if total > 63488:                                 # 65536 - 2048 stack; R-L1-2, 2026-09-15
  9      raise L1-CAPACITY with
-10          reason  "the per-core L1 working set is <total> bytes, over the 65536-byte budget"
+10          reason  "the per-core L1 working set is <total> bytes, over the 63488-byte budget
+                     (65536 B of tile data memory less the 2048 B core stack air-to-aie
+                     reserves)"
 11          clause  the tile / double_buffer clauses
-12          details {total, budget: 65536, per_buffer: breakdown, doubled: [...]}
+12          details {total, budget: 63488, tile_bytes: 65536, stack_reserved: 2048,
+                     per_buffer: breakdown, doubled: [...]}
 13          fix     "halve a tile factor (tile(ax.i, <TM/2>)) or drop double_buffer(\"<x>\")"
 14  return total
 ```
@@ -495,11 +498,34 @@ literal text.
    `PINNED_BOX` itself is unchanged — it still pins the skewed axis for `_check_halo` and
    `_check_swap_parity`; the override lives in `CHECK_L1` alone.
 
+**Erratum, 2026-09-15 — architect ruling R-L1-2: the budget is 63 488, not 65 536.** A core
+tile's data memory is 65 536 B (mlir-aie `AIE2TargetModel::getLocalMemorySize()` = `0x00010000`,
+inherited unchanged by the AIE2P/NPU2 models; the same figure as `air.api`'s `L1_BYTES`,
+`_trace.py:100`), but buffers do not start at zero. `air-to-aie` writes `stack_size = 2048 : i32`
+onto every `aie.core` — its `stack-size` option default, mlir-air
+`mlir/include/air/Conversion/Passes.td:231-234` (*"Default is 2048 bytes"*), applied at
+`AIRToAIEPass.cpp:415-416` — and mlir-aie's `AIEAssignBuffers.cpp` starts allocation at that
+address, failing with `'aie.tile' op allocated buffers exceeded available memory` when the last
+buffer ends past 65 536. The pass prints its own arithmetic; measured on the wheel pair pinned in
+`design/07-environment.md`, for a plan whose per-tile buffers total exactly 65 536 B::
+
+    note: MemoryMap:
+        (stack)     : 0x0-0x7FF      (2048 bytes)
+        buf5        : 0x800-0x47FF   (16384 bytes)
+        ...
+        buf0        : 0xE800-0x107FF (8192 bytes)
+    error: 'aie.tile' op allocated buffers exceeded available memory
+
+`0x107FF` is 67 583: 2 048 + 65 536 − 1. So the binding budget is **65 536 − 2 048 = 63 488**,
+and it is *not* target-dependent — 2 048 is a compiler pass option, not a device fact, and both
+generations carry the same 64 KB tile. In the code this is `_L1_USABLE` (M3) and `L1_USABLE`
+(M4). `L1_BUDGET` keeps naming the tile's 65 536 B, because that is what `MappingSummary`
+reports as `l1_budget` and renders as *"L1: n of 65536 bytes"*, and those are frozen goldens.
+
 Line 6 doubles only in **`PASS` mode**: in `PAIR` mode (§3.13) the pair is already in the span
-(§3.9), and doubling again would charge four buffers for two. `L1_BYTES = 65536` is `air.api`'s
-own trace-time budget (`_trace.py:100`); the figure that has to fit is the ping-ponged one, which
-is what `_compile.py`'s `_annotate_l1_failure` docstring warns about and what
-`exceedsL1Budget` (VF §E.2 item 6) itself applies.
+(§3.9), and doubling again would charge four buffers for two; the figure that has to fit is the
+ping-ponged one, which is what `_compile.py`'s `_annotate_l1_failure` docstring warns about and
+what `exceedsL1Budget` (VF §E.2 item 6) itself applies.
 
 **Scope, stated because it is an approximation.** M3's `l1_bytes` covers **operand tiles** — the
 term the user controls with `tile`, `reside` and `double_buffer`. Staging scalars that only the
@@ -507,7 +533,7 @@ protocol needs (W3's `edge_in`/`edge_out`, HLD §7.3) are added by M4 and charge
 `06-interfaces.md` §5.6 invariant 5 against the same budget. M3's figure is therefore a **lower
 bound** on M4's; for W3 they are 232 and 240 bytes (the erratum's figures, matching §6.4; the
 old text said 72 and 80, which was the pre-erratum reading of line 2). A design within a few
-bytes of 65536 would
+bytes of 63488 would
 pass M3 and fail M4 — acceptable, because M4's is the binding check and it runs before emission.
 
 ### 3.11 Physical herd resolution (FR-L10)
@@ -583,7 +609,7 @@ M4's; two are vacuous by construction and say why.
 | 3. the alloc is **dead on entry**: the first access is a definite write (a `channel.get` counts; an opaque callee does not) | **M3** | the operand must be **read-only** in the kernel (`Param.is_written == False`). A written operand's tile is live-in across the trip |
 | 4. no opaque callee touching a herd block argument | **vacuous** | FR-E2 forbids `air.extern`, `func.call` and `link_with` outright |
 | 5. at most one `air.channel.get` per alloc per iteration, static trip counts on intervening loops | **M3** (first half) + **M4** (second) | M3: the operand has exactly one access group inside one trip of the pinned axis; every pinned axis has a constant extent |
-| 6. L1 budget: herd body + duplicated allocs ≤ target local memory | **M3** | §3.10, the same 65536 |
+| 6. L1 budget: herd body + duplicated allocs ≤ target local memory | **M3** | §3.10, the same 63488 (65536 less the 2048 B stack, R-L1-2) |
 | 7. no `air.disable_ping_pong` | **vacuous** | never emitted |
 | 8. `omit-memory-space` does not exclude the alloc's space | **vacuous** | the default pipeline, L1 allocs |
 
@@ -677,7 +703,7 @@ is a thing M4 may rely on:
    runs, in two processes, with different `PYTHONHASHSEED`, produce **equal** mappings (NFR-1).
 6. `physical_herd[d]` divides `grid[d]` exactly and is ≤ the target cap;
    `repeats[d] == grid[d] // physical_herd[d]` (`_trace.py:1355-1372`).
-7. `l1_bytes <= 65536`.
+7. `l1_bytes <= 63488` (65536 less the 2048 B core stack — R-L1-2, §3.10).
 8. `stationary_ops` contains every declared `stationary` operand and is sorted.
 9. `halo_footprint` has one entry per `WindowClause`, each ≤ the declared halo.
 
@@ -708,7 +734,7 @@ the message be improved without breaking a test (FR-D3, decision D-7).
 | `PLACE-SEQUENTIAL-CONFLICT` | §3.3 | the axis and both clauses |
 | `HERD-RANK` | §3.3 | the rank and `_trace.py:1288-1291`'s sentence |
 | `HERD-PHYSICAL` | §3.8 (e) | grid, physical, repeats, the cap table |
-| `L1-CAPACITY` | §3.10 | per-buffer breakdown, which were doubled, the total, 65536 |
+| `L1-CAPACITY` | §3.10 | per-buffer breakdown, which were doubled, the total, 63488 and the 2048 B stack it subtracts |
 | `PINGPONG-SHAPE` | §3.13 | which numbered `isPingPongCandidate` condition, with its source line |
 | `SWAP-PARITY` | §3.12 | the loop, its trip count, the clause that sets it |
 
@@ -752,7 +778,7 @@ Untiled frame: `Sπ_u = [e_i; e_j]`, `ker Sπ_u = span{e_k}`;
 | cascade | not applicable (`R_space` empty) |
 | physical | npu1 `(1,2)` repeats `(2,1)`; npu2 `(2,2)` repeats `(1,1)` |
 | ping-pong | `A`, `B` → `PASS` (read-only; `M_A·e_k ≠ 0`, `M_B·e_k ≠ 0`; one access group per K trip) |
-| L1 | `acc [32,32] f32 = 4096` + `A [32,16] ×2 = 4096` + `B [16,32] ×2 = 4096` = **12288** of 65536 |
+| L1 | `acc [32,32] f32 = 4096` + `A [32,16] ×2 = 4096` + `B [16,32] ×2 = 4096` = **12288** of 65536 (tile memory; 63488 usable) |
 
 `LegalMapping`: `ker_pi = ((0,1,0,0,0,0),(0,0,0,1,0,0),(0,0,0,0,1,0),(0,0,0,0,0,1))`;
 `r_time = ((0,0,1),)`; `r_space = ()`; `stationary_ops = ("C",)`;
@@ -924,7 +950,7 @@ Negative corpus — one per legality code, **16 of the catalogue's 43** (`04-tes
 | `test_L8_place_sequential` | W2 + `sequential(ax.i0)` | `PLACE-SEQUENTIAL-CONFLICT` naming `i0` and both clauses |
 | `test_L11_rank` | a `ScheduleModel` built programmatically with `grid = (2,2,2)` | `HERD-RANK` quoting `_trace.py:1288-1291` |
 | `test_L10_herd_physical` | W1-flip + `grid(8)` on `npu1` | `HERD-PHYSICAL`; `details == {grid:(8,), physical:(4,), repeats:(2,), cap:(4,)}` |
-| `test_L9_capacity` | W1 with `M=N=K=192`, `TM=TN=96`, `TK=32`, `f32`, `double_buffer("A","B")` | `L1-CAPACITY`; `details.undoubled == 61440`, `total == 86016`, `budget == 65536`, `over == 20480`, per-buffer `[C 36864, A 12288×2, B 12288×2]` — FR-L9's acceptance. The old `TM=TN=TK=128` `bf16` case is `98304` B **before** doubling, so it never demonstrates the doubling |
+| `test_L9_capacity` | W1 with `M=N=K=192`, `TM=TN=96`, `TK=32`, `f32`, `double_buffer("A","B")` | `L1-CAPACITY`; `details.undoubled == 61440`, `total == 86016`, `budget == 63488`, `tile_bytes == 65536`, `stack_reserved == 2048`, per-buffer `[C 36864, A 12288×2, B 12288×2]` — FR-L9's acceptance. The old `TM=TN=TK=128` `bf16` case is `98304` B **before** doubling, so it never demonstrates the doubling |
 | `test_S13_pingpong_shape` | W1 + `double_buffer("C")` | `PINGPONG-SHAPE`; `details.condition == 3` and the §3.13 message text |
 | `test_L14_swap_parity` | W2 with `T = 5` / with `T = 0` | `T = 5` **accepted**, `details`-free, and the plan peels one body; `T = 0` (fixture `w2_zero_t`, `03-lld-M8-kernels-demo.md` §4) rejected `SWAP-PARITY` naming `t`, `0` and the fixture parameter (the adjudicated FR-L14). `T = 0` is the **only** reachable `SWAP-PARITY` condition after the D-4 override, so without this fixture `test_D3_catalogue_complete` fails |
 | `test_M4_reside_l2` | W2 + `reside(U="L2")` | `PROTOCOL-UNSUPPORTED` whose `clause` is `reside`; L2 residency is out of scope for this cut (FR-S12, RULING 7). Raised by M4, listed here because it completes the legality-adjacent corpus |

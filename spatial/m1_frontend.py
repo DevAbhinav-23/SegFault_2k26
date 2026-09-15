@@ -27,6 +27,9 @@ from spatial.model import (
 
 _DTYPES = {"f32": Dtype.f32, "f16": Dtype.f16, "bf16": Dtype.bf16, "i32": Dtype.i32,
            "i8": Dtype.i8}
+"""The `sp.<name>[...]` annotation spellings M1 accepts, mapped to `model.Dtype`. The
+five are `06-interfaces.md` §1's element types, and `sorted(_DTYPES)` is the `domain`
+`GRAMMAR-BAD-ANNOTATION` offers the user (`03-lld-M1-frontend.md` §3.2)."""
 
 
 # ------------------------------------------------------------------------------------------
@@ -482,10 +485,8 @@ def _classify(body: list[ast.stmt], axes: tuple[str, ...], shape_params: set[str
                           s, filename, construct=type(tgt).__name__)
                 target = _extract_access(tgt, axes, shape_params, params, True, filename)
                 _, target_exprs = _full_subscript(tgt, axes, shape_params, params, filename)
-                is_acc, op = _is_max_min_accumulate(s.value, target, ctx)
-                if is_acc:
-                    call = s.value
-                    assert isinstance(call, ast.Call)
+                call, op = _is_max_min_accumulate(s.value, target, ctx)
+                if call is not None:
                     rest = [_value_expr(a, ctx) for a in call.args[1:]]
                     expr = MaxMin(op="maximum" if op == "max" else "minimum",
                                  operands=(Load(buffer_id=target.operand,
@@ -527,21 +528,30 @@ def _classify(body: list[ast.stmt], axes: tuple[str, ...], shape_params: set[str
     return tuple(out)
 
 
-def _is_max_min_accumulate(value: ast.expr, target: AccessMap, ctx: "_Ctx") -> tuple[bool, str]:
+def _is_max_min_accumulate(value: ast.expr, target: AccessMap,
+                           ctx: "_Ctx") -> tuple[ast.Call | None, str]:
+    """The `max(...)`/`min(...)` call this statement accumulates through, or `None`.
+
+    It returns the **call node** rather than a flag so the caller reads `call.args` off a value
+    the type system already knows is an `ast.Call`; a flag would leave the caller re-narrowing
+    `s.value`, which is where NFR-4's last `assert` used to live.
+    """
     if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Name):
-        return False, ""
+        return None, ""
     fname = value.func.id
     if fname not in ("max", "min") or not value.args:
-        return False, ""
+        return None, ""
     first = value.args[0]
     if not isinstance(first, ast.Subscript):
-        return False, ""
+        return None, ""
     try:
         cand = _extract_access(first, ctx.axes, ctx.shape_params, ctx.params, False,
                                ctx.filename)
     except GrammarError:
-        return False, ""
-    return (cand.operand == target.operand and cand.matrix == target.matrix), fname
+        return None, ""
+    if cand.operand != target.operand or cand.matrix != target.matrix:
+        return None, fname
+    return value, fname
 
 
 def _iter_loads(node: ExprNode) -> list[Load]:

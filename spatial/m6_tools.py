@@ -204,6 +204,9 @@ FIX_FOR: dict[str, str] = {
 """Diagnostic substring → fix hint (design/03-lld-M6-toolchain.md §3.2). Grows by a row."""
 
 _DEFAULT_FIX = "read the diagnostics below and fix the emitted module"
+"""The `fix` a `TOOL-DIAGNOSTIC` carries when no `FIX_FOR` key matches its first
+diagnostic line: HLD §4.2 wants every message to end in an action, and an unclassified
+tool error still owes one (`03-lld-M6-toolchain.md` §5)."""
 
 
 def classify(diagnostic: str) -> str | None:

@@ -30,32 +30,18 @@ import pytest
 
 SPATIAL = Path(__file__).resolve().parents[2] / "spatial"
 
-KNOWN_UNDOCUMENTED = frozenset({
-    # Person A — M1/M2/M3, and M0 which is frozen (`design/00-README.md` §4).
-    "m1_frontend.py:_DTYPES",
-    "m2_schedule.py:_TARGETS",
-    "m2_schedule.py:_LEVELS",
-    "m2_schedule.py:_REDUCE_OPS",
-    "m2_schedule.py:_PATTERNS",
-    "m2_schedule.py:_DIRECTIONS",
-    "m3_legality.py:_CLAUSE_UNKNOWN",
-    "m3_legality.py:_DTYPE_BYTES",
-    "m3_legality.py:_PHYSICAL_HERD",
-    "model.py:_BITS",
-    "model.py:_MLIR_SYMBOL",
-    "model.py:_CODE",
-    "model.py:_EXPR_NODES",
-    "model.py:_TAGGED",
-    "model.py:_TAG_REGISTRY",
-    # Person C — M6's toolchain wrappers.
-    "m6_tools.py:_DEFAULT_FIX",
-})
-"""The 16 constants outside the rule on 2026-09-15, when this lint was written (B-P29).
+KNOWN_UNDOCUMENTED: frozenset[str] = frozenset()
+"""**Empty since 2026-09-15**, and the lint below keeps it that way.
 
-Every one is in a module this pass did not own. They are listed rather than silently excluded so
-that the number is a **measured debt with an owner**, and so that `KNOWN_UNDOCUMENTED` is the
-only place the exception exists — an offender in any other module fails the first test below,
-and documenting one of these fails the second until the line is deleted.
+It held the 16 constants that were outside the rule when this lint was written (B-P29) — 9 of
+A's in `m1_frontend`, `m2_schedule` and `m3_legality`, 6 in the frozen `model.py`, 1 of C's in
+`m6_tools` — each listed rather than silently excluded so the debt had an owner. All 16 were
+documented in the closing pass; documenting a constant changes no field of any record, so
+`model.py` stayed frozen in the sense `design/00-README.md` §4 means.
+
+The two tests below are a ratchet in both directions: a new undocumented constant anywhere in
+`spatial/` fails the first, and an entry here that has since been documented fails the second
+until its line is deleted. With the set empty the second is vacuous, which is the point.
 """
 
 
@@ -97,7 +83,8 @@ def _scan() -> tuple[set[str], set[str]]:
 
 
 def test_NFR5_every_module_constant_carries_its_docstring():
-    """No constant in `spatial/` is undocumented but the sixteen `KNOWN_UNDOCUMENTED` names."""
+    """Every module constant in `spatial/` carries its docstring — `KNOWN_UNDOCUMENTED` is
+    empty, so this is now the whole rule with no exception."""
     every, undocumented = _scan()
     assert len(every) >= 80, (
         f"the walk found only {len(every)} module constants in {SPATIAL}; it is not linting "

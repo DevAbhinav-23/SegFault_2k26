@@ -83,15 +83,18 @@ def bad_capacity(target):
     §3.5's worked table and the checker agree on 86 016 (measured 2026-09-15), so the
     docstring's old figure needed no correction.
 
-    Rendered message, measured 2026-09-15 **after** FR-L9's per-buffer breakdown landed
-    (`03-lld-M3-checker.md` §3.10 line 12); the `because:` line is one line in the rendered
-    text and is wrapped here only to fit the margin::
+    Rendered message, re-measured 2026-09-15 after **R-L1-2** made the budget the tile's
+    65 536 B less the 2 048 B core stack `air-to-aie` reserves (`03-lld-M3-checker.md` §3.10
+    line 8); the `reason:` and `because:` lines are each one line in the rendered text and are
+    wrapped here only to fit the margin::
 
-        L1-CAPACITY: the per-core L1 working set is 86016 bytes, over the 65536-byte budget
+        L1-CAPACITY: the per-core L1 working set is 86016 bytes, over the 63488-byte budget
+                     (65536 B of tile data memory less the 2048 B core stack air-to-aie
+                     reserves)
           in clause: tile(...)/double_buffer(...)
-          because:   budget=65536, doubled=('A', 'B'), per_buffer=(('A', (96, 32), 'f32',
+          because:   budget=63488, doubled=('A', 'B'), per_buffer=(('A', (96, 32), 'f32',
                      24576), ('B', (32, 96), 'f32', 24576), ('C', (96, 96), 'f32', 36864)),
-                     total=86016
+                     stack_reserved=2048, tile_bytes=65536, total=86016
           fix:       halve a tile factor, or drop a double_buffer(...) entry
     """
     s = sp.schedule(gemm_192, target=target)

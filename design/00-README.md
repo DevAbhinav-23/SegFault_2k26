@@ -139,6 +139,7 @@ fails without it.** By then the cost of churn exceeds the cost of an ugly interf
 | `06-interfaces.md` v4 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
 | `06-interfaces.md` v5 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
 | `06-interfaces.md` v6 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
+| `06-interfaces.md` v7 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf) | ☐ | 2026-09-15 (B) |
 
 *A's and C's columns are **pending** and are theirs to tick; a version is signed only when all
 three are. B's four are what B can answer for: v3's `MappingSummary.residency`, v4's `HerdPlan`
@@ -161,6 +162,7 @@ found a twelfth, and a freeze over a contract with known holes is worse than a o
 | 4 | 2026-09-13 | §8 summary golden path gains `<target>` (erratum, 2026-09-13) | architect ruling on **B-P14**: the herd line carries the physical shape and the repeats, which differ per target, so the target-less path of §8 contradicted `04-test-plan.md` §3.1's "stored per target too". Documentation only — no `CONTRACT_VERSION` bump | *architect, 2026-09-13* |
 | 5 | 2026-09-13 | §2.4 `Statement.expr` (`ExprNode`, the desugared right-hand side over kernel-level operands) and §2.7's invariant that its `Load`s name `Param`s; §5.6 `declared` := named by a clause; §5.5 the loop-axis naming rule | FR-M8 + FR-E2 (B-P19); FR-M1/FR-M11 (B-P17); (B-P18) | *proposed by B's architect 2026-09-13; **signed B 2026-09-15**; pending A, C* |
 | 6 | 2026-09-13 | §7.2 `m6.run` gains `target`, `kernel_name`, optional `workdir`; `m6.trace` gains `function`, optional `workdir`; §7.2 `DiffReport` is a frozen dataclass in `spatial/model.py` | the frozen two-arg shapes cannot construct `XRTBackend` nor name the function for `air-runner -f` (C, `design/PROGRESS-C.md` §3) | *proposed by C 2026-09-13, bumped by the architect 2026-09-15; **signed B 2026-09-15**; pending A, C* |
+| 7 | 2026-09-15 | §5.6 invariant 5's L1 budget becomes **63488** — a tile's 65536 B of data memory less the 2048 B core stack `air-to-aie` reserves (`Passes.td:231-234`); §4.1 `l1_bytes ≤ 63488`. `MappingSummary.l1_budget` still reports 65536, and no §2-§5 field changes | architect ruling **R-L1-2**: a plan at 65536 B passes M3/M4 and cannot link — `'aie.tile' op allocated buffers exceeded available memory` (FR-L9; measured, `design/PROGRESS-B.md` B-P34) | *architect 2026-09-15 on B's behalf; **signed B 2026-09-15**; pending A, C* |
 
 ---
 
