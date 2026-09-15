@@ -540,3 +540,20 @@ every clause has a docstring naming its argument domain (NFR-5); and M3 consumes
 | **Q-M2-2** | FR-S14 says `pipeline(ax)` "shall place `ax` innermost in `σ`" *and* that two schedules differing only in `pipeline` emit byte-identical text. | **Resolved here** (§3.7): `pipeline` is inert — recorded, read by nothing. **Closed**: the "innermost in σ" phrase is deleted from FR-S14, which now says `pipeline` "shall be recorded and read by nothing" (REVIEW-round1 EDIT-40). No code or interface change. |
 | **Q-M2-3** | Which of M0's `__post_init__` and M2/M3 enforces the *semantic* invariants listed in `06-interfaces.md` §3.2 (`len(place)==len(grid)`, `sequential` disjoint from `place`, tile factor divides)? | **Resolved here**: M0 enforces only **structural** invariants (types, arity, sortedness, hashability). The semantic cross-checks belong to M2 (clause time) and M3 (legality time) — because if M0 enforced them, `PLACE-SEQUENTIAL-CONFLICT`, `PLACE-EXTENT` and `CLAUSE-TILE-DIVIDES` would be unreachable and `test_D3_catalogue_complete` (FR-D3) would fail for lack of a test that raises them. **This is a note on how M0 is written, and M0 is co-owned — it must be said aloud at the D0 signature.** Due **D0**. |
 | **Q-M2-4** | Should a clause that depends on another clause's presence (`stream.along` must be placed) fail at call time or at `model` time? | **Resolved here** (§3.3 last paragraph): both — validated against what is recorded so far, and re-validated in `MODEL`. Same code, same message, either way; the surface stays order-independent. No interface change. |
+
+---
+
+## 11. Errata (2026-09-15, A-side correctness pass)
+
+Two corrections in `spatial/m2_schedule.py`; neither changes an interface, a recorded clause or
+a golden.
+
+1. **`_caller_location` reports the user's call site, not M2's own line.** It indexed
+   `inspect.stack()` at a fixed depth of 2, described as "the user's call site" — but `_fail`
+   sits between it and the clause method, and `Schedule.__init__` is reached through
+   `schedule()`, so what every `ClauseError` actually carried was a line of `m2_schedule.py`.
+   It now walks to the first frame outside the package directory, which is right for both call
+   paths. FR-S19 asks the clause error to name what the user wrote.
+2. **The path is rendered relative to the working directory when it lies under it**, through
+   `m1_frontend._relative_path` — the same helper M1 uses, so both surfaces spell a location
+   the same way (architect ruling 2026-09-15). A path outside the tree is left as it is.

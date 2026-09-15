@@ -118,7 +118,14 @@ def _build(kernel: KernelModel, schedule: ScheduleModel) -> tuple[_Frames, list,
     if len(grid) > 2:
         raise _fail("HERD-RANK", f"grid of rank {len(grid)} is not supported",
                    "use grid(PI) or grid(PI, PJ)", "grid(...)", rank=len(grid))
-    assert len(schedule.place) == len(grid)
+    if len(schedule.place) != len(grid):
+        # M2 checks this at clause time (`CLAUSE-RANK`), so the surface cannot get here; a
+        # `ScheduleModel` built by hand can, and NFR-7 says M3's entry point answers with a
+        # diagnostic rather than an `AssertionError` (erratum, 2026-09-15).
+        raise _fail("PLACE-EXTENT",
+                   f"place has rank {len(schedule.place)} but grid has rank {len(grid)}",
+                   "pass one placed axis per grid extent", "place(...)",
+                   place=list(schedule.place), grid=list(grid))
     for r, name in enumerate(schedule.place):
         if f.extent(name) != grid[r]:
             raise _fail("PLACE-EXTENT",

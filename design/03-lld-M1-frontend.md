@@ -621,3 +621,35 @@ not in `06-interfaces.md` §2.
 | **Q-M1-2** | Is `KernelModel` a pure function of the source text, as HLD §2 says, when loop extents come from module-level `int`s? | **Resolved here** (§3.4 line 18): it is a pure function of *(source text, the integer bindings of the shape-parameter names the source declares)*. Both are recorded in the model; no other global is read. HLD §2's phrasing is a simplification, not a contradiction. |
 | **Q-M1-3** | May a `for` bound name an enclosing loop variable (FR-S3 item 1) given the same FR demands rectangularity? | **Resolved here** (§3.1 R-a): no. Rectangularity wins, because FR-S7, FR-L7, FR-L8 and FR-L9 all evaluate affine forms at the vertices of a box. Rejected as `GRAMMAR-BAD-RANGE` with a message that says why. |
 | **Q-M1-4** *(closed)* | Where do the W2 fixture's numbers come from, given `14 % 4 != 0`? | **Closed by REVIEW-round1 RULING 1**: the fixture is `H = W = 16`, `PI = 2`, `HS = 8`, `U: sp.f32[T + 1, H + 2, W]`, with `PI·HS == H` exact and the `i` extent 16. `H = W = 18` is **not** adopted, because it leaves `PI = 4`, which is measured to fail `aie.connect` (P-R2). See §6.2. |
+
+---
+
+## 11. Errata (2026-09-15, A-side correctness pass)
+
+Four corrections, all in `spatial/m1_frontend.py`; none changes an interface and none changes a
+golden. Recorded here because §3 and §7 describe the old behaviour.
+
+1. **Every grammar diagnostic carries a location (M0 invariant I71).** `capture`'s
+   `inspect.getsource` branch, its no-statement branch, `_fdef_of` and **both**
+   `GRAMMAR-NONUNIFORM-DEP` sites of §3.7 built a `Diagnostic` with `location=None` while
+   `stage="grammar"`, which M0 rejects — so those five paths raised `ValueError` out of
+   `Diagnostic.__post_init__` rather than the `GrammarError` they meant, and a kernel defined
+   by `exec` or at a REPL crashed instead of being rejected. `_fn_location(fn)` supplies
+   `fn.__code__.co_filename` and `co_firstlineno`, which exist even when the source text does
+   not; the two `NONUNIFORM-DEP` sites use the offending `Statement.line`. §7 row 28 was
+   unreachable before this and is now the corpus's `raises_grammar_nonuniform_dep`.
+2. **Line numbers are absolute in the file.** `ast.parse` numbers the *snippet*
+   `inspect.getsource` returned, whose line 1 is `co_firstlineno` in the file, so every
+   diagnostic location and every `Statement.line` counted from the `def`. `capture` now calls
+   `ast.increment_lineno(tree, co_firstlineno - 1)`. FR-S4 (b) asks for the source file **and
+   line**; `tests/integration/test_kernels_live.py` already normalises `line` out of its plan
+   comparison, so no golden moves.
+3. **A location under the working directory is rendered relative to it** (`_relative_path`,
+   architect ruling 2026-09-15). An absolute path is not machine-independent, so no grammar or
+   clause golden could ever carry one. A path outside the tree, and one that cannot be
+   resolved (`<string>`, `<corpus>`), is left exactly as it is. `m2_schedule._caller_location`
+   imports the same helper — it is the one helper both modules share.
+4. **§7 row 9 reads `GRAMMAR-UNSUPPORTED-CALL`, not `-EXPR`.** `sum(x for x in ...)` is a
+   `Call` before it is a `GeneratorExp`, and §3.5 classifies the call first. The corpus keeps
+   both halves: `corpus_grammar_unsupported_call__generator` for the row as written and
+   `corpus_grammar_unsupported_expr__comprehension` for the code the row predicted.

@@ -261,6 +261,19 @@ def corpus_stationarity__unused_parameter():
     s.check()
 
 
+def corpus_place_extent__rank_mismatch():
+    """A `ScheduleModel` whose `place` and `grid` ranks disagree, built by hand.
+
+    M2 rejects this at clause time (`CLAUSE-RANK`), so the surface cannot reach it; M3's entry
+    point used to answer a hand-built one with a bare `assert`, which NFR-7 forbids.
+    """
+    schedule = ScheduleModel(
+        target="npu1", grid=(2, 2), tiles=(("i", 32),), place=("i0",), reductions=(),
+        stationary=(), streams=(), residency=(), double_buffer=(), pipeline=(), sequential=(),
+        windows=(), exchanges=(), skew=None)
+    m3_legality.check(gemm.model, schedule)
+
+
 def corpus_reduce_not_accumulated__tile_handle():
     """`reduce(ax.i0, ...)`: a tile handle has no column in `R = ker Sf`, which is a UCoord
     space, so it is checked as its root axis. This used to raise a bare `ValueError` out of

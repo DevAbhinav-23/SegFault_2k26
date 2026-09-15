@@ -997,3 +997,36 @@ without asking for a field or a frame this document does not fix.
 | **Q-M3-3** | `double_buffer`'s two meanings (decision D-5) need to be recorded somewhere M4 can read, but `LegalMapping` is frozen with no field for it. | **Resolved here** (§2, §3.13): M3 exports the pure helper `m3.pingpong_mode(mapping, operand)` and M4 calls it. One definition, no duplicated predicate, no field, no contract bump. |
 | **Q-M3-4** | FR-L2's acceptance names `skew(time=(ax.j0, ax.i))` "reversed" as the causality negative, but FR-S17 defines `skew` as a **sum**, so the reversal is a no-op. | **Resolved here** (§6.5): the realisable negative is `skew(time=(ax.i,))` — the dropped term — which fails on the tile-crossing representative of `d = (0,1)` with `Sσ·d = (0,−7)`. It is a **better** demo (it is the mistake a user actually makes). **Closed**: FR-L2's acceptance now names `skew(time=(ax.i,))` outright (REVIEW-round1 EDIT-38), and FR-S17 states the σ-construction rule that makes it a rejection (RULING 6). |
 | **Q-M3-5** | FR-L1's acceptance describes the conflict as "placing `i` and leaving `i` out of `σ`", but with §3.3's σ construction every non-placed, non-skewed axis gets its own σ row, so that schedule is legal. | **Resolved here** (§3.3's property, §7): with no `skew`, `Sσ` is a permutation and (L1) holds unconditionally; a conflict requires a `skew` that names **two unplaced axes**, e.g. W1's `skew(time=(ax.i1, ax.j1))`, whose `ker Sσ ∩ ker Sπ = span{e_i1 − e_j1}`. That is the fixture. **Closed**: FR-L1's acceptance now names `skew(time=(ax.i1, ax.j1))` (REVIEW-round1 EDIT-39). |
+
+---
+
+## 11. Errata (2026-09-15, A-side correctness pass)
+
+Three corrections in `spatial/m3_legality.py`. The first changes a rendered message and
+therefore one golden (`tests/golden/reject.L1-CAPACITY.txt`); the other two change no accepted
+schedule.
+
+1. **`L1-CAPACITY` carries the per-buffer breakdown §3.10 line 12 specifies.**
+   `details["per_buffer"]` is a list of `[operand, span, dtype, bytes]` in line 7's order, and
+   `details["doubled"]` names the operands charged twice. `total` alone does not say which tile
+   to halve, and FR-L9's acceptance asks for "the computed bytes, the budget, **and** the
+   per-buffer breakdown". Measured on §3.5's fixture: `86 016 = C 36 864 + A 2×12 288 +
+   B 2×12 288`, `20 480` over the budget. `kernels/rejections.py::bad_capacity`'s docstring
+   quotes the new rendering.
+2. **`_unit` lifts a tile handle to its root axis.** `R = ker Sf` is a `UCoord` space, so a
+   tile handle has no column there and `reduce(ax.k0, op="+")` raised a bare `ValueError` out
+   of `tuple.index` — an unhandled exception on a user path, which NFR-7 forbids. `root` is
+   the identity on an untiled name, so no accepted schedule changes;
+   `corpus_reduce_not_accumulated__tile_handle` is the regression.
+3. **§7's `details` key names, as built.** `test_L8_place_extent`'s row predicts
+   `{axis, extent, grid, position}`; the implementation emits `axis`, `axis_extent` and
+   `grid_extent` (no `position` — the axis name identifies it). `test_L10_herd_physical`'s row
+   predicts a `cap` key; the implementation emits `grid`, `physical_herd` and `repeats`. The
+   numbers §7 asserts are all present under these names, and `tests/negative/test_legality.py`
+   asserts them there.
+4. **A `place`/`grid` rank mismatch is `PLACE-EXTENT`, not an `assert`.** §3.3's `_build`
+   asserted the two ranks equal. M2 checks it at clause time (`CLAUSE-RANK`), so the surface
+   cannot reach it — but a `ScheduleModel` built by hand can, and NFR-7 says M3's entry point
+   answers with a diagnostic rather than an `AssertionError`. `PLACE-EXTENT` is §3.3's own
+   code for a `place` that does not match its grid, and is already used for `place` with no
+   `grid` at all.
