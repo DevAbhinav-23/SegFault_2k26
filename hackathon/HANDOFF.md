@@ -276,7 +276,7 @@ on this machine at the `design/07-environment.md` pin:*
 | `pytest -m slow` (with `scripts/airenv.sh`) | **16 passed, 1 skipped, 791 deselected** |
 | `PYTHONHASHSEED=7 -k "golden or plan or summary"` | **168 passed, 640 deselected in 3.6 s** |
 | `.venv-tt -m requires_ttsim tests/tt` (with `scripts/tt_env.sh`) | **26 PASSED, exit 0** |
-| `python demo/run_demo.py` (airenv + `.venv-tt`) | **exit 0, 3.8 s**, and beat 4:05 prints `W3 on ttsim: EXACT (1089 cells compared), 0.4s on 4 Tensix cores` |
+| `python demo/run_demo.py` (airenv + `.venv-tt`) | **exit 0, 3.7 s**, and beat 4:05 prints `W3 on ttsim: EXACT (1089 cells compared)` — the seconds it appends are the simulator's own wall clock and vary run to run (0.4 s to 2.2 s here) |
 
 *The **one** default-suite skip is the absent device (`/dev/accel*`); the one `slow` skip is
 W2's ttsim deadlock demonstration, which needs `.venv-tt` and therefore skips under `.venv` — it
