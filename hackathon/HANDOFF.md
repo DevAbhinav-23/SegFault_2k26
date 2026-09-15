@@ -191,7 +191,7 @@ proves only that no *token* edge exists, not that no *channel-slot* stall occurs
 ## Integration — state at 2026-09-15
 
 *Appended by the integration pass, on branch `integration` off `main` at `78f308c` (all three
-roles merged). Companions: C's [`../progress.md`](../progress.md),
+roles merged). Companions: C's [`../design/PROGRESS-C.md`](../design/PROGRESS-C.md),
 [`../design/PROGRESS-B.md`](../design/PROGRESS-B.md),
 [`../design/PROGRESS-TT.md`](../design/PROGRESS-TT.md).*
 
@@ -242,7 +242,7 @@ states what `spatial/m6_tools.py` implements: `m6.run(artifact, inputs, target, 
 workdir=None)`, `m6.trace(mlir_path, model_json, function, workdir=None)`, `m6.has_device()`,
 and `DiffReport` as the **frozen dataclass in `spatial/model.py`** it has always been. Forcing
 requirement: the frozen two-argument shapes cannot construct an `XRTBackend` nor name the
-function for `air-runner -f` (C, `progress.md` §3). No field of any §2–§5 record changes.
+function for `air-runner -f` (C, `design/PROGRESS-C.md` §3). No field of any §2–§5 record changes.
 `00-README.md` §4 carries change-log row 6 and the v6 signature row.
 
 ### What the suite says now

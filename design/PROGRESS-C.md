@@ -1,5 +1,10 @@
 # PROGRESS — Part C (Person C): M6 device path, M7 harness, M8 kernels/fixtures/demo
 
+*Moved here from the repository root (`progress.md`) on **2026-09-15**, so that all three state
+files sit together in `design/` beside `PROGRESS-B.md` and `PROGRESS-TT.md` — the split was the
+trap `hackathon/HANDOFF.md` named. Contents unchanged by the move; every reference to
+`progress.md` in `00-README.md`, `06-interfaces.md` and `HANDOFF.md` now points here.*
+
 Branch `role-c`. Baseline: B's close-out (`role-b`, HANDOFF P7 — 611 passed).
 Replaces `progress_partc.md`. Last verified 2026-09-13.
 

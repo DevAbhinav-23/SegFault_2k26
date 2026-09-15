@@ -135,10 +135,16 @@ fails without it.** By then the cost of churn exceeds the cost of an ugly interf
 
 | Document | Person A | Person B | Person C | Date |
 |---|---|---|---|---|
-| `06-interfaces.md` v3 | ☐ | ☐ | ☐ | |
-| `06-interfaces.md` v4 | ☐ | ☐ | ☐ | |
-| `06-interfaces.md` v5 | ☐ | ☐ | ☐ | |
-| `06-interfaces.md` v6 | ☐ | ☐ | ☐ | |
+| `06-interfaces.md` v3 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
+| `06-interfaces.md` v4 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
+| `06-interfaces.md` v5 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
+| `06-interfaces.md` v6 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
+
+*A's and C's columns are **pending** and are theirs to tick; a version is signed only when all
+three are. B's four are what B can answer for: v3's `MappingSummary.residency`, v4's `HerdPlan`
+marker and `KernelModel.bindings`, v5's `Statement.expr` and the loop-axis naming rule, and v6's
+`m6.run`/`m6.trace`/`DiffReport` shapes are all implemented against by `m4_mapping`, `m5_emit`
+and `m5tt_emit`, and every golden in the suite was produced through them.*
 
 *Sign **v3**, not v1 or v2: the round-1 review found eleven holes in the contract and RULING 9
 found a twelfth, and a freeze over a contract with known holes is worse than a one-hour delay
@@ -151,10 +157,10 @@ found a twelfth, and a freeze over a contract with known holes is worse than a o
 | 1 | 2026-09-12 | initial | — | superseded before D0 |
 | 2 | 2026-09-12 | §5.5 `ComputeNode` → `StoreNode` + the `ExprNode` tree (`Load`/`Const`/`BinOp`/`Neg`/`MaxMin`/`Select`); §5.5 `BranchNode` added to `PlanNode`; §5.5 `LoopPlan.axis` synthetic-name footnote; §4.1 `LegalMapping.pi_u`, `.ker_pi_u` and the two-frame note; §5.2 `ChannelSite.id`; §5.3 `ChannelPlan.chain_direction`; §5.6 `MappingPlan.launch_name`, `.segment_name`, the `tensors` construction rule and invariants 6-7; §6.3 `GRAMMAR-NONUNIFORM-DEP` and `DMA-CHANNELS` (catalogue 41 → **43**); §8 the closed `<variant>` vocabulary | REVIEW-round1 B-3, B-4, B-5, B-9, B-10, B-13 | *(pending D0)* |
 | 3 | 2026-09-12 | §5.7 `MappingSummary.residency` — one `(operand, duration)` pair per operand — and the residency line each pair renders into `lines` (`03-lld-M4-mapping.md` §3.9 computes it) | architect **RULING 9**: the stationarity predicate is spatial, so "stationary" alone does not say how long an operand stays in L1 (FR-M11, FR-D2) | *(pending D0)* |
-| 4 | 2026-09-13 | §5.5 `HerdPlan` ∈ `PlanNode`, §5.6 `segment_body` carries exactly one `HerdPlan` == `herd` (invariant 8); §2.7 `KernelModel.bindings`; §2.1 expression shape entries resolve to ints at capture; §5.2 `order` per body | FR-E1 + D-14 (B-P7); FR-M7 + Q-M1-2 (B-P9) | *proposed by B's architect 2026-09-13; pending A, B, C signatures* |
+| 4 | 2026-09-13 | §5.5 `HerdPlan` ∈ `PlanNode`, §5.6 `segment_body` carries exactly one `HerdPlan` == `herd` (invariant 8); §2.7 `KernelModel.bindings`; §2.1 expression shape entries resolve to ints at capture; §5.2 `order` per body | FR-E1 + D-14 (B-P7); FR-M7 + Q-M1-2 (B-P9) | *proposed by B's architect 2026-09-13; **signed B 2026-09-15**; pending A, C* |
 | 4 | 2026-09-13 | §8 summary golden path gains `<target>` (erratum, 2026-09-13) | architect ruling on **B-P14**: the herd line carries the physical shape and the repeats, which differ per target, so the target-less path of §8 contradicted `04-test-plan.md` §3.1's "stored per target too". Documentation only — no `CONTRACT_VERSION` bump | *architect, 2026-09-13* |
-| 5 | 2026-09-13 | §2.4 `Statement.expr` (`ExprNode`, the desugared right-hand side over kernel-level operands) and §2.7's invariant that its `Load`s name `Param`s; §5.6 `declared` := named by a clause; §5.5 the loop-axis naming rule | FR-M8 + FR-E2 (B-P19); FR-M1/FR-M11 (B-P17); (B-P18) | *proposed by B's architect 2026-09-13; pending A, B, C* |
-| 6 | 2026-09-13 | §7.2 `m6.run` gains `target`, `kernel_name`, optional `workdir`; `m6.trace` gains `function`, optional `workdir`; §7.2 `DiffReport` is a frozen dataclass in `spatial/model.py` | the frozen two-arg shapes cannot construct `XRTBackend` nor name the function for `air-runner -f` (C, `progress.md` §3) | *proposed by C 2026-09-13, bumped by the architect 2026-09-15; pending A, B, C* |
+| 5 | 2026-09-13 | §2.4 `Statement.expr` (`ExprNode`, the desugared right-hand side over kernel-level operands) and §2.7's invariant that its `Load`s name `Param`s; §5.6 `declared` := named by a clause; §5.5 the loop-axis naming rule | FR-M8 + FR-E2 (B-P19); FR-M1/FR-M11 (B-P17); (B-P18) | *proposed by B's architect 2026-09-13; **signed B 2026-09-15**; pending A, C* |
+| 6 | 2026-09-13 | §7.2 `m6.run` gains `target`, `kernel_name`, optional `workdir`; `m6.trace` gains `function`, optional `workdir`; §7.2 `DiffReport` is a frozen dataclass in `spatial/model.py` | the frozen two-arg shapes cannot construct `XRTBackend` nor name the function for `air-runner -f` (C, `design/PROGRESS-C.md` §3) | *proposed by C 2026-09-13, bumped by the architect 2026-09-15; **signed B 2026-09-15**; pending A, C* |
 
 ---
 

@@ -148,6 +148,9 @@ _HEADER = """\
 
 void kernel_main() {{
 """
+"""The top of every emitted kernel: the provenance line and the two includes the gate report
+used verbatim (`dataflow_api.h` for the NoC calls and `get_write_ptr`, `noc_traits.h` for
+`TensorAccessor`). One `kernel_main` per core, as §3.1 has it."""
 
 
 class TTEmitError(Exception):
