@@ -688,6 +688,13 @@ def capture(fn: Callable) -> KernelModel:
     code = getattr(fn, "__code__", None)
     filename = code.co_filename if code is not None else "<kernel>"
     tree = ast.parse(src)
+    if location[1] > 0:
+        # `ast.parse` numbers the *snippet*, whose line 1 is `co_firstlineno` in the file, so
+        # without this every grammar diagnostic and every `Statement.line` counted from the
+        # `def` rather than from the file — FR-S4 (b) asks for the source file **and line**
+        # (erratum, 2026-09-15). `tests/integration/test_kernels_live.py` already normalises
+        # `line` out of the plan comparison, so no golden depends on the old numbering.
+        ast.increment_lineno(tree, location[1] - 1)
     fdef = _fdef_of(tree, location)
     globals_ = fn.__globals__
 

@@ -256,8 +256,16 @@ def _check_stationarity(kernel: KernelModel, schedule: ScheduleModel,
 
 
 def _unit(f: _Frames, name: str) -> tuple[int, ...]:
+    """The UCoord unit vector of `name`'s **root** axis.
+
+    `R = ker Sf` is a UCoord space, so a tile handle has no column of its own there: it is the
+    axis it was strip-mined from. Indexing `ucoord` with the handle itself raised a bare
+    `ValueError` out of `tuple.index` for `reduce(ax.k0, ...)` -- a user path, so NFR-7 says
+    that must be a diagnostic (erratum, 2026-09-15). `root` is the identity on an untiled name,
+    so no accepted schedule changes.
+    """
     v = [0] * len(f.ucoord)
-    v[f.ucoord.index(name)] = 1
+    v[f.ucoord.index(f.root(name))] = 1
     return tuple(v)
 
 
