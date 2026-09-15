@@ -1157,7 +1157,9 @@ def broadcast_guard(plan: MappingPlan) -> None:
     cols, rows = physical
     for channel in plan.channels:
         dim = specialize_dim(channel)
-        if dim is None or plan.mapping.repeats[dim] != 1:
+        # A bundle dimension only names a herd dimension when the two ranks agree, which is
+        # what makes `repeats[dim]` and `_herd_dim` below mean anything.
+        if dim is None or len(channel.size) != len(physical) or plan.mapping.repeats[dim] != 1:
             continue
         for site in channel.sites:
             if site.kind != "get" or site.scope != "herd" or len(site.indices) <= dim:
