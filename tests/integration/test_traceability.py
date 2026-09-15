@@ -1,11 +1,10 @@
 """The traceability gate. Spec: design/03-lld-M7-tests.md §6.3, design/04-test-plan.md §7.
 
-Written by B at P7, extended by B at T5. **Person C owns the full gate**: only groups **M**,
-**E**, **TT** and **K1-K4** are asserted here, because those are the only requirements anyone
-has built. Groups **S**, **L**, **T** and **D** belong to M1/M2/M3 (Person A) and M6/M7
-(Person C), and neither exists, so this file *reports* their uncovered ids and skips instead of
-failing. Flipping the skip into an assertion is the one edit C makes when A's and C's modules
-land — `_UNBUILT` is the list.
+Written by B at P7, extended by B at T5, **closed by A on 2026-09-15**. Both halves are now
+assertions: `test_traceability_B_groups_covered` for groups M, E, TT and FR-K1…K4, and
+`test_traceability_full_gate` for groups S, L, T, D and FR-K5, which reported and skipped
+while M1/M2/M3 and the diagnostics corpus did not exist. `_UNBUILT` keeps its name and its
+list — it is the second gate's denominator — but nothing in it is unbuilt any more.
 
 **Two requirement documents, two denominators.** `01-requirements.md` §3 declares the **70**
 FRs of the AIR path; `08-tt-backend.md` §6 declares the **14** of the Tenstorrent stretch group
@@ -64,7 +63,9 @@ _BUILT_EXTRA = ("FR-K1", "FR-K2", "FR-K3", "FR-K4")
 line in the honest-limits slide, and `test_K5_scope_documented` (M7 §7.7) is Person C's."""
 
 _UNBUILT = ("S", "L", "T", "D")
-"""Groups owned by A (M1/M2/M3, the diagnostics corpus) and C (M6, M7). Reported, not asserted."""
+"""Groups owned by A (M1/M2/M3, the diagnostics corpus) and C (M6, M7) — the second gate's
+denominator. The name is historical: they were unbuilt when B wrote this file, and as of
+2026-09-15 they are asserted like everyone else's."""
 
 
 def _group(fr: str) -> str:
@@ -150,22 +151,27 @@ def test_traceability_B_groups_covered(pytestconfig):
         f"{len(missing)} of B's {len(mine)} FR(s) have no test: {missing}")
 
 
-def test_traceability_full_gate_reports_the_rest(pytestconfig):
-    """Groups S, L, T, D and FR-K5 — reported, then skipped. **Person C owns this one.**
+def test_traceability_full_gate(pytestconfig):
+    """Groups S, L, T, D and FR-K5 — **asserted**, since 2026-09-15.
 
-    The reason is in the skip message, which is what `04-test-plan.md` §8 item 10 asks of every
-    skip: this is not a passing gate, it is an unbuilt one.
+    This test used to report its groups and skip, because M1, M2, M3, the diagnostics corpus
+    and M6 did not exist and a gate nobody can pass is noise rather than a check. The skip was
+    the instruction for how to retire it — *"turn this test into an assertion once the
+    uncovered list is empty"* — and the A-side correctness pass emptied it: the negative
+    corpus of `tests/negative/` closed FR-D1/FR-D3 and, with it, the eighteen S- and L-group
+    requirements that only a rejection can exercise.
+
+    `_require_whole_suite` stays: a partial collection cannot prove coverage, and the gate
+    declines to try rather than passing on an index of four items.
     """
     _require_whole_suite(pytestconfig)
     covered = _covered()
     theirs = [fr for fr in declared_frs()
               if _group(fr) in _UNBUILT or (_group(fr) == "K" and fr not in _BUILT_EXTRA)]
     missing = [fr for fr in theirs if fr not in covered]
-    if missing:
-        pytest.skip(f"owned by A/C, not built yet: {len(missing)} of {len(theirs)} "
-                    f"uncovered — {missing}")
-    if golden.UPDATE_GOLDENS:  # the whole gate passes; C can delete the skip above
-        pytest.fail("every FR is covered: turn this test into an assertion (M7 §6.3)")
+    assert not missing, (
+        f"{len(missing)} of {len(theirs)} FR(s) in groups {', '.join(_UNBUILT)} (plus FR-K5) "
+        f"have no test: {missing}")
 
 
 def test_traceability_writes_the_inverse_index(pytestconfig):

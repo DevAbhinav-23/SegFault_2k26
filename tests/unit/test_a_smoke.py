@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 import spatial as sp
-from spatial.model import ClauseError, GrammarError
+from spatial.model import ClauseError, GrammarError, KernelModel
 from tests.fixtures.mappings import w1_legal, w2_legal, w3_legal
 
 # ------------------------------------------------------------------------------------------
@@ -21,6 +21,22 @@ from tests.fixtures.mappings import w1_legal, w2_legal, w3_legal
 # ------------------------------------------------------------------------------------------
 
 M = N = K = 64
+
+M8 = N8 = K8 = 8
+"""`gemm8`'s shape. Small on purpose: `test_kernel_call_is_oracle` runs the kernel in CPython,
+one Python iteration per point, and 8^3 is 512 of them against 64^3's 262 144 (NFR-3)."""
+
+
+def _gemm8(A: sp.f32[M8, K8], B: sp.f32[K8, N8], C: sp.f32[M8, N8]):
+    for i in range(M8):
+        for j in range(N8):
+            for k in range(K8):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+gemm8 = sp.kernel(_gemm8)
+"""The decorator applied by hand, so `test_kernel_call_is_oracle` can hold the *undecorated*
+function object and assert the decorated one calls exactly it (FR-S1)."""
 
 
 @sp.kernel
@@ -227,3 +243,115 @@ def test_w1flip_stationarity_rejection():
     with pytest.raises(LegalityError) as exc:
         s.check()
     assert exc.value.diagnostic.code == "STATIONARITY"
+
+
+# ------------------------------------------------------------------------------------------
+# FR-S1, FR-S5, FR-S17 -- the surface properties the negative corpus cannot reach
+# ------------------------------------------------------------------------------------------
+
+
+@pytest.mark.fr("FR-S1")
+def test_kernel_call_is_oracle():
+    """FR-S1: the decorated kernel (a) **is** the CPython oracle and (b) exposes its model.
+
+    (a) is asserted twice over: the decorated object calls exactly the function object that was
+    decorated -- `Kernel.__call__` is `fn.__call__` and nothing else -- and running it on an
+    integer-valued `f32` fixture reproduces `A @ B` **exactly**, which is the acceptance
+    `01-requirements.md` §3.1 writes for this requirement.
+    """
+    import numpy as np
+
+    assert gemm8.fn is _gemm8, "the decorator must not wrap or rebuild the function"
+    assert isinstance(gemm8.model, KernelModel) and gemm8.model.name == "_gemm8"
+
+    rng = np.random.default_rng(20260915)
+    a = rng.integers(-8, 8, size=(M8, K8)).astype(np.float32)
+    b = rng.integers(-8, 8, size=(K8, N8)).astype(np.float32)
+    c = np.zeros((M8, N8), dtype=np.float32)
+    gemm8(a, b, c)
+    assert np.array_equal(c, a @ b), "the decorated kernel is not the oracle"
+
+    # ...and the schedule is ignorable: the same call after a full schedule is byte-identical
+    s = sp.schedule(gemm8, target="npu1")
+    ax = s.axes()
+    s.grid(2, 2)
+    s.tile(ax.i, 4); s.tile(ax.j, 4); s.tile(ax.k, 4)
+    s.reduce(ax.k, op="+")
+    s.place(px=ax.i0, py=ax.j0)
+    again = np.zeros((M8, N8), dtype=np.float32)
+    gemm8(a, b, again)
+    assert again.tobytes() == c.tobytes()
+
+
+@pytest.mark.fr("FR-S5")
+def test_schedule_is_pure_data():
+    """FR-S5: `axes()` is one handle per loop variable, and the clauses are pure data.
+
+    "Pure data" is asserted as the three properties that make it so: the model is a fresh,
+    equal projection on every access (§3.5 -- there is one copy of the truth, the record list),
+    it survives the canonical JSON round-trip of `06-interfaces.md` §8, and it is hashable.
+    `air` is not asserted absent here because this process has imported it for the golden
+    tests; that half is FR-S20's `test_no_air_import_until_build`, which uses a fresh process.
+    """
+    from spatial.model import ScheduleModel, from_json, to_json
+
+    s = sp.schedule(gemm, target="npu1")
+    ax = s.axes()
+    assert [ax.i.name, ax.j.name, ax.k.name] == ["i", "j", "k"]
+    with pytest.raises(AttributeError):
+        ax.q                                   # no handle for an axis the kernel has not got
+    s.tile(ax.i, 32)
+    assert ax.i0.name == "i0", "axes() is live: a tile handle joins the namespace"
+
+    s.grid(2, 2)
+    s.tile(ax.j, 32); s.tile(ax.k, 16)
+    s.reduce(ax.k, op="+")
+    s.place(px=ax.i0, py=ax.j0)
+    s.stationary("C")
+    s.reside(A="L1", B="L1", C="L1")
+    s.double_buffer("A", "B")
+    s.pipeline(ax.k0)
+
+    model = s.model
+    assert isinstance(model, ScheduleModel)
+    assert model == s.model and model is not s.model     # a fresh, equal projection each time
+    assert hash(model) == hash(s.model)
+    assert from_json(to_json(model), ScheduleModel) == model
+    assert (model.grid, model.place, model.stationary) == ((2, 2), ("i0", "j0"), ("C",))
+    assert model.tiles == (("i", 32), ("j", 32), ("k", 16))
+
+    for target in ("npu1", "npu2", "auto"):
+        assert sp.schedule(gemm, target=target).model.target == target
+
+
+@pytest.mark.fr("FR-S17")
+def test_skew_sets_sigma():
+    """FR-S17: `skew(time=...)` defines σ's **leading row** as the sum of the named axes.
+
+    The remaining rows are the default loop order restricted to axes that are neither skewed
+    nor placed (RULING 6), which is what makes W3's dropped-term schedule a rejection rather
+    than an acceptance: with `j0` excluded, `Sσ = [e_i + e_j0; e_j1]`.
+    """
+    s = sp.schedule(sw, target="npu1")
+    ax = s.axes()
+    s.grid(4)
+    s.tile(ax.j, 8)
+    s.place(px=ax.j0)
+    s.skew(time=(ax.i, ax.j0))
+    s.forward("S", along=ax.j0, dir="W->E")
+    s.reside(S="L1")
+
+    assert s.model.skew == ("i", "j0")
+    mapping = s.check()
+    assert mapping.sigma == ((1, 1, 0), (0, 0, 1))       # e_i + e_j0, then j1 alone
+
+    # `skew` is a sum, so naming the same two axes in the other order is a no-op
+    other = sp.schedule(sw, target="npu1")
+    ax = other.axes()
+    other.grid(4)
+    other.tile(ax.j, 8)
+    other.place(px=ax.j0)
+    other.skew(time=(ax.j0, ax.i))
+    other.forward("S", along=ax.j0, dir="W->E")
+    other.reside(S="L1")
+    assert other.check().sigma == mapping.sigma
