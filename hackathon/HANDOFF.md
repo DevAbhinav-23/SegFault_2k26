@@ -253,52 +253,109 @@ deliverable, not a gap: no device (`/dev/accel*` absent), the traceability resid
 1 skipped. `.venv-tt -m requires_ttsim tests/tt`: **25 PASSED, exit 0**.
 `python demo/run_demo.py`: exit 0 in ~1.4 s, with and without `scripts/airenv.sh`.
 
+*After the B-side closing pass (2026-09-15), measured on that branch: `.venv` default **746
+passed, 3 skipped, 40 deselected in 15.9 s** — same three skips; `pytest -m slow` **13 passed, 2
+skipped, 774 deselected** (the second skip is W2's ttsim deadlock demonstration, which needs
+`.venv-tt` and therefore skips under `.venv` — it runs, and passes, in the TT suite);
+`.venv-tt -m requires_ttsim tests/tt` **26 PASSED, exit 0**; `python demo/run_demo.py` **exit 0
+in 3.7 s** with `.venv-tt` and the simulator present (2.0 s on a warm JIT cache), which now
+includes a real W3 execution on ttsim. The A-side pass ran concurrently and its figures are its
+own.*
+
+### Tenstorrent in the project
+
+The second backend is no longer a stretch item sitting beside the entry; it is on the demo path
+and on the live test path, and the two rulings it was waiting on are closed.
+
+* **A demo beat.** `[4:05] Second backend — Tenstorrent Wormhole on ttsim, same plan`, between
+  "It lowers" and "Honest limits". It takes W3's plan from the **live surface**
+  (`kernels.w3_sw.schedule("npu1").plan()` — the same object the 3:40 beat lowered through
+  `air.api`), emits the TT-Metalium program in the demo's own interpreter, prints the four-core
+  range, the one data-movement kernel, the six semaphores, the circular buffers and the io
+  tensors, and then **runs it**: `.venv-tt` on `demo/tt_w3_on_ttsim.py`, compared against
+  `kernels.w3_sw.sw` executed in CPython. Measured: `W3 on ttsim: EXACT (1089 cells compared)`.
+  With `.venv-tt` or `vendor/tt/libttsim_wh.so` absent it prints which one is missing and points
+  at `design/PROGRESS-TT.md` §T5.3 — it never claims a run it did not get.
+* **Live tests, both halves.** `test_live_plan_emits_the_same_tt_program` (default suite, no
+  device) asserts `m5tt_emit.emit(live_plan) == m5tt_emit.emit(m4.plan(fixture_literal))` for
+  W1-os, W1-ws, W2 and W3 — one structural `==` over the kernel C++, the core range, the buffers,
+  the semaphores and the runtime args; `tests/tt/test_tt_live.py` runs the same live path through
+  the simulator. Until now every TT test began at a hand-written `LegalMapping`.
+* **R-TT-B and R-TT-B′ are adjudicated** (architect, 2026-09-15): *"Accepted as measured:
+  occurrence pairing (k-th put ↔ k-th get) and the credit = smallest gap between aliasing landing
+  regions (1 for W3 and the cascade, 2 for W2). The depth-1 deadlock on W2 was reproduced, the
+  credit rule removed it, and all four variants are exact on ttsim with negative controls. Not a
+  general theorem: holds for the four plans measured; any new plan shape must re-run
+  `tests/tt`."* That scope clause is the sentence to say out loud, and it is honest limit 9 in
+  `design/08-tt-backend.md` §8.
+
+What is **not** claimed is unchanged: no Tenstorrent silicon was touched at any point, ttsim is a
+**functional** simulator of one Wormhole B0 part, the compute is scalar C++ on one data-movement
+RISC-V, there is no timing claim, and **Tenstorrent is not an AIR target**.
+
 ### Open items, by owner
 
-**Person A**
+*Rewritten **2026-09-15**, after the two closing passes that followed the integration pass: a
+**B-side** pass (the demo, the second backend, the emitter's dtype cast, CI, the state files —
+this list's B and C entries) and an **A-side** pass running concurrently. The two could not see
+each other's results, so every A item below says only that it is being closed by that pass, and
+its outcome is `design/PROGRESS-A.md` (to be linked when the A-side pass lands it) rather than a
+claim made here.*
 
-1. **The negative corpus.** `tests/negative/` holds only `__init__.py`. 30 of the 43 catalogue
-   codes are raised by nothing, and `test_D1_schema` / `test_D3_catalogue_complete` do not
-   exist. `test_NFR7_all_errors_are_spatial` skips until it lands.
-2. **The 18 FRs still uncovered**, verbatim from the gate's own skip message:
-   `FR-S1, FR-S4, FR-S5, FR-S6, FR-S9, FR-S10, FR-S11, FR-S15, FR-S16, FR-S17, FR-S19, FR-L1,
-   FR-L5, FR-L6, FR-L8, FR-L10, FR-L11, FR-L13`. Every one is a *negative* or a *purity* case
-   the positive path cannot reach; most are one test each.
-3. **FR-L9's message owes a per-buffer breakdown.** §3.10 line 12 and FR-L9's acceptance both
-   want `details["per_buffer"]`; `_check_l1_capacity` puts only `total` and `budget` there.
-4. **Signatures on `06-interfaces.md` v3, v4, v5 and v6** — none has one.
-5. **`GrammarError` diagnostics built with `location=None`** (`m1_frontend.capture`'s
-   `inspect.getsource` branch, its no-statement branch, and `_fdef_of`) violate M0 invariant
-   I71 and raise `ValueError` instead of the `GrammarError` they meant — a kernel defined in a
-   REPL crashes rather than being rejected. Not fixed in this pass: it is outside the brief and
-   needs A's decision on what location to report.
-6. M1 and M2 diagnostics carry **absolute** `location` paths (`code.co_filename`,
-   `inspect.stack()`). No golden depends on one today because M3's legality diagnostics carry
-   `location=None`, but a grammar or clause golden would not be machine-independent.
-7. **An unused kernel parameter is rejected by M3 under `STATIONARITY`** (`_operand_matrix`, this pass). Architect ruling 2026-09-15: accepted as the closest code in the
-   frozen catalogue; the right home is an M1 grammar rejection at capture, which needs a new
-   catalogue code and therefore the next contract round. Until then the message says what is
-   wrong in plain words.
+**Person A — being closed by the A-side pass; read `design/PROGRESS-A.md` (to be linked) for
+what it actually did.** The list the integration pass left: the **negative corpus**
+(`tests/negative/` holds only `__init__.py`, 30 of the 43 catalogue codes raised by nothing,
+`test_D1_schema` / `test_D3_catalogue_complete` absent, `test_NFR7_all_errors_are_spatial`
+skipping); the **18 uncovered FRs** (`FR-S1, FR-S4, FR-S5, FR-S6, FR-S9, FR-S10, FR-S11, FR-S15,
+FR-S16, FR-S17, FR-S19, FR-L1, FR-L5, FR-L6, FR-L8, FR-L10, FR-L11, FR-L13`); **FR-L9's
+per-buffer breakdown** in `details`; **`GrammarError` with `location=None`** raising `ValueError`
+instead of the rejection it meant; M1/M2 diagnostics carrying **absolute** `location` paths; and
+the **unused kernel parameter rejected under `STATIONARITY`**, which the architect accepted on
+2026-09-15 as the closest code in the frozen catalogue. A's **signatures** on `06-interfaces.md`
+v3–v6 are still A's to give (B's are in, 2026-09-15).
+
+**Person B — done in this pass.**
+
+1. ~~The Tenstorrent backend is a stretch item beside the project~~ — **done.** It is in the
+   demo (beat 4:05, W3 executed on ttsim against the CPython kernel) and on the live test path
+   (`test_live_plan_emits_the_same_tt_program` in the default suite, `tests/tt/test_tt_live.py`
+   on the simulator). `design/PROGRESS-TT.md` §T6.
+2. ~~`kernels/w1_gemm_bf16` is not emittable~~ — **done, B-P32.** M5 widens each load to the
+   destination's dtype with `air.api.ops.cast`, so "bf16 in, f32 out" emits; every golden is
+   byte-identical. `aircc` still refuses W1-large **for its 256³/4×4 shape, not for its dtype** —
+   a cast-free f32 control at the same grid and the same L1 draws the same two diagnostics, and
+   the `slow` test asserts exactly that.
+3. ~~B-P29, B-O8~~ — **closed.** `tests/unit/test_nfr5_constants.py` is the NFR-5 AST lint (90
+   module constants, 16 undocumented, each listed with its owner); B-O8 is answered — `check_pin`
+   plus byte-for-byte goldens are the standing answer, and a pin change *is* a golden
+   regeneration. **B-P26 stays open and documented** (`PIPELINES["aie"]` cannot lower W1;
+   nothing is blocked).
 
 **Person C**
 
-1. **The CI wheel cache was never primed.** The `default` job restores `vendor/wheels` with
-   `fail-on-cache-miss: true`, so it fails at step 3 by design until someone seeds it out of
-   band (`07-environment.md` §2, Q-C3). **CI has never run on a runner at all.**
-2. **The device run.** `m6.run` / `m6.diff` / `m6.trace` are built and **untested on
-   hardware**; `test_T4_device_diff` skips on `/dev/accel*`. This is the last claim the entry
-   cannot make.
-3. **`progress.md` sits at the repository root** while every other state file is in `design/`
-   (`PROGRESS-B.md`, `PROGRESS-TT.md`). Move it or link it, but the split is a trap.
+1. ~~The CI wheel cache cannot be primed from the workflow~~ — **the job exists now** (B's pass):
+   `.github/workflows/ci.yml`'s `prime-wheels`, `workflow_dispatch` with `confirm: prime`,
+   downloads the 16 pinned wheels, `sha256sum -c`, saves the cache under the key the other jobs
+   restore with `fail-on-cache-miss: true`. **Still not run: nobody has dispatched it, and CI
+   has never run on a runner at all** — no `gh` and no token on this machine, so it could not be
+   triggered from here. `design/07-environment.md` §2 carries the one-line recipe.
+2. **The device run — the one item no machine here can close.** `m6.run` / `m6.diff` /
+   `m6.trace` are built and **untested on hardware**; `test_T4_device_diff` skips because
+   `/dev/accel*` is absent. It needs an XDNA1 (Phoenix) laptop and XRT; until someone runs it,
+   the entry's end-to-end claim stops at `aircc --output-format=none`, and the honest-limits
+   slide says so.
+3. ~~`progress.md` sits at the repository root~~ — **moved** to
+   [`../design/PROGRESS-C.md`](../design/PROGRESS-C.md) on 2026-09-15, references updated.
 
 **User / architect**
 
-1. **Sign v3, v4, v5 and v6** of `06-interfaces.md` (`00-README.md` §4's signature block).
-2. **The pitch decision on a Tenstorrent beat.** `demo/run_demo.py` has none, deliberately:
-   whether the five minutes can afford it is a pitch-script call, not a code one. The slide
-   text is written and ready in `design/08-tt-backend.md` §8.
-3. Adjudicate **R-TT-B** and its credit rule (still open from T3), and the B-P/B-O items listed
-   under *Person B implementation* below.
+1. **A's and C's signatures** on `06-interfaces.md` v3–v6. B's four are signed (2026-09-15,
+   architect on B's behalf); a version counts as signed only when all three are.
+2. ~~The pitch decision on a Tenstorrent beat~~ — **taken: there is one**, at 4:05, and it costs
+   ~2 s of the five minutes. Cut it by deleting one `beat(...)` line if the rehearsal says the
+   five minutes cannot afford it.
+3. ~~Adjudicate R-TT-B and its credit~~ — **done, 2026-09-15**: accepted as measured, and
+   explicitly *not* a general theorem (`design/08-tt-backend.md` §3.5, `PROGRESS-TT.md` §T6.1).
 
 ---
 

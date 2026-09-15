@@ -69,7 +69,7 @@ negotiable inside the week.
 |---|---|---|---|
 | Requirements | **drafted** | — | — |
 | HLD | **drafted** | — | — |
-| Interfaces | **drafted at `CONTRACT_VERSION = 6`, v4, v5 and v6 pending signatures**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze | all three | **D0** |
+| Interfaces | **drafted at `CONTRACT_VERSION = 6`; v3–v6 signed by B (2026-09-15), A's and C's columns pending**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze | all three | **D0** |
 | Per-module LLDs (M1…M8 + B's probe log) | **drafted**, revised per REVIEW-round1 | per module | — |
 | Design review round 1 | **answered** — `RESPONSE-review1.md` | — | — |
 | Test plan | **drafted** | — | — |
@@ -84,13 +84,13 @@ negotiable inside the week.
 | M4 (W1 / W3 / W2 / flip) | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7; gate **G2/G3/G4/G5** B-half green | B | D2 / D4 / D5 / D6 |
 | M5 | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 | B | D1 skeleton, D2 real |
 | M6 | off-device path **written by B at P0c/P4/P6**, reviewed and kept by C; **device half built by C 2026-09-13** (`has_device`, `run`, `diff`, `trace`) and **untested on hardware** — no `/dev/accel*` here | C | D2 |
-| M7 harness, M8 fixtures | **built (C)** — 2026-09-13: harness owned, NFR tests, level-O oracle diffs, CI workflow (never run on a runner), all M8 fixtures generated | C | D1 |
+| M7 harness, M8 fixtures | **built (C)** — 2026-09-13: harness owned, NFR tests, level-O oracle diffs, CI workflow, all M8 fixtures generated. 2026-09-15: the workflow gains `prime-wheels` (`workflow_dispatch`, `confirm: prime`) so the cache the other jobs need can be filled from CI — **still never run on a runner** | C | D1 |
 | **W1 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G2** B-half: `test_W1_legal_to_text` | B, C | **gate G2, D2** |
 | **W3 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G3** B-half: `test_golden_w3`, `test_W3_aircc_none` | B, C | **gate G3, D4** |
 | **W2 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G4** B-half: `test_golden_w2`, `test_W2_aircc_none` | B, C | **gate G4, D5** |
 | **W1 weight-stationary flip** (stretch) — 1-D `grid(PK=4)`, `place(px=ax.k0)`, `j` untiled, ascending cascade | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G5** B-half: `test_golden_w1_flip`, `test_W1_flip_aircc_none`, `cascade_channels == 3` | B | **gate G5, D6 midday**; the designated cut if the plan runs over |
 | Device run (stretch) | **not started** — `m6.run`/`m6.diff` built and untested on silicon; `test_T4_device_diff` skips on `/dev/accel*` | C | D5 |
-| **TT backend (B, stretch)** — second emitter, `MappingPlan` → TT-Metalium on ttsim; spec [`08-tt-backend.md`](08-tt-backend.md) | **T1–T4 GREEN (2026-09-13), close-out T5; see [`PROGRESS-TT.md`](PROGRESS-TT.md); merged to main** | B | **gates T1–T4**; abandoned if a gate is not green after two agent-days |
+| **TT backend (B, stretch)** — second emitter, `MappingPlan` → TT-Metalium on ttsim; spec [`08-tt-backend.md`](08-tt-backend.md) | **in the demo and live tests (2026-09-15)** — beat 4:05 executes W3 on ttsim against the CPython kernel, `test_live_plan_emits_the_same_tt_program` (default suite) and `tests/tt/test_tt_live.py` put the live surface on the TT path, and **R-TT-B / R-TT-B′ are adjudicated** (accepted as measured, not a theorem). T1–T4 GREEN (2026-09-13), close-out T5, §T6; see [`PROGRESS-TT.md`](PROGRESS-TT.md); merged to main | B | **gates T1–T4**; abandoned if a gate is not green after two agent-days |
 | W4 FFT | **out of scope** | — | — |
 | Freeze | — | all | **end of D6** |
 

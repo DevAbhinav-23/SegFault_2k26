@@ -67,9 +67,16 @@ tested. An illegal schedule is rejected by `s.check()` **before** any IR exists;
 rejections are `kernels/rejections.py`. This example is `kernels/w1_gemm.py`'s `schedule_os`
 verbatim; `kernels/w2_jacobi.py` and `kernels/w3_sw.py` are the halo and wavefront equivalents.
 
+The same `s.plan()` drives the **second** backend — `spatial.m5tt_emit.emit(s.plan())` returns a
+TT-Metalium program, and `source scripts/tt_env.sh` + `.venv-tt/bin/python -m pytest -m
+requires_ttsim tests/tt` executes all four workloads on Tenstorrent's functional simulator.
+
 ```bash
-python demo/run_demo.py        # the six pitch beats, ~1.5 s, no device needed
+python demo/run_demo.py        # the seven pitch beats, ~3.7 s, no device needed
 ```
+
+Beat 4:05 runs W3 on `ttsim` for real when `.venv-tt` and `vendor/tt/libttsim_wh.so` are there,
+and prints one honest line saying which is missing when they are not.
 
 ## Tests
 
@@ -91,8 +98,14 @@ vendor/tt/SHA256SUMS`), then exports the simulator environment:
 
 ```bash
 source scripts/tt_env.sh
-.venv-tt/bin/python -m pytest -rA -q -m requires_ttsim tests/tt   # 25 PASSED, exit 0, ~286 s
+.venv-tt/bin/python -m pytest -rA -q -m requires_ttsim tests/tt   # 26 PASSED, exit 0, ~286 s
 ```
+
+It is on the live path, not beside it: `demo/run_demo.py`'s beat 4:05 executes W3 on `ttsim`
+against the CPython kernel, `tests/tt/test_tt_live.py` is the same run as a test, and
+`tests/integration/test_kernels_live.py::test_live_plan_emits_the_same_tt_program` asserts in the
+**default** suite — no device, no `ttnn` — that the live surface and the fixture literals emit
+the same `TTProgram`.
 
 Judge that run by its exit status and its `-rA` `PASSED` lines: ttsim's exit ends the process
 without flushing Python's stdout, so no summary line prints after ttsim exits. Do not add a
