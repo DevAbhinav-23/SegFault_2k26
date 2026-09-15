@@ -253,14 +253,24 @@ deliverable, not a gap: no device (`/dev/accel*` absent), the traceability resid
 1 skipped. `.venv-tt -m requires_ttsim tests/tt`: **25 PASSED, exit 0**.
 `python demo/run_demo.py`: exit 0 in ~1.4 s, with and without `scripts/airenv.sh`.
 
-*After the B-side closing pass (2026-09-15), measured on that branch: `.venv` default **746
-passed, 3 skipped, 40 deselected in 15.9 s** — same three skips; `pytest -m slow` **13 passed, 2
-skipped, 774 deselected** (the second skip is W2's ttsim deadlock demonstration, which needs
-`.venv-tt` and therefore skips under `.venv` — it runs, and passes, in the TT suite);
-`.venv-tt -m requires_ttsim tests/tt` **26 PASSED, exit 0**; `python demo/run_demo.py` **exit 0
-in 3.7 s** with `.venv-tt` and the simulator present (2.0 s on a warm JIT cache), which now
-includes a real W3 execution on ttsim. The A-side pass ran concurrently and its figures are its
-own.*
+*The figures of record are the **union's**, measured on the final pass's branch, 2026-09-15,
+on this machine at the `design/07-environment.md` pin:*
+
+| Run | Result |
+|---|---|
+| `.venv` default (`pytest -rA`) | **765 passed, 1 skipped, 42 deselected in 15.4 s** |
+| `pytest -m slow` (with `scripts/airenv.sh`) | **16 passed, 1 skipped, 791 deselected** |
+| `PYTHONHASHSEED=7 -k "golden or plan or summary"` | **168 passed, 640 deselected in 3.6 s** |
+| `.venv-tt -m requires_ttsim tests/tt` (with `scripts/tt_env.sh`) | **26 PASSED, exit 0** |
+| `python demo/run_demo.py` (airenv + `.venv-tt`) | **exit 0, 3.8 s**, and beat 4:05 prints `W3 on ttsim: EXACT (1089 cells compared), 0.4s on 4 Tensix cores` |
+
+*The **one** default-suite skip is the absent device (`/dev/accel*`); the one `slow` skip is
+W2's ttsim deadlock demonstration, which needs `.venv-tt` and therefore skips under `.venv` — it
+runs, and passes, in the TT suite. The earlier waypoints, for the record: `.venv` default was
+**723 passed / 3 skipped** after the integration pass, **746/3** after the B-side pass and
+**757/1** after the A-side pass; the union plus the final pass is the row above. The count moved
+by **−16** against `integration2`'s 780 because `KNOWN_UNDOCUMENTED`'s 16 parametrised cases were
+deleted when the list emptied, and `slow` gained the two W1-large controls.*
 
 ### Tenstorrent in the project
 
@@ -295,24 +305,28 @@ RISC-V, there is no timing claim, and **Tenstorrent is not an AIR target**.
 
 ### Open items, by owner
 
-*Rewritten **2026-09-15**, after the two closing passes that followed the integration pass: a
-**B-side** pass (the demo, the second backend, the emitter's dtype cast, CI, the state files —
-this list's B and C entries) and an **A-side** pass running concurrently. The two could not see
-each other's results, so every A item below says only that it is being closed by that pass, and
-its outcome is `design/PROGRESS-A.md` (to be linked when the A-side pass lands it) rather than a
-claim made here.*
+*Rewritten **2026-09-15**, and this revision is the **union**: the A-side and B-side closing
+passes were merged into `integration2`, and a final pass on top of that union closed P1–P4
+below. Every figure here is from that final state, measured on this machine against the
+`design/07-environment.md` pin. The companion records are
+[`../design/PROGRESS-A.md`](../design/PROGRESS-A.md),
+[`../design/PROGRESS-B.md`](../design/PROGRESS-B.md),
+[`../design/PROGRESS-C.md`](../design/PROGRESS-C.md) and
+[`../design/PROGRESS-TT.md`](../design/PROGRESS-TT.md).*
 
-**Person A — being closed by the A-side pass; read `design/PROGRESS-A.md` (to be linked) for
-what it actually did.** The list the integration pass left: the **negative corpus**
-(`tests/negative/` holds only `__init__.py`, 30 of the 43 catalogue codes raised by nothing,
-`test_D1_schema` / `test_D3_catalogue_complete` absent, `test_NFR7_all_errors_are_spatial`
-skipping); the **18 uncovered FRs** (`FR-S1, FR-S4, FR-S5, FR-S6, FR-S9, FR-S10, FR-S11, FR-S15,
-FR-S16, FR-S17, FR-S19, FR-L1, FR-L5, FR-L6, FR-L8, FR-L10, FR-L11, FR-L13`); **FR-L9's
-per-buffer breakdown** in `details`; **`GrammarError` with `location=None`** raising `ValueError`
-instead of the rejection it meant; M1/M2 diagnostics carrying **absolute** `location` paths; and
-the **unused kernel parameter rejected under `STATIONARITY`**, which the architect accepted on
+**Person A — done; the record is [`../design/PROGRESS-A.md`](../design/PROGRESS-A.md).** Every
+item the integration pass left is closed except the signatures. What that pass measured: the
+**negative corpus** exists (`tests/negative/`, six stage modules plus `test_catalogue.py`, **all
+43 catalogue codes raised** where 30 were raised by nothing, `test_D1_schema` and
+`test_D3_catalogue_complete` written and passing, `test_NFR7_all_errors_are_spatial` no longer
+skipping, **99 corpus functions**); the **18 uncovered FRs are 0** and
+`tests/integration/test_traceability.py`'s full gate is an **assertion**, not a skip; **FR-L9's
+per-buffer breakdown** is in `details`; **I71** is fixed (a `GrammarError` with `location=None`
+raised `ValueError` instead of the rejection it meant, which made `GRAMMAR-NONUNIFORM-DEP`
+unreachable); M1/M2 `location` paths are **relative**, so they are machine-independent. The
+**unused kernel parameter** stays under `STATIONARITY`, which the architect accepted on
 2026-09-15 as the closest code in the frozen catalogue. A's **signatures** on `06-interfaces.md`
-v3–v6 are still A's to give (B's are in, 2026-09-15).
+v3–v7 are still A's to give (B's are in, 2026-09-15).
 
 **Person B — done in this pass.**
 
@@ -325,11 +339,46 @@ v3–v6 are still A's to give (B's are in, 2026-09-15).
    byte-identical. `aircc` still refuses W1-large **for its 256³/4×4 shape, not for its dtype** —
    a cast-free f32 control at the same grid and the same L1 draws the same two diagnostics, and
    the `slow` test asserts exactly that.
-3. ~~B-P29, B-O8~~ — **closed.** `tests/unit/test_nfr5_constants.py` is the NFR-5 AST lint (90
-   module constants, 16 undocumented, each listed with its owner); B-O8 is answered — `check_pin`
-   plus byte-for-byte goldens are the standing answer, and a pin change *is* a golden
-   regeneration. **B-P26 stays open and documented** (`PIPELINES["aie"]` cannot lower W1;
-   nothing is blocked).
+3. ~~B-P29, B-O8~~ — **closed.** `tests/unit/test_nfr5_constants.py` is the NFR-5 AST lint, and
+   its `KNOWN_UNDOCUMENTED` debt list is now **empty**: the 16 constants it named were
+   documented in the final pass and the lint asserts the list stays empty. (Six of them are in
+   the frozen `model.py`; they are private constants and a docstring on one changes no field of
+   any record.) B-O8 is answered — `check_pin` plus byte-for-byte goldens are the standing
+   answer, and a pin change *is* a golden regeneration. **B-P26 stays open and documented**
+   (`PIPELINES["aie"]` cannot lower W1; nothing is blocked).
+4. **NFR-4 now covers `assert`** — `test_NFR4_no_bare_raise` walks `ast.Assert` as well as
+   `ast.Raise`, with an **empty** `ASSERT_EXEMPT`: `spatial/` contains no `assert` at all, and
+   M0's `__post_init__` machinery needs no exemption because it raises `TypeError`/`ValueError`
+   through `_need`. The last one, in `m1_frontend`, went away by restructuring —
+   `_is_max_min_accumulate` returns the `ast.Call` it recognised instead of a flag, so the
+   caller never re-narrows.
+5. **W1-large, and contract v7.** The final pass took the two `aircc` refusals of
+   `kernels/w1_gemm_bf16` apart. **Both are the grid, and neither is the dtype or `l1_bytes`.**
+   At 256³ / 4×4 the logical grid exceeds both physical herds, so M4 emits a repeat loop; on
+   npu1 (`repeats == (4, 1)`) the herd-side `C2L3` put still indexes its bundle with the loop's
+   induction variable and `air-to-aie` cannot find a producer for bundle `[0,0]`
+   (`AIRToAIESchedulingUtils.cpp:3892-3894`; upstream names this cause in
+   `test/Conversion/AIRToAIE/segment_id_remap_no_unroll.mlir:14-19`), and on npu2
+   (`repeats == (2, 1)`) the loop gives each core **two** accumulators, so the tile asks
+   2 × 16 384 + 4 × 8 192 = 65 536 B of buffers plus the 2 048 B stack in a 65 536 B tile. The
+   **passing control** moves one parameter — `grid(1, 2)`, `repeats == (1, 1)`, same tiles, same
+   cast, same 49 152 B of `l1_bytes` — and `aircc` exits 0 on both generations
+   (`test_live_bf16_gemm_compiles_when_the_grid_fits_the_herd`). Since `l1_bytes` is identical
+   on both sides of the line, `l1_bytes` is not what decides.
+   * **Ruling R-P3-2 was *not* applied** (**B-P33**): the npu1 failure is not a DMA or column
+     resource, so widening P3's `DMA-CHANNELS` would name a resource that did not run out. Grid
+     2×4 and grid 4×2 put the same **8** outbound flows on the shim and land on opposite sides
+     of the line. `03-lld-M4-mapping.md` §3.8 carries the dated erratum.
+   * **Ruling R-L1-2 *was* applied** (**B-P34**), contract **v7**: the binding L1 budget is
+     **63 488** = 65 536 B of tile data memory less the **2 048 B** core stack `air-to-aie`
+     reserves (its `stack-size` option default, mlir-air `Passes.td:231-234`; mlir-aie's
+     `AIEAssignBuffers` prints `(stack) : 0x0-0x7FF` and starts allocation there). M3's
+     `L1-CAPACITY` message states the reserved amount. `MappingSummary.l1_budget` keeps
+     reporting the tile's 65 536, which is what the frozen goldens carry. It does **not** close
+     W1-large: the open half of B-P34 is that `l1_bytes` is charged per *logical* PE, and a core
+     serving `repeats` of them allocates `repeats` accumulators. Charging that would move
+     W1-base's own `l1_bytes` on npu1 (12 288 → 16 384) and every plan and summary golden with
+     it, so it needs its own ruling.
 
 **Person C**
 

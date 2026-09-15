@@ -26,8 +26,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
-
 SPATIAL = Path(__file__).resolve().parents[2] / "spatial"
 
 KNOWN_UNDOCUMENTED: frozenset[str] = frozenset()
@@ -95,12 +93,17 @@ def test_NFR5_every_module_constant_carries_its_docstring():
         f"convention is the string literal under the assignment: {new}")
 
 
-@pytest.mark.parametrize("entry", sorted(KNOWN_UNDOCUMENTED))
-def test_NFR5_the_exemption_list_only_shrinks(entry):
-    """Every exemption is still a real offender — document one and delete its line."""
+def test_NFR5_the_exemption_list_only_shrinks():
+    """Every exemption is still a real offender — document one and delete its line.
+
+    One test over the whole set rather than one per entry: the set is empty, and a
+    `parametrize` over an empty set is a **skip**, which would read in the suite's tally as a
+    gap rather than as the debt being paid off.
+    """
     every, undocumented = _scan()
-    assert entry in every, (
-        f"{entry} no longer exists; delete it from KNOWN_UNDOCUMENTED")
-    assert entry in undocumented, (
-        f"{entry} now carries its docstring — delete it from KNOWN_UNDOCUMENTED, which is a "
-        f"debt list and must shrink")
+    gone = sorted(entry for entry in KNOWN_UNDOCUMENTED if entry not in every)
+    assert not gone, f"{gone} no longer exist; delete them from KNOWN_UNDOCUMENTED"
+    documented = sorted(entry for entry in KNOWN_UNDOCUMENTED if entry not in undocumented)
+    assert not documented, (
+        f"{documented} now carry their docstring — delete them from KNOWN_UNDOCUMENTED, which "
+        f"is a debt list and must shrink")

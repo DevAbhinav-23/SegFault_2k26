@@ -69,7 +69,7 @@ negotiable inside the week.
 |---|---|---|---|
 | Requirements | **drafted** | — | — |
 | HLD | **drafted** | — | — |
-| Interfaces | **drafted at `CONTRACT_VERSION = 6`; v3–v6 signed by B (2026-09-15), A's and C's columns pending**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze | all three | **D0** |
+| Interfaces | **drafted at `CONTRACT_VERSION = 7`; v3–v7 signed by B (2026-09-15), A's and C's columns pending**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze. v7 is **R-L1-2**: §5.6 invariant 5's L1 budget is 63 488, the tile less `air-to-aie`'s 2 048 B core stack | all three | **D0** |
 | Per-module LLDs (M1…M8 + B's probe log) | **drafted**, revised per REVIEW-round1 | per module | — |
 | Design review round 1 | **answered** — `RESPONSE-review1.md` | — | — |
 | Test plan | **drafted** | — | — |
@@ -78,9 +78,9 @@ negotiable inside the week.
 | Toolchain installed on 3 machines | **installed on this machine** (pinned wheels cached in `vendor/wheels/`, 16/16 sha256 OK); the other two not verified | C | **D0 / gate G1** |
 | Kernel sources W1/W2/W3 | **built** — `kernels/w1_gemm.py`, `w2_jacobi.py`, `w3_sw.py`, all three decorated `@sp.kernel` and wired to the live surface (integration, 2026-09-15) | A | D0 |
 | Schedules, fixtures, demo | **built** — C 2026-09-13 (fixtures, `demo/`), schedules and demo beats wired to the live surface at integration 2026-09-15 | C | D0–D6 |
-| M0 `model` | **built** — B 2026-09-13 at `CONTRACT_VERSION = 6` (bumped 2026-09-15) | A | D1 |
+| M0 `model` | **built** — B 2026-09-13; `CONTRACT_VERSION = 7` (bumped twice on 2026-09-15: v6 for §7.2's device shapes, v7 for R-L1-2). No §2–§5 field has changed since the freeze | A | D1 |
 | M1, M2 | **built (A)** — 2026-09-14; `spatial/m1_frontend.py`, `spatial/m2_schedule.py`. The live surface reproduces all eight goldens byte for byte (`tests/integration/test_kernels_live.py`) | A | D1 |
-| M3 | **built (A)** — 2026-09-14; `spatial/m3_legality.py`. L1 accounting corrected at integration 2026-09-15 (ruling **R-L9-1**). Negative corpus (`tests/negative/`, 30 legality codes) **not started** | A | D2–D3 |
+| M3 | **built (A)** — 2026-09-14; `spatial/m3_legality.py`. L1 accounting corrected at integration 2026-09-15 (**R-L9-1**), budget corrected to 63 488 in the final pass (**R-L1-2**). Negative corpus **built (A)** 2026-09-15: `tests/negative/`, six stage modules, 99 functions, **all 43 catalogue codes raised** | A | D2–D3 |
 | M4 (W1 / W3 / W2 / flip) | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7; gate **G2/G3/G4/G5** B-half green | B | D2 / D4 / D5 / D6 |
 | M5 | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 | B | D1 skeleton, D2 real |
 | M6 | off-device path **written by B at P0c/P4/P6**, reviewed and kept by C; **device half built by C 2026-09-13** (`has_device`, `run`, `diff`, `trace`) and **untested on hardware** — no `/dev/accel*` here | C | D2 |
@@ -89,7 +89,7 @@ negotiable inside the week.
 | **W3 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G3** B-half: `test_golden_w3`, `test_W3_aircc_none` | B, C | **gate G3, D4** |
 | **W2 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G4** B-half: `test_golden_w2`, `test_W2_aircc_none` | B, C | **gate G4, D5** |
 | **W1 weight-stationary flip** (stretch) — 1-D `grid(PK=4)`, `place(px=ax.k0)`, `j` untiled, ascending cascade | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G5** B-half: `test_golden_w1_flip`, `test_W1_flip_aircc_none`, `cascade_channels == 3` | B | **gate G5, D6 midday**; the designated cut if the plan runs over |
-| Device run (stretch) | **not started** — `m6.run`/`m6.diff` built and untested on silicon; `test_T4_device_diff` skips on `/dev/accel*` | C | D5 |
+| Device run (stretch) | **not started, and the one item no machine here can close** — `m6.run`/`m6.diff` built and untested on silicon; `test_T4_device_diff` skips because `/dev/accel*` is absent. Needs an XDNA1 (Phoenix) laptop and XRT | C | D5 |
 | **TT backend (B, stretch)** — second emitter, `MappingPlan` → TT-Metalium on ttsim; spec [`08-tt-backend.md`](08-tt-backend.md) | **in the demo and live tests (2026-09-15)** — beat 4:05 executes W3 on ttsim against the CPython kernel, `test_live_plan_emits_the_same_tt_program` (default suite) and `tests/tt/test_tt_live.py` put the live surface on the TT path, and **R-TT-B / R-TT-B′ are adjudicated** (accepted as measured, not a theorem). T1–T4 GREEN (2026-09-13), close-out T5, §T6; see [`PROGRESS-TT.md`](PROGRESS-TT.md); merged to main | B | **gates T1–T4**; abandoned if a gate is not green after two agent-days |
 | W4 FFT | **out of scope** | — | — |
 | Freeze | — | all | **end of D6** |
@@ -108,7 +108,8 @@ by the round-1 review.
 **Fixture parameters, so there is one place to look**: W1 `M=N=K=64, TM=TN=32, TK=16, PI=PJ=2`;
 W1-flip `PK=4`, grid `(4,)`, `TM=32`, `TK=16`, **`j` not tiled** (`TN = N = 64`); W2
 `T=4, H=W=16, U[T+1,H+2,W], PI=2, HS=8`; W3 `MQ=NR=32, PJ=4, CW=8`. Per-core L1:
-12 288 / **24 576** / 1 280 / 240 B, arithmetic in `02-hld.md` §7.
+12 288 / **24 576** / 1 280 / 240 B, arithmetic in `02-hld.md` §7 — all four well inside the
+63 488 B budget v7 sets.
 
 ---
 

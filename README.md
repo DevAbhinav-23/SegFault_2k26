@@ -6,8 +6,8 @@ Read [`hackathon/HANDOFF.md`](hackathon/HANDOFF.md) first. Ownership: [`design/0
 
 Python is pinned to **3.12**; the toolchain is pinned in [`design/07-environment.md`](design/07-environment.md) §1.
 
-Everything is on `main`: the AIE path (M0–M6), the Tenstorrent stretch backend, the harness,
-the fixtures and the demo, at `CONTRACT_VERSION = 6` (all three roles merged 2026-09-15).
+Everything is on `main`: the AIE path (M0–M6), the Tenstorrent second backend, the harness,
+the fixtures and the demo, at `CONTRACT_VERSION = 7` (all three roles merged 2026-09-15).
 
 ```bash
 uv venv --python python3.12 --seed .venv
@@ -72,7 +72,7 @@ TT-Metalium program, and `source scripts/tt_env.sh` + `.venv-tt/bin/python -m py
 requires_ttsim tests/tt` executes all four workloads on Tenstorrent's functional simulator.
 
 ```bash
-python demo/run_demo.py        # the seven pitch beats, ~3.7 s, no device needed
+python demo/run_demo.py        # the seven pitch beats, ~4 s, no device needed
 ```
 
 Beat 4:05 runs W3 on `ttsim` for real when `.venv-tt` and `vendor/tt/libttsim_wh.so` are there,
@@ -80,8 +80,11 @@ and prints one honest line saying which is missing when they are not.
 
 ## Tests
 
-`.venv/bin/python -m pytest` — the default marks exclude `slow`, `requires_device` and
-`requires_ttsim`.
+`.venv/bin/python -m pytest` — **765 passed, 1 skipped, 42 deselected in 15.4 s**
+(2026-09-15). The default marks exclude `slow`, `requires_device` and `requires_ttsim`; the
+one skip is the absent device. `pytest -m slow` with `source scripts/airenv.sh` is **16
+passed, 1 skipped** — that is every `aircc` compile in the suite, including W1-large's two
+refusals and the control that compiles at `grid(1, 2)`.
 
 ## The Tenstorrent backend
 
