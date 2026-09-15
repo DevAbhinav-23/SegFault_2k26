@@ -2,8 +2,9 @@
 
 Same triple loop as `w1_gemm`, same clause shape as its `schedule_os`; only the
 shapes, the dtypes and the grid differ. No expected/oracle fixture (levels I and S
-only), so this module has no golden: the live test asserts only that it checks,
-plans, emits and compiles.
+only), so this module has no golden: the live test asserts that it checks, plans and
+emits — with the `bf16`→`f32` widening cast — and that `aircc`'s refusal is about the
+shape rather than the dtype (`schedule_os`'s docstring has the two diagnostics).
 """
 
 import spatial as sp
@@ -24,32 +25,36 @@ def gemm_bf16(A: sp.bf16[M, K], B: sp.bf16[K, N], C: sp.f32[M, N]):
 
 
 def schedule_os(target):
-    """**Not emittable on this toolchain.** M1, M2, M3 and M4 all accept this schedule —
-    `check()` returns `l1_bytes == 49152` (a/b doubled at 16 384 each, acc 16 384),
-    `physical_herd == (1, 4)` with `repeats == (4, 1)` on npu1, and `plan()` self-checks
-    clean. **M5 rejects it at emission**, measured 2026-09-15:
+    """Output-stationary, `bf16` in and `f32` out — **emittable since B-P32, 2026-09-15**.
 
-        EmissionError EMIT-AIR-API: air.api rejected the StoreNode of 'gemm_bf16'
-          because: air_api_message='dtype mismatch in elementwise assignment:
-                   destination is air.api.f32 but operand is air.api.bf16'
+    M1, M2, M3 and M4 accept it (`check()` gives `l1_bytes == 49152` — a/b doubled at 16 384
+    each, acc 16 384 — with `physical_herd == (1, 4)`, `repeats == (4, 1)` on npu1 and
+    `(2, 4)` / `(2, 1)` on npu2), and **M5 now emits it**: each `bf16` load is widened to the
+    destination's `f32` with `air.api.ops.cast` before the arithmetic, so the accumulate is
+    `f32` throughout. Measured 2026-09-15: 200 lines, two `arith.extf`, no `truncf`, on both
+    generations. Until B-P32 this raised `NotImplementedError` because `air.api` refused the
+    mixed store (*"dtype mismatch in elementwise assignment: destination is air.api.f32 but
+    operand is air.api.bf16"*).
 
-    The accumulation `C[i, j] += A[i, k] * B[k, j]` reads `bf16` and stores into an `f32`
-    accumulator, and `air.api` has no mixed-precision elementwise assignment — it is not a
-    defect in M1/M2/M3/M4 and not one a schedule clause can express around. Making this
-    real needs either a widening cast in the kernel subset (an M1 grammar change) or an
-    `air.api` that accepts the mixed store; neither is in scope. `w1_large` therefore stays
-    an inputs-only fixture at levels I and S, as `03-lld-M8-kernels-demo.md` §4 has it.
+    **`aircc` still does not compile it, and the reason is the shape, not the dtype.** At
+    this fixed 256³ / 4×4 / `TM = TN = TK = 64` shape (`03-lld-M8-kernels-demo.md` §4, VF §E.5)
+    `aircc --output-format=none` exits 1 on both targets, measured 2026-09-15:
+
+    * npu1 — `air-to-aie`: `'air.channel.get' op failed to get MM2S tile for L3 allocation`;
+    * npu2 — `aiecc`: `'aie.tile' op allocated buffers exceeded available memory`, the lowered
+      module asking 65 536 B of a 64 KB tile.
+
+    The control that says it is not the cast is in
+    `tests/integration/test_kernels_live.py::test_live_bf16_gemm_is_refused_by_aircc_for_its_shape`:
+    the same clauses over an **`f32`** kernel at the same grid and the same 49 152 B of L1
+    (`TK = 32`) emit **zero** casts and draw the **same two diagnostics**. `w1_large` therefore
+    stays an inputs-only fixture at levels I and S, and this schedule is real up to `.mlir()`.
     """
-    raise NotImplementedError(
-        "W1-large is not emittable: M5 raises EMIT-AIR-API on the accumulate, "
-        "air.api says 'dtype mismatch in elementwise assignment: destination is "
-        "air.api.f32 but operand is air.api.bf16'. M1/M2/M3/M4 accept the schedule "
-        "(l1_bytes 49152); see this function's docstring.")
+    return _schedule_os_clauses(target)
 
 
 def _schedule_os_clauses(target):
-    """The schedule itself, kept because M1-M4 do accept it and the docstring above cites
-    their figures. Not public: `schedule_os` is the entry point and it refuses."""
+    """The clauses themselves. Not public: `schedule_os` is the documented entry point."""
     s = sp.schedule(gemm_bf16, target=target)
     ax = s.axes()
     s.grid(PI, PJ)
@@ -64,11 +69,9 @@ def _schedule_os_clauses(target):
 
 
 def main():
-    print(_schedule_os_clauses("npu1").check().l1_bytes)
-    try:
-        schedule_os("npu1")
-    except NotImplementedError as exc:
-        print(exc)
+    s = schedule_os("npu1")
+    print(s.check().l1_bytes)
+    print(s.mlir().count("arith.extf"), "bf16 loads widened to the f32 accumulator")
 
 
 if __name__ == "__main__":

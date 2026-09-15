@@ -107,6 +107,8 @@ class _Emitter:
         self.node: Any = plan                      # the node being emitted, for diagnostics
         self.values: dict[str, Any] = {}           # buffer / tensor name -> air.api value
         self.shapes: dict[str, tuple[int, ...]] = {}   # the same names -> declared shape
+        self.elem: dict[str, Dtype] = {}           # the same names -> declared element dtype
+        self.into: Dtype | None = None             # the dtype the store in flight writes into
         self.channels: dict[str, Any] = {}         # channel name -> air.api Channel
         self.tokens: dict[str, Any] = {}           # ChannelSite.id -> the Token it returned
         self.env: dict[str, tuple[Any, str]] = {}  # index name -> (value, "coord"|"iv"|"int")
@@ -213,6 +215,7 @@ class _Emitter:
             self.values[tensor.name] = air.tensor(list(tensor.shape),
                                                   self.dtypes[tensor.dtype], name=tensor.name)
             self.shapes[tensor.name] = tensor.shape
+            self.elem[tensor.name] = tensor.dtype
         for channel in self.plan.channels:                      # rows 5a, 5b, 5c
             self.node = channel
             self.channels[channel.name] = air.channel(
@@ -256,6 +259,7 @@ class _Emitter:
                                                   self.dtypes[buffer.dtype],
                                                   scope=self.herd.private())
         self.shapes[buffer.name] = buffer.shape
+        self.elem[buffer.name] = buffer.dtype
 
     def _herd(self, herd: HerdPlan) -> None:
         """Row 4: open the herd where its marker node sits, and walk `plan.herd_body`."""
@@ -376,10 +380,19 @@ class _Emitter:
     # -- compute nodes (LLD §3.6) -------------------------------------------
 
     def _store(self, store: StoreNode) -> None:
-        """Row 12: `<buffer>[<subs>] = EMIT_EXPR(node.expr)`."""
+        """Row 12: `<buffer>[<subs>] = EMIT_EXPR(node.expr)`.
+
+        The destination's element type is published for the duration of the expression so the
+        `Load` arm can widen an operand that is narrower than it — "bf16 in, f32 out" (B-P32).
+        """
         target = self._value_of(store.buffer_id)
         subscript = tuple(self._index(index) for index in store.subscripts)
-        target[subscript] = self._expr(store.expr)
+        outer, self.into = self.into, self.elem.get(store.buffer_id)
+        try:
+            value = self._expr(store.expr)
+        finally:
+            self.into = outer
+        target[subscript] = value
 
     def _expr(self, node: Any) -> Any:
         """`EMIT_EXPR`: one branch per `ExprNode` case, and no case reads the kernel."""
@@ -394,8 +407,20 @@ class _Emitter:
             # other consumer: `BufferSlice.__add__` and friends call `_as_leaf()` first
             # (`_value.py:749-751`), which is what `coerce` calls, so W1's text is unchanged.
             # Recorded as the closure of **B-P16**.
-            return self.coerce(
+            value = self.coerce(
                 self._value_of(node.buffer_id)[tuple(self._index(i) for i in node.subscripts)])
+            # "bf16 in, f32 out": each *load* is widened to the destination's element type, so
+            # the accumulate is f32 throughout rather than a mixed store `air.api` refuses —
+            # `_check_region` raises "dtype mismatch in elementwise assignment: destination is
+            # air.api.f32 but operand is air.api.bf16" on the leaf whose dtype is not the
+            # destination's (`python/air/api/_emit.py:458-471`). `ops.cast` is the API's own
+            # conversion and picks the `arith` op from the pair, `extf` here (`ops.py:400-436`).
+            # The condition is an inequality, so every plan whose operands already have the
+            # destination's dtype emits exactly the text it emitted before (ruling B-P32).
+            source = self.elem.get(node.buffer_id)
+            if self.into is not None and source is not None and source != self.into:
+                value = self.air.ops.cast(value, self.dtypes[self.into])
+            return value
         if isinstance(node, Const):
             return float(node.text) if node.dtype in _FLOAT_DTYPES else int(node.text)
         if isinstance(node, BinOp):
