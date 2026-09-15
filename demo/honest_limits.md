@@ -30,8 +30,23 @@
   in their own repository — `docs/AIRCorrectnessChecker.md`, properties P1
   (channel balance), P2 (deadlock freedom), P3 (resource constraints), P4
   (token-constraint consistency) — and did not build it.
+- **The Tenstorrent beat is a functional simulator, not silicon, and not a
+  timing claim.** No Tenstorrent hardware was touched at any point; ttsim's
+  "bit-exact vs silicon" is *their* claim, not our measurement, and only the
+  value of `TT_METAL_SIMULATOR` separates the two paths. One generation,
+  Wormhole B0. The compute is scalar C++ on **one data-movement RISC-V** — the
+  Tensix matrix and vector engines, tile layouts, double buffering and
+  `f16`/`bf16` are all untouched — and ttsim is **not** an oracle for ordering
+  hazards (measured: it does not flag a semaphore increment moved before the
+  write barrier). What it does prove is narrow and real: the same unchanged
+  `MappingPlan` drives two unrelated device models to the same numbers on four
+  workloads, each with a negative control. **Tenstorrent is not an AIR
+  target**, and nothing here says it is (`design/08-tt-backend.md` §8).
 - **Nearest neighbours, named**: `amd/Triton-XDNA` (SPMD → MLIR-AIR for
   AIE2/AIE2P), **Dato** (typed streams → MLIR-AIE, already rejects deadlock
   and inconsistent put/get), **AIEHalide** (PACT 2026, ignorable directives
-  and derived halos, targets MLIR-AIE), **IRON/ObjectFIFO**, **ARIES**.
+  and derived halos, targets MLIR-AIE), **IRON/ObjectFIFO**, **ARIES**; on the
+  Tenstorrent side **TileLoom**, `tenstorrent/tt-lang` and
+  `kernelize-ai/triton-tenstorrent`, and `qualcomm/hexagon-mlir` for the
+  "why not Hexagon?" question (one DSP core, no PE grid).
 - **Out of scope**: multi-kernel fusion, autotuning, GPUs.

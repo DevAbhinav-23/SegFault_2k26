@@ -4,13 +4,16 @@ Every beat now runs for real — the surface (A: M1/M2), the checker (A: M3) and
 (B: M4/M5) are all built. The NOT-BUILT branch in `beat` stays as the net: a beat that
 raises must cost one printed line, never a stack trace on stage.
 
-The only beat that still degrades is 3:40's `aircc` verdict, and it degrades on the
-**environment**, not on the code: without `source scripts/airenv.sh` there is no `aircc` on
-`PATH`, so it prints where to find that check instead of pretending to have run it.
+Two beats degrade on the **environment** rather than on the code, and both say so in one line
+instead of claiming a result they did not get: 3:40's `aircc` verdict needs
+`source scripts/airenv.sh` for `aircc` to be on `PATH`, and 4:05's Tenstorrent run needs
+`.venv-tt` and `vendor/tt/libttsim_wh.so` (`source scripts/tt_env.sh`). 4:05's *emission* half
+always runs — `spatial.m5tt_emit` is standard library only.
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -18,6 +21,10 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from kernels import w1_gemm, w2_jacobi, w3_sw  # noqa: E402
+
+_TTNN_LOG = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d[.,]\d+ \| ")
+"""One `ttnn` bring-up log line on the 4:05 subprocess's stdout, e.g.
+`2026-09-15 18:30:53.040 | info     |           Metal | Disabling multi-erisc mode …`."""
 
 _IR_OPS = ("air.herd", "air.channel.put", "air.channel.get", "air.channel")
 """Counted per target at beat 3:40. `air.channel` is counted last and net of the two
@@ -42,6 +49,7 @@ def main() -> None:
     beat("1:35", "The flip — weight-stationary, same kernel text", _summary_ws)
     beat("2:15", "Rejection before codegen", _rejection)
     beat("3:40", "It lowers — npu1 and npu2 from one schedule", _lowers)
+    beat("4:05", "Second backend — Tenstorrent Wormhole on ttsim, same plan", _tenstorrent)
     beat("4:35", "Honest limits", _limits)
     _w2_w3_oracles()
 
@@ -114,6 +122,64 @@ def _lowers() -> None:
             m6.artifact(str(path), target, "none", workdir=work)
             print(f"  aircc --device {target} --output-format=none: OK "
                   f"(exit 0, no `error:` on stderr — FR-T5 reads stderr first)")
+
+
+def _tenstorrent() -> None:
+    """Beat 4:05. The same W3 plan through the **second** emitter, then executed on ttsim.
+
+    Two halves, and only the second one needs anything installed. The first emits the
+    TT-Metalium program in this interpreter — `spatial.m5tt_emit` imports nothing but the
+    standard library and `spatial.model`, so it runs in `.venv` — and prints what came out of
+    the plan the 2:15 and 3:40 beats have already shown. The second spawns `.venv-tt`, the only
+    interpreter that can import `ttnn`, and runs W3 for real against the CPython kernel.
+
+    `demo/tt_w3_on_ttsim.py` is the script; the environment it needs is `scripts/tt_env.sh`'s
+    three facts, passed here explicitly rather than by sourcing anything. When the venv or the
+    simulator is missing the beat says which, and where the suite that proves it lives, instead
+    of claiming a run it did not get.
+    """
+    import os
+    import subprocess
+
+    from kernels import w3_sw
+    from spatial import m5tt_emit
+
+    program = m5tt_emit.emit(w3_sw.schedule("npu1").plan())
+    cores = len(program.runtime_args)
+    tensors = ", ".join(f"{t.name}{list(t.shape)} {t.dtype.value}" for t in program.io_tensors)
+    print(f"  the same MappingPlan, second emitter: {cores} Tensix cores "
+          f"{program.core_range[0]}..{program.core_range[1]}, 1 data-movement kernel of "
+          f"{len(program.source.splitlines())} lines of C++ on every core")
+    print(f"  {len(program.semaphores)} semaphores per core "
+          f"({', '.join(s.name for s in program.semaphores)}), "
+          f"{len(program.cbs)} circular buffers, io tensors: {tensors}")
+
+    python = REPO / ".venv-tt" / "bin" / "python"
+    simulator = REPO / "vendor" / "tt" / "libttsim_wh.so"
+    missing = [str(path) for path in (python, simulator) if not path.exists()]
+    if missing:
+        print(f"  not executed here: {', '.join(missing)} is missing — `source "
+              f"scripts/tt_env.sh` builds the venv from vendor/tt/. The four workloads that "
+              f"do execute, exactly and with negative controls, are "
+              f"design/PROGRESS-TT.md §T5.3")
+        return
+
+    environment = {key: value for key, value in os.environ.items() if key != "TT_METAL_HOME"}
+    environment.update(TT_METAL_SIMULATOR=str(simulator), TT_METAL_SLOW_DISPATCH_MODE="1",
+                       PYTHONPATH=str(REPO))
+    done = subprocess.run([str(python), str(REPO / "demo" / "tt_w3_on_ttsim.py")],
+                          env=environment, capture_output=True, text=True, timeout=120,
+                          check=False)
+    # `ttnn` logs its device bring-up to **stdout**, one `<timestamp> | <level> | …` line per
+    # step — thirty of them, none of them ours. They are dropped here and nowhere else: the
+    # child's exit status is relayed below, and a failing run prints its stderr tail.
+    for line in done.stdout.splitlines():
+        if not _TTNN_LOG.match(line):
+            print(f"  {line}")
+    if done.returncode != 0:
+        print(f"  the ttsim run exited {done.returncode}; its last words were:")
+        for line in done.stderr.strip().splitlines()[-3:]:
+            print(f"    {line}")
 
 
 def _limits() -> None:
