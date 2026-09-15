@@ -408,21 +408,25 @@ def test_M4_tensor_order_rejected():
 
 @pytest.mark.fr("FR-M7")
 def test_M4_l1_agrees_with_m3():
-    """Invariant 5: W1 charges `12288`, and an inflated staging buffer is an internal error.
+    """Invariant 5: W1 charges `16384` on npu1, and an inflated buffer is an internal error.
+
+    16 384 and not §6.1's 12 288 because npu1 repeats the 2×2 grid onto a (1, 2) herd and
+    R-L1-3 charges every buffer twice; the self-check reads the same `repeats` M3 did.
 
     **Substitution, recorded:** `BufferPlan.bytes` cannot be inflated on its own — M0's `I39`
     ties it to `prod(shape) * dtype.sizeof` — so the nearest constructible corruption widens
     `acc` to `(32, 64)`, which is what an off-by-one `TILE_SHAPE` would produce.
     """
     plan = w1_plan.plan("npu1")
-    assert sc.l1_total(plan.buffers) == 12288 == plan.mapping.l1_bytes
+    assert sc.l1_total(plan.buffers, repeated=True) == 16384 == plan.mapping.l1_bytes
+    assert sc.l1_total(w1_plan.plan("npu2").buffers) == 12288
     assert sc.l1_budget(plan) is None
     fat = replace(w1_plan.ACC, shape=(32, 64), bytes=32 * 64 * 4)
     swapped = replace(plan, buffers=(fat,) + plan.buffers[1:],
                       herd_body=(fat,) + plan.herd_body[1:])
     excinfo = raises(swapped)
     assert_diagnostic(excinfo, code="PROTOCOL-UNSUPPORTED", clause="plan()",
-                      mentions=(16384, 12288), details_keys=("plan_l1_bytes",
+                      mentions=(24576, 16384), details_keys=("plan_l1_bytes",
                                                              "mapping_l1_bytes", "invariant"))
     assert excinfo.value.diagnostic.details["invariant"] == 5
 

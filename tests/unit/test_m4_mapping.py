@@ -521,28 +521,34 @@ def test_M4_wavefront_l1_subscripts():
 
 @pytest.mark.fr("FR-M7")
 @pytest.mark.parametrize(("name", "mapping", "expected"), [
-    ("w1", w1_legal.legal(), 12288),
+    ("w1", w1_legal.legal(), 16384),
     ("w2", w2_legal.legal(), 1280),
     ("w3", w3_legal.legal(), 240),
 ], ids=["w1", "w2", "w3"])
 def test_M4_l1_agrees_with_m3(name, mapping, expected):
     """The plan's L1 total is `LegalMapping.l1_bytes` plus the protocol buffers M4 adds (§7).
 
-    W1 is `12288 == 12288` — it synthesises no protocol buffer. W2 is `1280 == 1280`: the halo
+    W1 is `16384 == 16384` — it synthesises no protocol buffer, and npu1 (the literal's default
+    target) folds its 2×2 grid onto a (1, 2) herd, so **R-L1-3** charges each of the three
+    buffers twice: 2·(4096 + 2048 + 2048). W2 is `1280 == 1280`: the halo
     adds **no** buffer of its own, and `double_buffer("U")` is the `cur`/`next` pair itself, not
     a doubling on top of it (R-W2-4, D-5's second meaning). W3 is `240 == 232 + 8`: `edge_in`
     and `edge_out` are M4's, carry no `operand`, and are the only allowed difference from what
     M3 charged (`02-hld.md` §7, §3.3 note 4).
     """
     plan = m4.plan(mapping)
+    repeated = any(r > 1 for r in mapping.repeats)
     staged = [b for b in plan.buffers if b.operand is not None]
-    assert m4.l1_total(tuple(staged)) == mapping.l1_bytes
-    assert m4.l1_total(plan.buffers) == expected == plan.summary.l1_bytes
+    assert m4.l1_total(tuple(staged), repeated=repeated) == mapping.l1_bytes
+    assert m4.l1_total(plan.buffers, repeated=repeated) == expected == plan.summary.l1_bytes
     assert plan.summary.l1_budget == 65536
-    extra = sum(b.bytes for b in plan.buffers if b.operand is None)
+    extra = sum(b.bytes * (2 if repeated else 1)
+                for b in plan.buffers if b.operand is None)
     assert expected == mapping.l1_bytes + extra
-    assert (mapping.l1_bytes, extra) == {"w1": (12288, 0), "w2": (1280, 0),
+    assert (mapping.l1_bytes, extra) == {"w1": (16384, 0), "w2": (1280, 0),
                                          "w3": (232, 8)}[name]
+    if name == "w1":                    # the same three buffers, on a herd that takes the grid
+        assert m4.plan(w1_legal.legal("npu2")).summary.l1_bytes == 12288
     if name == "w2":                                    # R-W2-4: DEPTH 0, so PP() is False
         assert m4.depth(mapping, "U") == 0 and not m4.ping_pong(mapping, "U")
         assert "U" in mapping.schedule.double_buffer

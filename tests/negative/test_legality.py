@@ -141,8 +141,12 @@ def raises_rspace_no_ac_op():
 
 
 def raises_cascade_rank():
-    """§7 `test_L6_cascade_rank` sub-clause (c): a cascade needs a line, not a plane."""
-    s = sp.schedule(gemm, target="npu1")
+    """§7 `test_L6_cascade_rank` sub-clause (c): a cascade needs a line, not a plane.
+
+    At **npu2**: the `(4, 2)` grid folds onto its `(2, 4)` herd with `repeats (2, 1)`, which
+    R-HERD-1 accepts, so the cascade rank is what answers. On npu1 the same grid repeats four
+    times and `HERD-PHYSICAL` (R-HERD-1) answers first — also correct, but not this clause."""
+    s = sp.schedule(gemm, target="npu2")
     ax = s.axes()
     s.grid(4, 2)
     s.tile(ax.i, 32)
@@ -214,8 +218,12 @@ def raises_herd_physical():
 
 def raises_l1_capacity():
     """The demo's third set piece: 86 016 B of a 65 536 B budget, once ping-pong doubles
-    `A` and `B` (FR-L9)."""
-    rejections.bad_capacity("npu1")
+    `A` and `B` (FR-L9).
+
+    Read at **npu2**, where the 2×2 grid is the whole herd: `repeats (1, 1)`, so ping-pong is
+    the only doubling and the figure is FR-L9's own. On npu1 the same schedule charges
+    122 880 under R-L1-3 (`kernels/rejections.py::bad_capacity`)."""
+    rejections.bad_capacity("npu2")
 
 
 def raises_pingpong_shape():
@@ -288,8 +296,12 @@ def corpus_pingpong_shape__no_streaming_loop():
     allocated inside, so the ping-pong pass cannot fire on it."""
     s = sp.schedule(gemm, target="npu1")
     ax = s.axes()
-    s.grid(64)
-    s.place(px=ax.i)
+    # `j` tiled by 8 gives a placeable `j0` of extent 8 — a grid npu1's 4-core row repeats
+    # only twice, so **R-HERD-1** does not answer first — and `A[i, k]` is still indexed by
+    # no outer tile handle, which is the condition under test.
+    s.tile(ax.j, 8)
+    s.grid(8)
+    s.place(px=ax.j0)
     s.double_buffer("A")
     s.check()
 
@@ -329,7 +341,11 @@ def test_L1_conflict():
     assert "skew" in diagnostic.clause and "place" in diagnostic.clause
     # ...and the schedule that only *places* i is legal: §3.3 line 27 gives every unplaced,
     # unskewed axis a σ row of its own, so ker Sσ is trivial and nothing conflicts.
-    assert _w1().check().l1_bytes == 8192
+    # 8 192 B of tiles (acc 4096 + a 2048 + b 2048, no double_buffer), charged **twice** on
+    # npu1 — the 2×2 grid folds onto a (1, 2) herd and R-L1-3 doubles every buffer — and once
+    # on npu2, whose herd takes the grid whole.
+    assert _w1().check().l1_bytes == 16384
+    assert _w1("npu2").check().l1_bytes == 8192
 
 
 @pytest.mark.fr("FR-L5")

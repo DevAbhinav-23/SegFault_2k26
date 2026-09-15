@@ -135,7 +135,12 @@ def legal(target: str = "npu1") -> LegalMapping:
         stationary_ops=("C",),
         physical_herd=physical,
         repeats=repeats,
-        l1_bytes=12288,          # acc 4096 + A 2·2048 + B 2·2048, §6.1's L1 row
+        # §6.1's L1 row: acc 4096 + A 2·2048 + B 2·2048 = 12 288 where the logical grid fits
+        # the herd. Under **R-L1-3** a repeat factor above 1 makes it 2·(4096 + 2048 + 2048) =
+        # 16 384 — the repeat loop is unrolled by 2, so every buffer is allocated twice and the
+        # ping-pong pair is not doubled again. npu1's `(1, 2)` herd repeats W1's `(2, 2)` grid;
+        # npu2's `(2, 2)` does not, which is why this figure is target-dependent.
+        l1_bytes=(2 if any(r > 1 for r in repeats) else 1) * 4096 + 2 * 2048 + 2 * 2048,
         halo_footprint=(),
     )
 

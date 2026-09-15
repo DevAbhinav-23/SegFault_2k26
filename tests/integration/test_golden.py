@@ -205,6 +205,10 @@ def test_golden_w1_flip_summary(target):
                  "  CascadeK size=(3,) type=npu_cascade"):
         assert line in summary.lines
     assert not [line for line in summary.lines if line.startswith("warning: ")]
-    # W1's own summary is the other half of the demo: same kernel, the other dataflow
+    # W1's own summary is the other half of the demo: same kernel, the other dataflow. Its L1
+    # line is per target under R-L1-3: npu1 repeats the 2×2 grid onto a (1, 2) herd, so every
+    # buffer is allocated twice (16 384); npu2 takes the grid whole (12 288).
     base = w1_plan.plan(target).summary
-    assert "C: stationary (declared)" in base.lines and "L1: 12288 of 65536 bytes" in base.lines
+    l1 = 16384 if target == "npu1" else 12288
+    assert "C: stationary (declared)" in base.lines
+    assert f"L1: {l1} of 65536 bytes" in base.lines

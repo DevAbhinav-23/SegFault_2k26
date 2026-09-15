@@ -149,7 +149,10 @@ def test_w1_pipeline_end_to_end():
     s.reside(A="L1", B="L1", C="L1")
     s.double_buffer("A", "B")
     mapping = s.check()
-    assert mapping.l1_bytes == 12288
+    # R-L1-3: npu1 folds the 2×2 grid onto a (1, 2) herd, the repeat loop is unrolled by 2,
+    # and every buffer is allocated twice — 2·(4096 + 2048 + 2048). npu2 takes the grid whole
+    # and charges 12 288 for the same three tiles.
+    assert (mapping.repeats, mapping.l1_bytes) == ((2, 1), 16384)
     assert mapping.stationary_ops == ("C",)
 
 

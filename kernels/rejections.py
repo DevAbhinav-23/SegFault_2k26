@@ -83,6 +83,13 @@ def bad_capacity(target):
     §3.5's worked table and the checker agree on 86 016 (measured 2026-09-15), so the
     docstring's old figure needed no correction.
 
+    **Target note (R-L1-3, 2026-09-15).** 86 016 is the figure on a target whose herd takes
+    the 2×2 grid whole — `npu2`, physical `(2, 2)`, `repeats (1, 1)`. On `npu1` the grid folds
+    onto `(1, 2)`, the repeat loop is unrolled by 2, **every** buffer is allocated twice, and
+    the same schedule charges 2 × 61 440 = 122 880. Both are rejections; the one FR-L9 and
+    `03-lld-M8-kernels-demo.md` §3.5 work through is the ping-pong one, so the corpus and the
+    golden are captured at `npu2`.
+
     Rendered message, re-measured 2026-09-15 after **R-L1-2** made the budget the tile's
     65 536 B less the 2 048 B core stack `air-to-aie` reserves (`03-lld-M3-checker.md` §3.10
     line 8); the `reason:` and `because:` lines are each one line in the rendered text and are

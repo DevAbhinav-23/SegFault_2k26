@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 import spatial as sp
@@ -41,10 +42,11 @@ from kernels import w1_gemm as w1
 from kernels import w1_gemm_bf16 as w1_large
 from kernels import w2_jacobi as w2
 from kernels import w3_sw as w3
-from spatial import m4_mapping as m4
+from spatial import m3_legality, m4_mapping as m4
 from spatial import m5_emit, m5tt_emit, m6_tools as m6
-from spatial.model import ToolchainError, to_json
+from spatial.model import LegalityError, ToolchainError, to_json
 from tests.fixtures.mappings import w1_legal, w1flip_legal, w2_legal, w3_legal
+from tests.helpers import plan_interp
 from tests.helpers.golden import GOLDEN_DIR
 
 TARGETS = ("npu1", "npu2")
@@ -190,50 +192,83 @@ def _aircc_verdict(text, target, tmp_path, stem):
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_live_bf16_gemm_widens_every_load_to_the_accumulator(target):
-    """B-P32: W1-large plans and emits, with one `arith.extf` per `bf16` operand.
+    """B-P32: the `bf16` GEMM emits one `arith.extf` per `bf16` operand.
 
     Two, not one: the ruling is that each **load** is cast to the destination's dtype before
     the arithmetic, so the product and the accumulate are both f32 — which is what "bf16 in,
     f32 out" means. A cast around the product would be one `extf` and a bf16 multiply.
+
+    Read at `_fits`'s `grid(1, 2)`, not at W1-large's own `grid(4, 4)`: since **R-HERD-1** and
+    **R-L1-3** (2026-09-15) the checker refuses the 4×4 shape before anything is emitted, which
+    is the test below. The clauses, the tiles and the dtypes here are `w1_gemm_bf16`'s.
     """
     require_pin()
-    text = w1_large.schedule_os(target).mlir()
+    text = _fits(target).mlir()
     assert text.count("arith.extf") == 2, "one widening per bf16 operand"
     assert "truncf" not in text, "nothing narrows back: the accumulator stays f32"
     assert "bf16" in text and "f32" in text
 
 
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.fr("FR-L9", "FR-L10")
+def test_live_bf16_gemm_shape_is_refused_by_the_checker(target):
+    """W1-large's 4×4 grid is refused **before codegen**, by a different code per target.
+
+    The fixture's shape is fixed at 256³ / 4×4 / `TM = TN = TK = 64` by
+    `03-lld-M8-kernels-demo.md` §4. At that shape the logical grid fits neither physical herd —
+    `(1, 4)` on npu1, `(2, 4)` on npu2 — so M4 would emit a **repeat loop**, and both rulings
+    of 2026-09-15 bite on it:
+
+    * **npu1, `repeats == (4, 1)`** — `HERD-PHYSICAL` (R-HERD-1). The repeat loop is unrolled
+      by 2, so a trip-4 loop leaves a trip-2 loop whose induction variable is still a channel
+      bundle index; `air-to-aie` answered *"'air.channel.get' op failed to get MM2S tile for L3
+      allocation"* (B-P33). Measured again this pass with the ruling monkeypatched off, below.
+    * **npu2, `repeats == (2, 1)`** — `L1-CAPACITY` (R-L1-3). Every buffer is allocated twice:
+      2 × (16 384 + 8 192 + 8 192) = **65 536** B against the 63 488 B budget, which is exactly
+      the six `aie.buffer`s per tile `AIEAssignBuffers` refused (B-P34).
+
+    Before the rulings both shapes passed the checker and died inside `aircc`; this is the
+    whole of D3/D4 in one assertion.
+    """
+    with pytest.raises(LegalityError) as caught:
+        w1_large.schedule_os(target).check()
+    diagnostic = caught.value.diagnostic
+    assert diagnostic.code == {"npu1": "HERD-PHYSICAL", "npu2": "L1-CAPACITY"}[target]
+    if target == "npu1":
+        assert diagnostic.details["repeats"] == (4, 1)
+        assert diagnostic.details["unroll_factor"] == 2
+    else:
+        assert (diagnostic.details["total"], diagnostic.details["budget"]) == (65536, 63488)
+        assert diagnostic.details["repeats"] == (2, 1)
+
+
 @pytest.mark.slow
 @pytest.mark.requires_aircc
 @pytest.mark.parametrize("target", TARGETS)
-def test_live_bf16_gemm_is_refused_by_aircc_for_its_shape(target, tmp_path, capsys):
-    """`aircc` refuses W1-large — and refuses the **f32 control** at the same grid identically.
+def test_live_bf16_gemm_is_refused_by_aircc_for_its_shape(target, tmp_path, capsys,
+                                                          monkeypatch):
+    """The checker's refusal above is right: `aircc` refuses the same module, cast or no cast.
 
-    The fixture's shape is fixed at 256³ / 4×4 / `TM = TN = TK = 64` by
-    `03-lld-M8-kernels-demo.md` §4 (VF §E.5's measured probe). At that shape the logical 4×4
-    grid does not fit either physical herd — `(1, 4)` on npu1, `(2, 4)` on npu2 — so M4 emits a
-    **repeat loop**, and both failures are downstream of that (measured 2026-09-15,
-    `design/PROGRESS-B.md` B-P33 and B-P34):
+    R-HERD-1 and R-L1-3 are switched off for the length of this test — `_check_repeats` to a
+    no-op and every L1 budget to a number nothing reaches — so the module the checker now
+    refuses can still be built and handed to `aircc`. That is the evidence the rulings rest
+    on, and it is re-measured here rather than quoted:
 
-    * **npu1, `repeats == (4, 1)`** — `air-to-aie` at
-      `AIRToAIESchedulingUtils.cpp:3892-3894`: *"'air.channel.get' op failed to get MM2S tile
-      for L3 allocation."* The herd-side `C2L3` put still indexes the bundle with a loop
-      induction variable (`affine.apply ()[%arg10, %arg14] -> (s0 * 4 + s1)`), so the bundle
-      position never resolves to a producer. Upstream names this cause in
-      `test/Conversion/AIRToAIE/segment_id_remap_no_unroll.mlir:14-19`.
-    * **npu2, `repeats == (2, 1)`** — the repeat loop gives each core **two** accumulators, so
-      the tile asks 2 × 16 384 + 4 × 8 192 = 65 536 B and `AIEAssignBuffers` answers *"'aie.tile'
-      op allocated buffers exceeded available memory"*, its `MemoryMap` note ending at `0x107FF`
-      — the 2 048 B stack plus 65 536 B of buffers in a 65 536 B tile.
+    * npu1 (`repeats (4, 1)`): `air-to-aie` fails the launch-side `C2L3` get.
+    * npu2 (`repeats (2, 1)`): `AIEAssignBuffers` refuses six buffers in a 64 KB tile.
 
-    Neither figure is what our checker charges: `l1_bytes` is 49 152 for this schedule **and**
-    for the control below, which is exactly why the control is the test. The f32 control here
-    makes it a statement about the shape rather than about B-P32's cast: same clauses, same
-    grid, same 49 152 B of L1, **zero** casts, and the assertion is that the two verdicts agree.
-    If a later toolchain compiles W1-large, this fails on the control too and the whole row is
-    re-measured.
+    The **f32 control** at the same grid, the same 49 152 B of pre-R-L1-3 L1 and zero casts
+    draws the same verdict, which is what makes the refusal a statement about the shape and
+    not about B-P32's cast. If a later toolchain compiles W1-large this fails on the control
+    too, and both rulings are re-opened.
     """
     require_pin()
+    from spatial import m4_selfcheck
+
+    monkeypatch.setattr(m3_legality, "_check_repeats", lambda *args, **kw: None)
+    monkeypatch.setattr(m3_legality, "_L1_USABLE", 1 << 24)
+    monkeypatch.setattr(m4, "L1_USABLE", 1 << 24)
+    monkeypatch.setattr(m4_selfcheck, "L1_USABLE", 1 << 24)
     control = _control(target).mlir()
     assert control.count("arith.extf") == 0, "a cast-free control, or it proves nothing"
     bf16_code, bf16_said = _aircc_verdict(w1_large.schedule_os(target).mlir(),
@@ -246,6 +281,9 @@ def test_live_bf16_gemm_is_refused_by_aircc_for_its_shape(target, tmp_path, caps
     assert bf16_code == control_code, (
         f"bf16 and the cast-free f32 control get different aircc verdicts on {target} "
         f"({bf16_code} vs {control_code}); the dtype decides something after all")
+    assert bf16_code is not None, (
+        f"aircc now compiles the shape the checker refuses on {target}; R-HERD-1 / R-L1-3 "
+        f"must be re-measured")
 
 
 # --------------------------------------------------------------------------------------------
@@ -312,3 +350,208 @@ def test_live_bf16_gemm_compiles_when_the_grid_fits_the_herd(target, tmp_path, c
     with capsys.disabled():
         print(f"\n  aircc --device {target} bf16 grid(1,2): {code or 'exit 0'} {said[:1]}")
     assert code is None, f"the control must compile on {target}; aircc said {code}: {said[:2]}"
+
+
+# --------------------------------------------------------------------------------------------
+# Degenerate grids — one PE, and a 1-D grid over a one-tile axis (defects D1 and D2)
+# --------------------------------------------------------------------------------------------
+
+SMALL = 64
+"""The degenerate-grid GEMM's extent. 64³, so a `grid(1)` schedule tiles `i` and `j` by the
+whole extent and still fits: `acc [64,64] f32` 16 384 + `a [64,16]` 4 096 ×2 + `b [16,64]`
+4 096 ×2 = 32 768 B, inside the 63 488 B budget."""
+
+
+@sp.kernel
+def gemm_small(A: sp.f32[SMALL, SMALL], B: sp.f32[SMALL, SMALL], C: sp.f32[SMALL, SMALL]):
+    for i in range(SMALL):
+        for j in range(SMALL):
+            for k in range(SMALL):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+def _degenerate(grid, tiles, target):
+    """W1's nine clauses at an arbitrary grid and tiling — the only two things that move."""
+    s = sp.schedule(gemm_small, target=target)
+    ax = s.axes()
+    s.grid(*grid)
+    s.tile(ax.i, tiles[0]); s.tile(ax.j, tiles[1]); s.tile(ax.k, tiles[2])
+    s.reduce(ax.k, op="+")
+    if len(grid) == 2:
+        s.place(px=ax.i0, py=ax.j0)
+    else:
+        s.place(px=ax.i0)
+    s.stationary("C")
+    s.reside(A="L1", B="L1", C="L1")
+    s.double_buffer("A", "B")
+    s.pipeline(ax.k0)
+    return s
+
+
+DEGENERATE = {
+    "grid(1,1)": ((1, 1), (64, 64, 16)),      # D1: one PE, no bundle loop anywhere
+    "grid(1,)": ((1,), (64, 64, 16)),         # D2: 1-D, and `j` is one whole tile
+    "grid(2,)": ((2,), (32, 64, 16)),         # D2: 1-D over two PEs, `j` still one tile
+}
+"""The three shapes defects D1 and D2 were measured on (`design/PROGRESS-B.md` B-P35).
+
+`grid(1, 1)` tripped M4's own `order` bookkeeping: with every bundle extent 1 the drain builds
+no loop, so its `get` sits in the segment body itself and its `order` is its index **there**,
+not 0. `grid(1,)` and `grid(2,)` leave `j` tiled by its whole extent, which used to count as a
+temporal axis that "moves" `B` — two staged operands re-fetched per different axes, and one
+streaming loop to put them in."""
+
+
+def _sites_in_order(body, out):
+    """Every `ChannelSite.order` against its index in the body holding it (§5.2), recursively."""
+    from spatial.model import ChannelSite, LoopPlan
+
+    for index, node in enumerate(body):
+        if isinstance(node, ChannelSite):
+            out.append((node.id, node.order, index))
+        if isinstance(node, LoopPlan):
+            _sites_in_order(node.body, out)
+    return out
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("shape", sorted(DEGENERATE), ids=sorted(DEGENERATE))
+@pytest.mark.fr("FR-M7", "FR-M9")
+def test_degenerate_grid_plans_and_self_checks(shape, target):
+    """Each degenerate grid plans, and every site's `order` **is** its index in its body.
+
+    `m4.plan` runs the whole self-check on what it built, so reaching a `MappingPlan` is
+    already most of the claim; the order table is re-derived here from the finished plan so
+    the test does not read M4's own `_check_orders` back to itself.
+    """
+    grid, tiles = DEGENERATE[shape]
+    plan = _degenerate(grid, tiles, target).plan()
+    assert plan.herd.grid == grid
+    assert plan.mapping.repeats == tuple(1 for _ in grid), "these shapes emit no repeat loop"
+    seen = _sites_in_order(plan.segment_body, []) + _sites_in_order(plan.herd_body, [])
+    assert seen, "a plan with no channel site would make this vacuous"
+    assert [(name, order) for name, order, _ in seen] == [(name, index)
+                                                          for name, _, index in seen]
+    assert plan.summary.l1_bytes <= 63488
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("shape", sorted(DEGENERATE), ids=sorted(DEGENERATE))
+@pytest.mark.fr("FR-E7")
+def test_degenerate_grid_emits(shape, target):
+    """Each degenerate grid reaches `air.api` and comes back as a module."""
+    require_pin()
+    grid, tiles = DEGENERATE[shape]
+    text = _degenerate(grid, tiles, target).mlir()
+    assert "air.launch" in text and "air.herd" in text and "gemm_small" in text
+
+
+@pytest.mark.parametrize("shape", sorted(DEGENERATE), ids=sorted(DEGENERATE))
+@pytest.mark.fr("FR-K1")
+def test_degenerate_grid_interprets_to_the_cpython_result(shape):
+    """The plan, executed over numpy, is `A @ B` **exactly** (`tests/helpers/plan_interp.py`).
+
+    Integer-valued `f32` in `[-8, 8)` with `K = 64` keeps every partial sum under `2**24`, so
+    `np.array_equal` is the right comparison, and a one-PE plan has nowhere to hide a wrong
+    slice: PE 0 owns the whole output.
+    """
+    grid, tiles = DEGENERATE[shape]
+    rng = np.random.default_rng(0)
+    tensors = {"A": rng.integers(-8, 8, (SMALL, SMALL)).astype(np.float32),
+               "B": rng.integers(-8, 8, (SMALL, SMALL)).astype(np.float32),
+               "C": np.zeros((SMALL, SMALL), dtype=np.float32)}
+    expected = tensors["A"] @ tensors["B"]
+    out = plan_interp.run(_degenerate(grid, tiles, "npu1").plan(), tensors)
+    assert np.array_equal(out["C"], expected)
+
+
+@pytest.mark.slow
+@pytest.mark.requires_aircc
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("shape", sorted(DEGENERATE), ids=sorted(DEGENERATE))
+def test_degenerate_grid_compiles(shape, target, tmp_path, capsys):
+    """`aircc --output-format=none` exits 0 on every degenerate grid, both generations."""
+    require_pin()
+    grid, tiles = DEGENERATE[shape]
+    stem = shape.replace("(", "").replace(")", "").replace(",", "_")
+    code, said = _aircc_verdict(_degenerate(grid, tiles, target).mlir(), target, tmp_path, stem)
+    with capsys.disabled():
+        print(f"\n  aircc --device {target} {shape}: {code or 'exit 0'} {said[:1]}")
+    assert code is None, f"{shape} must compile on {target}; aircc said {code}: {said[:2]}"
+
+
+# --------------------------------------------------------------------------------------------
+# R-HERD-1's controls — the repeat factor the toolchain lowers, and the one it does not
+# --------------------------------------------------------------------------------------------
+
+REPEAT_M, REPEAT_N = 128, 64
+"""The `repeats (4, 1)` control: `M // TM == 4` against npu1's one-column herd. W1's own tiles,
+so its L1 is 8 192 B undoubled and 16 384 B doubled — far under the budget, which is what makes
+the `aircc` refusal below a statement about the **repeat factor** alone."""
+
+
+@sp.kernel
+def gemm_repeat4(A: sp.f32[REPEAT_M, SMALL], B: sp.f32[SMALL, REPEAT_N],
+                 C: sp.f32[REPEAT_M, REPEAT_N]):
+    for i in range(REPEAT_M):
+        for j in range(REPEAT_N):
+            for k in range(SMALL):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+def _repeat4(target="npu1"):
+    """`grid(4, 2)` on npu1: physical `(1, 2)`, `repeats (4, 1)` — W1's clauses and tiles."""
+    s = sp.schedule(gemm_repeat4, target=target)
+    ax = s.axes()
+    s.grid(REPEAT_M // w1.TM, REPEAT_N // w1.TN)
+    s.tile(ax.i, w1.TM); s.tile(ax.j, w1.TN); s.tile(ax.k, w1.TK)
+    s.reduce(ax.k, op="+")
+    s.place(px=ax.i0, py=ax.j0)
+    s.stationary("C")
+    s.reside(A="L1", B="L1", C="L1")
+    s.double_buffer("A", "B")
+    s.pipeline(ax.k0)
+    return s
+
+
+@pytest.mark.fr("FR-L10")
+def test_repeat_four_is_rejected_and_repeat_two_is_not():
+    """R-HERD-1: the checker draws the line at the unroll factor, and names it.
+
+    Both shapes carry W1's tiles, so their L1 fits even doubled — the repeat factor is the
+    only thing that differs, which is the claim.
+    """
+    with pytest.raises(LegalityError) as caught:
+        _repeat4("npu1").check()
+    diagnostic = caught.value.diagnostic
+    assert diagnostic.code == "HERD-PHYSICAL"
+    assert (diagnostic.details["grid"], diagnostic.details["physical_herd"],
+            diagnostic.details["repeats"]) == ((4, 2), (1, 2), (4, 1))
+    assert diagnostic.details["unroll_factor"] == 2
+    assert "npu1 1-D 8, 2-D (2, 8)" in diagnostic.fix
+    assert "npu2 1-D 16, 2-D (4, 8)" in diagnostic.fix
+    # ...and the same tiles at `repeats (2, 1)` — W1 base itself — are accepted.
+    accepted = w1.schedule_os("npu1").check()
+    assert (accepted.physical_herd, accepted.repeats) == ((1, 2), (2, 1))
+
+
+@pytest.mark.slow
+@pytest.mark.requires_aircc
+def test_repeat_four_is_what_aircc_refuses(tmp_path, capsys, monkeypatch):
+    """The control R-HERD-1 rests on: `aircc` refuses `repeats (4, 1)` and takes `(2, 1)`.
+
+    The rejected module is built with `_check_repeats` monkeypatched to a no-op, so this
+    measures the toolchain rather than quoting B-P33. The passing control is W1 base on npu1 —
+    same tiles, same clauses, `repeats (2, 1)`.
+    """
+    require_pin()
+    monkeypatch.setattr(m3_legality, "_check_repeats", lambda *args, **kw: None)
+    bad_code, bad_said = _aircc_verdict(_repeat4("npu1").mlir(), "npu1", tmp_path, "repeat4")
+    good_code, good_said = _aircc_verdict(w1.schedule_os("npu1").mlir(), "npu1", tmp_path,
+                                          "repeat2")
+    with capsys.disabled():
+        print(f"\n  aircc --device npu1 repeats(4,1): {bad_code or 'exit 0'} {bad_said[:1]}"
+              f"\n  aircc --device npu1 repeats(2,1): {good_code or 'exit 0'} {good_said[:1]}")
+    assert bad_code is not None, "aircc now lowers repeats (4, 1); R-HERD-1 must be re-measured"
+    assert any("MM2S tile for L3 allocation" in line for line in bad_said), bad_said[:3]
+    assert good_code is None, f"repeats (2, 1) must compile; aircc said {good_code}"

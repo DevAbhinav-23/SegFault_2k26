@@ -260,7 +260,11 @@ def test_demo_rejections(name):
     from kernels import rejections
     from spatial.model import LegalityError
 
+    # `bad_capacity` is read at npu2: its 2×2 grid is the whole herd there, so ping-pong is
+    # the only doubling and 86 016 is FR-L9's own figure. On npu1 the grid folds onto (1, 2)
+    # and R-L1-3 charges 122 880 — a rejection too, but a different lesson (`rejections.py`).
+    target = "npu2" if name == "bad_capacity" else "npu1"
     with pytest.raises(LegalityError) as caught:
-        getattr(rejections, name)("npu1")
+        getattr(rejections, name)(target)
     code = caught.value.diagnostic.code
     assert_golden(f"reject.{code}.txt", str(caught.value) + "\n", kind="text")

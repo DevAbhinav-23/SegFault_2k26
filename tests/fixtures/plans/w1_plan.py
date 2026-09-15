@@ -185,8 +185,13 @@ temporal. `LegalMapping.r_time`/`.r_space` stay untiled and are `span{e_k}` / `{
 SUMMARY_CHANNELS = tuple((c.name, c.size, c.broadcast_shape) for c in CHANNELS)
 
 
-def _summary(physical: tuple[int, ...], repeats: tuple[int, ...]) -> MappingSummary:
-    """`03-lld-M4-mapping.md` §3.9's `SUMMARY`, line by line."""
+def _summary(physical: tuple[int, ...], repeats: tuple[int, ...],
+             l1_bytes: int) -> MappingSummary:
+    """`03-lld-M4-mapping.md` §3.9's `SUMMARY`, line by line.
+
+    `l1_bytes` is the mapping's own figure and is **target-dependent** under R-L1-3: a repeat
+    factor above 1 has the repeat loop unrolled by 2, so every buffer is allocated twice
+    (npu1 16 384, npu2 12 288 for this schedule)."""
     lines = [
         # lines 7-8: the delivery block — FR-M11's three literal strings
         "A: multicast along py (derived)",
@@ -204,7 +209,7 @@ def _summary(physical: tuple[int, ...], repeats: tuple[int, ...]) -> MappingSumm
     for buffer in BUFFERS:                                              # lines 11-12
         lines.append(f"  {buffer.name} {buffer.shape} {buffer.dtype.mlir} = {buffer.bytes} B"
                      + ("  x2 (ping-pong)" if buffer.ping_pong_candidate else ""))
-    lines.append(f"L1: {w1_legal.legal().l1_bytes} of {L1_BUDGET} bytes")   # line 13
+    lines.append(f"L1: {l1_bytes} of {L1_BUDGET} bytes")                    # line 13
     for channel in CHANNELS:                                            # lines 14-16
         lines.append(f"  {channel.name} size={channel.size}"
                      + (f" broadcast_shape={channel.broadcast_shape}"
@@ -218,7 +223,7 @@ def _summary(physical: tuple[int, ...], repeats: tuple[int, ...]) -> MappingSumm
         herd_physical=physical,
         repeats=repeats,
         reduction_split=REDUCTION_SPLIT,
-        l1_bytes=w1_legal.legal().l1_bytes,
+        l1_bytes=l1_bytes,
         l1_budget=L1_BUDGET,
         channels=SUMMARY_CHANNELS,
     )
@@ -240,7 +245,7 @@ def plan(target: str = "npu1") -> MappingPlan:
         segment_body=segment_body(herd),
         herd_body=HERD_BODY,
         delivery=DELIVERY,
-        summary=_summary(mapping.physical_herd, mapping.repeats),
+        summary=_summary(mapping.physical_herd, mapping.repeats, mapping.l1_bytes),
     )
 
 

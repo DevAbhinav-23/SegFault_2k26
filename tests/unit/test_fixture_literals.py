@@ -44,7 +44,10 @@ EXPECTED = {
         r_time=((0, 0, 1),),
         r_space=(),
         stationary_ops=("C",),
-        l1_bytes=12288,
+        # R-L1-3: acc 4096 + a 2·2048 + b 2·2048 = 12 288 where the grid fits the herd; on
+        # npu1 it folds onto (1, 2), the repeat loop is unrolled by 2 and every buffer is
+        # allocated twice — 2·(4096 + 2048 + 2048) = 16 384.
+        l1_bytes={"npu1": 16384, "npu2": 12288},
         halo_footprint=(),
         herd={"npu1": ((1, 2), (2, 1)), "npu2": ((2, 2), (1, 1))},
         params=("A", "B", "C"),
@@ -154,7 +157,11 @@ def test_mapping_fields(workload, target):
     assert tuple(a.extent for a in got.axes) == want["extents"]
     for name in ("sigma", "pi", "ker_pi", "pi_u", "ker_pi_u", "r_time", "r_space",
                  "stationary_ops", "l1_bytes", "halo_footprint"):
-        assert getattr(got, name) == want[name], name
+        # `l1_bytes` is per target wherever `repeats` is (R-L1-3); a plain int means the
+        # figure does not move between the two.
+        expected = want[name]
+        assert getattr(got, name) == (expected[target] if name == "l1_bytes"
+                                      and isinstance(expected, dict) else expected), name
 
     physical, repeats = want["herd"][target]
     assert got.physical_herd == physical
@@ -399,8 +406,11 @@ def test_w1_plan_channel_table():
 
 
 def test_w1_plan_buffers_and_l1():
-    """§6.1's buffer table: `acc` 4096 + `a` 2·2048 + `b` 2·2048 = 12 288 of 65 536."""
-    got = w1_plan.plan()
+    """§6.1's buffer table: `acc` 4096 + `a` 2·2048 + `b` 2·2048 = 12 288 of 65 536.
+
+    Read at **npu2**, where the 2×2 grid is the whole herd. npu1 repeats it and R-L1-3
+    charges 16 384 for the same three buffers (`test_M4_l1_agrees_with_m3`)."""
+    got = w1_plan.plan("npu2")
     assert tuple((b.name, b.operand, b.shape, b.bytes, b.loop_depth, b.ping_pong_candidate)
                  for b in got.buffers) == (
         ("acc", "C", (32, 32), 4096, 0, False),
