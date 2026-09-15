@@ -34,6 +34,8 @@ import numpy as np
 from spatial.m5tt_emit import TTProgram
 
 _ENV_HINT = "run `source scripts/tt_env.sh` first (design/PROGRESS-TT.md §2)"
+"""The one fix every environment failure below ends with: the script is the only place the three
+variables are spelled, so a message that names it cannot go stale the way a copy would."""
 
 
 class TTRunError(Exception):

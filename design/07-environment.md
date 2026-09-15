@@ -53,6 +53,16 @@ so the `-f` flags are **mandatory** (`docs/buildingRyzenLin.md:28-32`).
 3. `vendor/wheels/` is **git-ignored** — it is ~2.3 GB. `vendor/wheels/SHA256SUMS` **is**
    committed, and the wheels themselves are distributed out of band (a shared drive or a USB
    stick handed round at D0). CI restores them from its own cache keyed on that file.
+
+   **How to prime that cache: Actions → `ci` → Run workflow → type `prime` in `confirm`.**
+   That dispatch runs the `prime-wheels` job of `.github/workflows/ci.yml` and nothing else: it
+   `pip download`s the sixteen wheels pinned below from the three `-f` pages above (plus PyPI,
+   which is where thirteen of them live), checks them with `sha256sum -c SHA256SUMS`, and saves
+   `actions/cache` under `wheels-${{ hashFiles('vendor/wheels/SHA256SUMS') }}` — the key the
+   other three jobs restore with `fail-on-cache-miss: true` (R-13). It is the only step in the
+   file that reaches the network, and the sixteen versions are pinned in the job, so identity
+   is settled by the sha256 list rather than by a URL. Not yet run: no CI run has ever
+   happened on a runner (`hackathon/HANDOFF.md`, Person C item 1).
 4. The wheels are Python- and platform-tagged, so the cache is valid only for the pinned
    interpreter of §1 and for `manylinux` x86-64. A second platform needs a second cache; the
    three laptops and the CI runner are all on the pinned pair.

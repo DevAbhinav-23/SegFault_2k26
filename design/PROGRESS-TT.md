@@ -4,6 +4,11 @@
 2026-09-13, merged to `main` at `f7ecd70`, pushed 2026-09-13. The AIR side's state file is
 `design/PROGRESS-B.md`; nothing in the M5 LLDs changes.*
 
+*Reopened once, **2026-09-15**, for §T6: the backend is now in the **demo** and on the **live
+test path**, and the architect has **adjudicated R-TT-B and R-TT-B′**. No emitter or runner
+logic changed — the two constants `m5tt_emit._HEADER` and `m6tt_run._ENV_HINT` gained the
+docstrings B-P29's lint requires, and that is the whole of the code diff in `spatial/`.*
+
 ## Status
 
 **All four gates are green and the record is closed.** T1 (W1 GEMM), T2 (W3 wavefront, and
@@ -635,8 +640,8 @@ Two tests were added, one per uncovered id, and nothing else:
 | **C-TT2** | **CLOSED T1.** The raw NoC calls with `TensorAccessor::get_noc_addr` JIT-compile and execute; no `Noc`/`DataflowBuffer` wrapper appears in the emitted kernel | §4; `tests/tt/test_m5tt_emit.py` W1 kernel assertions |
 | **C-TT3** | = Q-TT2 above | §T2.3 |
 | **R-TT-A → R-TT-A′** | **Policy kept, derivation replaced by measurement.** DRAM layout stays a host-side policy of `m6tt_run` (per-tensor `pad_elems` / `row_stride_bytes`, pad on upload, strip on readback, `TT-ALIGNMENT` as the refusal); the rule it rests on is a **relative congruence**, so `p = 0` satisfies every tensor of all four workloads, W3's `S` included, and the scratch-buffer / read-modify-write / single-writer machinery the ruling's `p = 7` would have needed **does not exist** | §T2.4; `…::test_leading_pad_is_the_smallest_that_makes_every_transfer_congruent`, `…::test_the_measured_layout_is_no_leading_pad_and_a_padded_row`, `…::test_a_plan_no_leading_pad_can_satisfy_raises_TT_ALIGNMENT` |
-| **R-TT-B** | **Implemented as ruled**: a link's k-th put occurrence pairs with its k-th get occurrence, and the destination of a remote write is read off the paired get. It is what unblocks W2, whose one link lands in `cur` on one occurrence and `next` on the next. W1, W3 and the flip emit **byte-identical** kernels to T2's | §T3.2; `…::test_W2_put_occurrences_land_in_alternating_buffers`, `…::test_an_unpairable_link_is_refused_and_says_why` |
-| **R-TT-B, the credit** | **The ruling's one amendment, forced by a measured deadlock.** Depth 1 is correct for a chain and hangs on W2 (180 s against ≈1.3 s clean), because two PEs that each put before they get make the *wait-for* graph cyclic even though the channel graph is not. The credit is the smallest gap between two get-occurrence landing regions that alias, computed in **dynamic** order: 1 for W3 and the cascade, 2 for W2 | §T3.3; `…::test_W2_gives_each_link_two_credits_and_W3_the_flip_one`, `tests/tt/test_tt_w2.py::test_one_credit_per_link_deadlocks` (`slow`, 60 s cap) |
+| **R-TT-B** | **CLOSED 2026-09-15 — adjudicated, accepted as measured** (the ruling is quoted in full below and in `design/08-tt-backend.md` §3.5). Implemented as ruled: a link's k-th put occurrence pairs with its k-th get occurrence, and the destination of a remote write is read off the paired get. It is what unblocks W2, whose one link lands in `cur` on one occurrence and `next` on the next. W1, W3 and the flip emit **byte-identical** kernels to T2's | §T3.2; `…::test_W2_put_occurrences_land_in_alternating_buffers`, `…::test_an_unpairable_link_is_refused_and_says_why` |
+| **R-TT-B′, the credit** | **CLOSED 2026-09-15 — adjudicated with R-TT-B.** The ruling's one amendment, forced by a measured deadlock: depth 1 is correct for a chain and hangs on W2 (180 s against ≈1.3 s clean), because two PEs that each put before they get make the *wait-for* graph cyclic even though the channel graph is not. The credit is the smallest gap between two get-occurrence landing regions that alias, computed in **dynamic** order: 1 for W3 and the cascade, 2 for W2 | §T3.3; `…::test_W2_gives_each_link_two_credits_and_W3_the_flip_one`, `tests/tt/test_tt_w2.py::test_one_credit_per_link_deadlocks` (`slow`, 60 s cap) |
 
 ### T5.3 What each suite skips and deselects, and why
 
@@ -650,7 +655,8 @@ Two tests were added, one per uncovered id, and nothing else:
 
 **The TT suite**, `source scripts/tt_env.sh; .venv-tt/bin/python -m pytest -rA -q -m
 requires_ttsim tests/tt` → **25 `PASSED`, 0 failed, exit 0, 286 s**, 50 deselected of 75
-collected.
+collected. *(**26** since T6's `tests/tt/test_tt_live.py`, re-measured 2026-09-15: 26 `PASSED`,
+exit 0, no `FAILED`/`ERROR` line.)*
 
 *Architect re-run 2026-09-13 on `main`: **25 `PASSED`, exit 0, ttsim suite total 47 577 057
 cycles, 262 s**.*
@@ -699,6 +705,65 @@ rewrites it; the full eight sentences and the paste-ready deck block stay in §8
 
 ---
 
+## T6 — 2026-09-15: in the demo, on the live path, and the two rulings closed
+
+*No emitter or runner logic changed. What changed is where the backend sits in the project.*
+
+### T6.1 The architect's ruling on R-TT-B and R-TT-B′ (2026-09-15)
+
+> *"Accepted as measured: occurrence pairing (k-th put ↔ k-th get) and the credit = smallest gap
+> between aliasing landing regions (1 for W3 and the cascade, 2 for W2). The depth-1 deadlock on
+> W2 was reproduced, the credit rule removed it, and all four variants are exact on ttsim with
+> negative controls. Not a general theorem: holds for the four plans measured; any new plan shape
+> must re-run `tests/tt`."*
+
+Both ledger rows in §T5.2 now read CLOSED, `design/08-tt-backend.md` §3.5 carries the ruling
+beside the rule it accepts, §8 gains it as honest limit **9**, and §9 records it. The scope
+clause is the operative half: **four plans, not a theorem.** Nothing in the implementation moved,
+because the ruling accepts what was built.
+
+### T6.2 The demo beat — W3 executed on stage
+
+`demo/run_demo.py` gains `[4:05] Second backend — Tenstorrent Wormhole on ttsim, same plan`,
+between "It lowers" and "Honest limits". Two halves:
+
+1. **Emission, always.** `kernels.w3_sw.schedule("npu1").plan()` — the live surface, the same
+   object the 3:40 beat lowered through `air.api` — into `m5tt_emit.emit`, in the demo's own
+   `.venv` interpreter, because the emitter imports nothing but the standard library and
+   `spatial.model`. It prints the core range, the one data-movement kernel and its line count,
+   the six semaphores by name, the six circular buffers and the three io tensors.
+2. **Execution, when the environment allows.** `<repo>/.venv-tt/bin/python demo/tt_w3_on_ttsim.py`
+   as a subprocess with `TT_METAL_SIMULATOR`, `TT_METAL_SLOW_DISPATCH_MODE=1`, **no**
+   `TT_METAL_HOME` and a 120 s timeout — `scripts/tt_env.sh`'s three facts, passed explicitly.
+   The script runs W3 and compares against **`kernels.w3_sw.sw` executed in CPython**, which is
+   the FR-S18 claim closing on itself: the kernel is the specification, and four Tensix cores
+   reproduce it. `ttnn`'s thirty bring-up log lines are dropped from the relay; the exit status
+   is not.
+
+Measured on this machine, both venvs present: `W3 on ttsim: EXACT (1089 cells compared)`, and
+the whole six-beat demo **3.7 s** cold JIT / **2.0 s** warm, exit 0 — against M8's 300 s budget.
+With `.venv-tt` or `vendor/tt/libttsim_wh.so` absent the beat prints which one and points at
+§T5.3 instead of claiming a run; the emission half still prints.
+
+### T6.3 The live test path
+
+| Test | Marks | What it adds |
+|---|---|---|
+| `tests/integration/test_kernels_live.py::test_live_plan_emits_the_same_tt_program[w1.base\|w1.flip\|w2.base\|w3.base]` | `fr("FR-TT1")`, **default suite** | `m5tt_emit.emit(live_plan) == m5tt_emit.emit(m4.plan(fixture_literal))`. `TTProgram` is a frozen dataclass, so one `==` compares the kernel C++, the core range, the CB table, the semaphores, the io tensors and the per-core runtime args. Until now every TT test began at a hand-written `LegalMapping`; this is the half of the claim that runs with no device |
+| `tests/tt/test_tt_live.py::test_the_live_W3_schedule_is_exact_on_ttsim` | `fr("FR-TT6")`, `requires_ttsim` | the same path through the simulator, exact against the CPython kernel rather than against `test_semantics.smith_waterman`. Both ends are the user's |
+
+The TT suite is therefore **26 `PASSED`, exit 0** (25 + this one), and the default suite gains
+four cases that need no `ttnn` and no device.
+
+### T6.4 What T6 did **not** change
+
+Not the emitter, not the runner, not a golden, not a cycle count, and not one sentence of §8's
+honest limits (limit 9 is added, nothing is weakened). Still `[not run]`: silicon, the Tensix
+compute engine, double buffering, `f16`/`bf16`, any timing claim, and anything but Wormhole B0.
+The demo beat is a **functional simulator** on stage, and the beat says so in the line after it.
+
+---
+
 ## 5. Not run / not done
 
 | Item | Why | The exact error |
@@ -728,16 +793,16 @@ now holds **no workload**. What remains is out of scope, unreachable here, or a 
    scope: this repo does not do performance work (`CLAUDE.md`).
 3. **Double buffering** (`ping_pong_candidate` is read and ignored), **`f16`/`bf16`** (no scalar
    C++ type on a data-movement core), and **any timing claim** (`ttsim` is functional).
-4. **Two rulings are recorded here and need the architect's adjudication**, both from T3:
-   **R-TT-B** as written into `design/08-tt-backend.md` §3.5, and its **credit**, which is the
-   amendment T3's measurement forced on the ruling as briefed. Both are implemented, both are
-   measured, and the one-credit form's deadlock is reproducible in 180 s (§T3.3).
-5. **The record is closed at T5.** §T5 carries the FR-TT traceability result (14 of 14 covered),
-   the consolidated Q-TT / C-TT / R-TT ledger and both suites' skip and deselect lists. What is
-   left by owner: **B** — silicon and the compute engine, neither reachable here; **C** — the
-   slide text, which is written out in `design/08-tt-backend.md` §8 ready to paste and condensed
-   to three bullets plus one Q&A row in **§T5.4** above; the
-   **architect** — the two T3 rulings above, and the push.
+4. ~~**Two rulings are recorded here and need the architect's adjudication**~~ — **CLOSED
+   2026-09-15**: R-TT-B and R-TT-B′ (the credit) are adjudicated, *accepted as measured* and
+   explicitly **not** as a general theorem. The ruling is §T6.1 and `design/08-tt-backend.md`
+   §3.5; §8 carries it as honest limit 9. A new plan shape re-runs `tests/tt`.
+5. **The record is closed at T5, and T6 puts the backend in the project rather than beside it.**
+   §T5 carries the FR-TT traceability result (14 of 14 covered), the consolidated Q-TT / C-TT /
+   R-TT ledger and both suites' skip and deselect lists; **§T6** adds the demo beat, the two live
+   tests and the ruling. What is left by owner: **B** — silicon and the compute engine, neither
+   reachable here; **C** — the slide text, which is written out in `design/08-tt-backend.md` §8
+   ready to paste and condensed to three bullets plus one Q&A row in **§T5.4** above.
 
 A further honest note for any pitch: what this demonstrates is that **the `MappingPlan` is
 backend-neutral for all four workloads** — a GEMM, a wavefront with a real core-to-core protocol,

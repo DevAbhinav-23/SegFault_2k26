@@ -69,7 +69,7 @@ negotiable inside the week.
 |---|---|---|---|
 | Requirements | **drafted** | — | — |
 | HLD | **drafted** | — | — |
-| Interfaces | **drafted at `CONTRACT_VERSION = 6`, v4, v5 and v6 pending signatures**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze | all three | **D0** |
+| Interfaces | **drafted at `CONTRACT_VERSION = 6`; v3–v6 signed by B (2026-09-15), A's and C's columns pending**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze | all three | **D0** |
 | Per-module LLDs (M1…M8 + B's probe log) | **drafted**, revised per REVIEW-round1 | per module | — |
 | Design review round 1 | **answered** — `RESPONSE-review1.md` | — | — |
 | Test plan | **drafted** | — | — |
@@ -84,13 +84,13 @@ negotiable inside the week.
 | M4 (W1 / W3 / W2 / flip) | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7; gate **G2/G3/G4/G5** B-half green | B | D2 / D4 / D5 / D6 |
 | M5 | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 | B | D1 skeleton, D2 real |
 | M6 | off-device path **written by B at P0c/P4/P6**, reviewed and kept by C; **device half built by C 2026-09-13** (`has_device`, `run`, `diff`, `trace`) and **untested on hardware** — no `/dev/accel*` here | C | D2 |
-| M7 harness, M8 fixtures | **built (C)** — 2026-09-13: harness owned, NFR tests, level-O oracle diffs, CI workflow (never run on a runner), all M8 fixtures generated | C | D1 |
+| M7 harness, M8 fixtures | **built (C)** — 2026-09-13: harness owned, NFR tests, level-O oracle diffs, CI workflow, all M8 fixtures generated. 2026-09-15: the workflow gains `prime-wheels` (`workflow_dispatch`, `confirm: prime`) so the cache the other jobs need can be filled from CI — **still never run on a runner** | C | D1 |
 | **W1 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G2** B-half: `test_W1_legal_to_text` | B, C | **gate G2, D2** |
 | **W3 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G3** B-half: `test_golden_w3`, `test_W3_aircc_none` | B, C | **gate G3, D4** |
 | **W2 end to end** | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G4** B-half: `test_golden_w2`, `test_W2_aircc_none` | B, C | **gate G4, D5** |
 | **W1 weight-stationary flip** (stretch) — 1-D `grid(PK=4)`, `place(px=ax.k0)`, `j` untiled, ascending cascade | **built (B side)** — 2026-09-13, see `PROGRESS-B.md` §P7 — gate **G5** B-half: `test_golden_w1_flip`, `test_W1_flip_aircc_none`, `cascade_channels == 3` | B | **gate G5, D6 midday**; the designated cut if the plan runs over |
 | Device run (stretch) | **not started** — `m6.run`/`m6.diff` built and untested on silicon; `test_T4_device_diff` skips on `/dev/accel*` | C | D5 |
-| **TT backend (B, stretch)** — second emitter, `MappingPlan` → TT-Metalium on ttsim; spec [`08-tt-backend.md`](08-tt-backend.md) | **T1–T4 GREEN (2026-09-13), close-out T5; see [`PROGRESS-TT.md`](PROGRESS-TT.md); merged to main** | B | **gates T1–T4**; abandoned if a gate is not green after two agent-days |
+| **TT backend (B, stretch)** — second emitter, `MappingPlan` → TT-Metalium on ttsim; spec [`08-tt-backend.md`](08-tt-backend.md) | **in the demo and live tests (2026-09-15)** — beat 4:05 executes W3 on ttsim against the CPython kernel, `test_live_plan_emits_the_same_tt_program` (default suite) and `tests/tt/test_tt_live.py` put the live surface on the TT path, and **R-TT-B / R-TT-B′ are adjudicated** (accepted as measured, not a theorem). T1–T4 GREEN (2026-09-13), close-out T5, §T6; see [`PROGRESS-TT.md`](PROGRESS-TT.md); merged to main | B | **gates T1–T4**; abandoned if a gate is not green after two agent-days |
 | W4 FFT | **out of scope** | — | — |
 | Freeze | — | all | **end of D6** |
 
@@ -135,10 +135,16 @@ fails without it.** By then the cost of churn exceeds the cost of an ugly interf
 
 | Document | Person A | Person B | Person C | Date |
 |---|---|---|---|---|
-| `06-interfaces.md` v3 | ☐ | ☐ | ☐ | |
-| `06-interfaces.md` v4 | ☐ | ☐ | ☐ | |
-| `06-interfaces.md` v5 | ☐ | ☐ | ☐ | |
-| `06-interfaces.md` v6 | ☐ | ☐ | ☐ | |
+| `06-interfaces.md` v3 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
+| `06-interfaces.md` v4 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
+| `06-interfaces.md` v5 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
+| `06-interfaces.md` v6 | ☐ | ☑ B — 2026-09-15 (architect on B's behalf, per the user's instruction to close every open item) | ☐ | 2026-09-15 (B) |
+
+*A's and C's columns are **pending** and are theirs to tick; a version is signed only when all
+three are. B's four are what B can answer for: v3's `MappingSummary.residency`, v4's `HerdPlan`
+marker and `KernelModel.bindings`, v5's `Statement.expr` and the loop-axis naming rule, and v6's
+`m6.run`/`m6.trace`/`DiffReport` shapes are all implemented against by `m4_mapping`, `m5_emit`
+and `m5tt_emit`, and every golden in the suite was produced through them.*
 
 *Sign **v3**, not v1 or v2: the round-1 review found eleven holes in the contract and RULING 9
 found a twelfth, and a freeze over a contract with known holes is worse than a one-hour delay
@@ -151,10 +157,10 @@ found a twelfth, and a freeze over a contract with known holes is worse than a o
 | 1 | 2026-09-12 | initial | — | superseded before D0 |
 | 2 | 2026-09-12 | §5.5 `ComputeNode` → `StoreNode` + the `ExprNode` tree (`Load`/`Const`/`BinOp`/`Neg`/`MaxMin`/`Select`); §5.5 `BranchNode` added to `PlanNode`; §5.5 `LoopPlan.axis` synthetic-name footnote; §4.1 `LegalMapping.pi_u`, `.ker_pi_u` and the two-frame note; §5.2 `ChannelSite.id`; §5.3 `ChannelPlan.chain_direction`; §5.6 `MappingPlan.launch_name`, `.segment_name`, the `tensors` construction rule and invariants 6-7; §6.3 `GRAMMAR-NONUNIFORM-DEP` and `DMA-CHANNELS` (catalogue 41 → **43**); §8 the closed `<variant>` vocabulary | REVIEW-round1 B-3, B-4, B-5, B-9, B-10, B-13 | *(pending D0)* |
 | 3 | 2026-09-12 | §5.7 `MappingSummary.residency` — one `(operand, duration)` pair per operand — and the residency line each pair renders into `lines` (`03-lld-M4-mapping.md` §3.9 computes it) | architect **RULING 9**: the stationarity predicate is spatial, so "stationary" alone does not say how long an operand stays in L1 (FR-M11, FR-D2) | *(pending D0)* |
-| 4 | 2026-09-13 | §5.5 `HerdPlan` ∈ `PlanNode`, §5.6 `segment_body` carries exactly one `HerdPlan` == `herd` (invariant 8); §2.7 `KernelModel.bindings`; §2.1 expression shape entries resolve to ints at capture; §5.2 `order` per body | FR-E1 + D-14 (B-P7); FR-M7 + Q-M1-2 (B-P9) | *proposed by B's architect 2026-09-13; pending A, B, C signatures* |
+| 4 | 2026-09-13 | §5.5 `HerdPlan` ∈ `PlanNode`, §5.6 `segment_body` carries exactly one `HerdPlan` == `herd` (invariant 8); §2.7 `KernelModel.bindings`; §2.1 expression shape entries resolve to ints at capture; §5.2 `order` per body | FR-E1 + D-14 (B-P7); FR-M7 + Q-M1-2 (B-P9) | *proposed by B's architect 2026-09-13; **signed B 2026-09-15**; pending A, C* |
 | 4 | 2026-09-13 | §8 summary golden path gains `<target>` (erratum, 2026-09-13) | architect ruling on **B-P14**: the herd line carries the physical shape and the repeats, which differ per target, so the target-less path of §8 contradicted `04-test-plan.md` §3.1's "stored per target too". Documentation only — no `CONTRACT_VERSION` bump | *architect, 2026-09-13* |
-| 5 | 2026-09-13 | §2.4 `Statement.expr` (`ExprNode`, the desugared right-hand side over kernel-level operands) and §2.7's invariant that its `Load`s name `Param`s; §5.6 `declared` := named by a clause; §5.5 the loop-axis naming rule | FR-M8 + FR-E2 (B-P19); FR-M1/FR-M11 (B-P17); (B-P18) | *proposed by B's architect 2026-09-13; pending A, B, C* |
-| 6 | 2026-09-13 | §7.2 `m6.run` gains `target`, `kernel_name`, optional `workdir`; `m6.trace` gains `function`, optional `workdir`; §7.2 `DiffReport` is a frozen dataclass in `spatial/model.py` | the frozen two-arg shapes cannot construct `XRTBackend` nor name the function for `air-runner -f` (C, `progress.md` §3) | *proposed by C 2026-09-13, bumped by the architect 2026-09-15; pending A, B, C* |
+| 5 | 2026-09-13 | §2.4 `Statement.expr` (`ExprNode`, the desugared right-hand side over kernel-level operands) and §2.7's invariant that its `Load`s name `Param`s; §5.6 `declared` := named by a clause; §5.5 the loop-axis naming rule | FR-M8 + FR-E2 (B-P19); FR-M1/FR-M11 (B-P17); (B-P18) | *proposed by B's architect 2026-09-13; **signed B 2026-09-15**; pending A, C* |
+| 6 | 2026-09-13 | §7.2 `m6.run` gains `target`, `kernel_name`, optional `workdir`; `m6.trace` gains `function`, optional `workdir`; §7.2 `DiffReport` is a frozen dataclass in `spatial/model.py` | the frozen two-arg shapes cannot construct `XRTBackend` nor name the function for `air-runner -f` (C, `design/PROGRESS-C.md` §3) | *proposed by C 2026-09-13, bumped by the architect 2026-09-15; **signed B 2026-09-15**; pending A, C* |
 
 ---
 

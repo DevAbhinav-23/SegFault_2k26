@@ -12,7 +12,7 @@ built; no implementation exists.
 `m6.run` gains `target` and `kernel_name` and an optional `workdir`; `m6.trace` gains `function`
 and an optional `workdir`; `DiffReport` is named as the frozen dataclass it is, in
 `spatial/model.py`. Forcing requirement: FR-T3 and FR-T4 — the frozen two-argument shapes cannot
-construct an `XRTBackend` nor name the function for `air-runner -f` (C, `progress.md` §3). No
+construct an `XRTBackend` nor name the function for `air-runner -f` (C, `design/PROGRESS-C.md` §3). No
 field of any §2-§5 record changes. Pending A, B and C signatures in `00-README.md` §4.*
 
 *Version 5 (architect ruling, 2026-09-13) gives `Statement` the value it stores. `Statement.expr`
@@ -559,7 +559,7 @@ names its denominator.
 *v6, 2026-09-15.* `m6.run`'s two-argument shape cannot construct an `XRTBackend` (it needs the
 `target` to resolve the device and the `kernel_name` to name the entry point), and `m6.trace`'s
 cannot name the function for `air-runner -f`; `workdir` is optional on both and keeps the tool's
-scratch out of the repository (invariant I-5). Proposed by C, `progress.md` §3; bumped by the
+scratch out of the repository (invariant I-5). Proposed by C, `design/PROGRESS-C.md` §3; bumped by the
 architect 2026-09-15. `has_device` is listed because every `requires_device` skip predicate
 calls it.
 

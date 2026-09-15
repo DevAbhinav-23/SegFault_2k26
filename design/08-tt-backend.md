@@ -385,6 +385,18 @@ change to §3.4 block B, nothing else.
 > which is the form implemented. The pairing is unchanged; the number of slots it implies is not
 > what the ruling assumed.)*
 >
+> **ADJUDICATED — architect, 2026-09-15. R-TT-B and R-TT-B′ (the credit) are closed:**
+>
+> > *"Accepted as measured: occurrence pairing (k-th put ↔ k-th get) and the credit = smallest
+> > gap between aliasing landing regions (1 for W3 and the cascade, 2 for W2). The depth-1
+> > deadlock on W2 was reproduced, the credit rule removed it, and all four variants are exact
+> > on ttsim with negative controls. **Not a general theorem**: holds for the four plans
+> > measured; any new plan shape must re-run `tests/tt`."*
+>
+> Nothing below changes — the text is the ruling as implemented, and this is its acceptance.
+> The scope sentence is the operative one: a fifth plan shape is not covered by this, and
+> `pytest -m requires_ttsim tests/tt` is what covers it.
+>
 > T2 paired a channel's two ends by *site* and refused W2, whose `ToNorth` has gets landing in
 > **both** `cur` and `next` (`design/PROGRESS-TT.md` §5). That is a limitation of pairing by
 > channel, not of the protocol: the same link is served by two put **occurrences** and two get
@@ -810,6 +822,21 @@ session, `-m requires_ttsim tests/tt`, **25 `PASSED`, 0 failed, exit status 0, 2
 the same figure as T3. The four cycle counts above are byte-stable across every run that has
 produced them.
 
+### 7.1 Wired into the demo and the live tests — 2026-09-15
+
+The backend stopped being a stretch item beside the project and became part of it. Three things
+landed, and none of them changed the emitter or the runner:
+
+| What | Where | Measured |
+|---|---|---|
+| **A demo beat.** `[4:05] Second backend — Tenstorrent Wormhole on ttsim, same plan`: the plan comes from the **live surface** (`kernels.w3_sw.schedule("npu1").plan()`), `m5tt_emit.emit` runs in the pitch's own interpreter (standard library only) and prints the core range, the kernel, the six semaphores, the circular buffers and the io tensors; then `.venv-tt` is spawned on `demo/tt_w3_on_ttsim.py`, which executes W3 and compares against `kernels.w3_sw.sw` **run in CPython** | `demo/run_demo.py`, `demo/tt_w3_on_ttsim.py` | `W3 on ttsim: EXACT (1089 cells compared)`; the whole six-beat demo **3.7 s** cold / **2.0 s** warm, exit 0, against M8's 300 s budget. Without `.venv-tt` or `vendor/tt/libttsim_wh.so` the beat prints which is missing and points at §T5.3 — one line, no stack trace |
+| **The live plan emits the same program.** `m5tt_emit.emit(<kernels>.schedule("npu1").plan()) == m5tt_emit.emit(m4.plan(<fixture>.legal("npu1")))` for W1-os, W1-ws, W2 and W3. `TTProgram` is a frozen dataclass, so `==` compares the kernel C++, the core range, every CB, every semaphore, every io tensor and the runtime-arg ABI at once | `tests/integration/test_kernels_live.py::test_live_plan_emits_the_same_tt_program`, `fr("FR-TT1")` | 4 passed, **in the default suite** — no device, no `ttnn` |
+| **A live device test.** W3 from `kernels.w3_sw.schedule` on ttsim, exact against the CPython kernel rather than against the textbook DP | `tests/tt/test_tt_live.py`, `fr("FR-TT6")` | the TT suite is now **26 `PASSED`, exit 0** |
+
+What this closes is a gap of *standing*, not of evidence: before it, the TT claim rested on
+plans built from hand-written `LegalMapping` literals, and the pitch had no beat. The honest
+limits of §8 are unchanged by all three.
+
 **Stop rule.** *A gate that is not green after two agent-days is abandoned, not extended.* Keep
 whatever runs, write what failed into `design/PROGRESS-TT.md`, and **say so on the slide** — "W1
 and W3 execute on ttsim; W2 did not" is a true, useful sentence and a silently omitted workload is
@@ -854,6 +881,15 @@ found, and they are the ones a reviewer will otherwise find for us.
 8. **Each of those executions has a negative control.** A one-line mutation of the emitted kernel
    makes every one of the four return a different answer, so "it matched" is not a statement
    about a simulator that never ran our kernel.
+9. **The protocol rule is measured, not proved** (added 2026-09-15 with the ruling in §3.5).
+   Occurrence pairing and the credit are **accepted as measured** for the four plans in this
+   repository — the depth-1 deadlock on W2 was reproduced, the credit removed it, and all four
+   are exact with negative controls — and they are **not a general theorem**. A new plan shape
+   must re-run `pytest -m requires_ttsim tests/tt`; nobody should say "it is proved deadlock
+   free" of a fifth shape.
+
+*Said on stage, the ninth is one clause: "the pairing rule is measured on four plans, not proved
+in general — a new shape re-runs the suite."*
 
 **Slide text — second backend** *(for Person C, to paste into the deck; the honest-limits slide
 and the demo script are `design/05-work-breakdown.md` §5 and are C's, not edited here)*
@@ -878,6 +914,10 @@ HVX/HMX over a shared scratchpad: no PE array, no channel model; Qualcomm ships 
 **Q-TT1 … Q-TT8 are all closed, every one of them by measurement rather than by argument.** The
 resolutions, with the probe or test that produced each, are the consolidated ledger in
 `design/PROGRESS-TT.md` §T5.2, and they are not repeated here.
+
+**R-TT-B and R-TT-B′ (the credit) are closed too**, by the architect on **2026-09-15** — the
+ruling is quoted in §3.5, and its scope clause is the part that matters: accepted **as measured**
+for the four plans here, not as a theorem.
 
 What is genuinely open is five items, and **none of them is reachable from a simulator on this
 machine**. Each says who could close it and how, so that nobody re-opens it here:

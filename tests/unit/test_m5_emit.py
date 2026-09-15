@@ -395,6 +395,12 @@ ALLOWED_AIR_NAMES = {
     # W3 is the first `Select` in the project; erratum recorded in design/PROGRESS-B.md, P4.
     "air.ops.equal",              # row 12, via §3.6 line 17
     "air.ops.not_equal",          # row 12, via §3.6 line 17
+    # Row 12's widening, added at B-P32 (design/PROGRESS-B.md): a `Load` whose buffer's dtype is
+    # not the destination's is cast to the destination's before the arithmetic, which is how
+    # "bf16 in, f32 out" reaches `air.api` — it has no mixed-precision elementwise assignment
+    # (`python/air/api/_emit.py:458-471`). The condition is an inequality, so every f32/i32 plan
+    # emits the text it emitted before and every golden is byte-identical.
+    "air.ops.cast",               # row 12, via §3.6 — B-P32
     # the element types rows 1 and 6 pass as their `dtype` argument; §3.2 names the argument
     # rather than the object, and `air.api` re-exports exactly these five of the ten it has.
     "air.f32", "air.f16", "air.bf16", "air.i32", "air.i8",
