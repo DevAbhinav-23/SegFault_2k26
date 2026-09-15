@@ -69,7 +69,7 @@ negotiable inside the week.
 |---|---|---|---|
 | Requirements | **drafted** | — | — |
 | HLD | **drafted** | — | — |
-| Interfaces | **drafted at `CONTRACT_VERSION = 5`, v4 and v5 pending signatures**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze | all three | **D0** |
+| Interfaces | **drafted at `CONTRACT_VERSION = 6`, v4, v5 and v6 pending signatures**; every REVIEW-round1 edit and RULING 9's `MappingSummary.residency` applied *before* the freeze | all three | **D0** |
 | Per-module LLDs (M1…M8 + B's probe log) | **drafted**, revised per REVIEW-round1 | per module | — |
 | Design review round 1 | **answered** — `RESPONSE-review1.md` | — | — |
 | Test plan | **drafted** | — | — |
@@ -138,6 +138,7 @@ fails without it.** By then the cost of churn exceeds the cost of an ugly interf
 | `06-interfaces.md` v3 | ☐ | ☐ | ☐ | |
 | `06-interfaces.md` v4 | ☐ | ☐ | ☐ | |
 | `06-interfaces.md` v5 | ☐ | ☐ | ☐ | |
+| `06-interfaces.md` v6 | ☐ | ☐ | ☐ | |
 
 *Sign **v3**, not v1 or v2: the round-1 review found eleven holes in the contract and RULING 9
 found a twelfth, and a freeze over a contract with known holes is worse than a one-hour delay
@@ -153,6 +154,7 @@ found a twelfth, and a freeze over a contract with known holes is worse than a o
 | 4 | 2026-09-13 | §5.5 `HerdPlan` ∈ `PlanNode`, §5.6 `segment_body` carries exactly one `HerdPlan` == `herd` (invariant 8); §2.7 `KernelModel.bindings`; §2.1 expression shape entries resolve to ints at capture; §5.2 `order` per body | FR-E1 + D-14 (B-P7); FR-M7 + Q-M1-2 (B-P9) | *proposed by B's architect 2026-09-13; pending A, B, C signatures* |
 | 4 | 2026-09-13 | §8 summary golden path gains `<target>` (erratum, 2026-09-13) | architect ruling on **B-P14**: the herd line carries the physical shape and the repeats, which differ per target, so the target-less path of §8 contradicted `04-test-plan.md` §3.1's "stored per target too". Documentation only — no `CONTRACT_VERSION` bump | *architect, 2026-09-13* |
 | 5 | 2026-09-13 | §2.4 `Statement.expr` (`ExprNode`, the desugared right-hand side over kernel-level operands) and §2.7's invariant that its `Load`s name `Param`s; §5.6 `declared` := named by a clause; §5.5 the loop-axis naming rule | FR-M8 + FR-E2 (B-P19); FR-M1/FR-M11 (B-P17); (B-P18) | *proposed by B's architect 2026-09-13; pending A, B, C* |
+| 6 | 2026-09-13 | §7.2 `m6.run` gains `target`, `kernel_name`, optional `workdir`; `m6.trace` gains `function`, optional `workdir`; §7.2 `DiffReport` is a frozen dataclass in `spatial/model.py` | the frozen two-arg shapes cannot construct `XRTBackend` nor name the function for `air-runner -f` (C, `progress.md` §3) | *proposed by C 2026-09-13, bumped by the architect 2026-09-15; pending A, B, C* |
 
 ---
 

@@ -1,0 +1,4 @@
+L2-CAUSALITY: dependence (0, 1) on S is not causal: sigma.d = (0, -7), whose first nonzero entry is <= 0
+  in clause: skew(...)
+  because:   dependence=(0, 1), operand='S', representative=(0, 1, -7), sigma_d=(0, -7)
+  fix:       add an axis to skew(time=...) before the violating one, or drop the offending tile

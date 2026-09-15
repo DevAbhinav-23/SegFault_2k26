@@ -6,7 +6,14 @@ sign it in `00-README.md` §4 and a version bump of `CONTRACT_VERSION` below.*
 **This file is specification text, not code.** Field lists and signatures describe what must be
 built; no implementation exists.
 
-`CONTRACT_VERSION = 5`
+`CONTRACT_VERSION = 6`
+
+*Version 6 (architect ruling, 2026-09-15) corrects §7.2's device half to what M6 implements.
+`m6.run` gains `target` and `kernel_name` and an optional `workdir`; `m6.trace` gains `function`
+and an optional `workdir`; `DiffReport` is named as the frozen dataclass it is, in
+`spatial/model.py`. Forcing requirement: FR-T3 and FR-T4 — the frozen two-argument shapes cannot
+construct an `XRTBackend` nor name the function for `air-runner -f` (C, `progress.md` §3). No
+field of any §2-§5 record changes. Pending A, B and C signatures in `00-README.md` §4.*
 
 *Version 5 (architect ruling, 2026-09-13) gives `Statement` the value it stores. `Statement.expr`
 is the complete right-hand side written into `target`, after scalar forward substitution
@@ -535,14 +542,26 @@ m4.self_check(plan: MappingPlan) -> None                         raises MappingE
 m5.emit(plan: MappingPlan, target: Target) -> EmitResult         raises EmissionError
 m6.artifact(mlir_path: str, target: Target,
             output_format: "none" | "pdi" | "xclbin") -> str      raises ToolchainError
-m6.run(artifact: str, inputs: Sequence[ndarray]) -> list[ndarray] raises ToolchainError
+m6.run(artifact: str, inputs: Sequence[ndarray], target: Target, kernel_name: str,
+       workdir: str | PathLike | None = None) -> list[ndarray]    raises ToolchainError
 m6.diff(device: Sequence[ndarray], oracle: Sequence[ndarray],
         tol: float) -> DiffReport                                 raises nothing
-m6.trace(mlir_path: str, model_json: str) -> str                  raises ToolchainError
+m6.trace(mlir_path: str, model_json: str, function: str,
+         workdir: str | PathLike | None = None) -> str            raises ToolchainError
+m6.has_device() -> bool                                           raises nothing
 ```
 
-`DiffReport`: `(matched: bool, max_abs_err: float, first_mismatch: tuple[int, ...] | None,
-count_mismatched: int, total: int)` — every count names its denominator.
+`DiffReport` is a **frozen dataclass in `spatial/model.py`** (a `_Model`, validated like every
+other §2-§5 record, not a bare tuple): `matched: bool`, `max_abs_err: float`,
+`first_mismatch: tuple[int, ...] | None`, `count_mismatched: int`, `total: int` — every count
+names its denominator.
+
+*v6, 2026-09-15.* `m6.run`'s two-argument shape cannot construct an `XRTBackend` (it needs the
+`target` to resolve the device and the `kernel_name` to name the entry point), and `m6.trace`'s
+cannot name the function for `air-runner -f`; `workdir` is optional on both and keeps the tool's
+scratch out of the repository (invariant I-5). Proposed by C, `progress.md` §3; bumped by the
+architect 2026-09-15. `has_device` is listed because every `requires_device` skip predicate
+calls it.
 
 ---
 

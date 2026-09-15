@@ -60,6 +60,7 @@ def sw(q: sp.i32[MQ], r: sp.i32[NR], S: sp.i32[MQ + 1, NR + 1]):
 # ------------------------------------------------------------------------------------------
 
 
+@pytest.mark.fr("FR-S2", "FR-S3")
 def test_w1_kernel_model():
     e = w1_legal.kernel()
     assert gemm.model.params == e.params
@@ -68,6 +69,7 @@ def test_w1_kernel_model():
     assert gemm.model.reduction == e.reduction
 
 
+@pytest.mark.fr("FR-S2", "FR-S3")
 def test_w2_kernel_model():
     e = w2_legal.kernel(T=4)
     assert jacobi.model.params == e.params
@@ -75,6 +77,7 @@ def test_w2_kernel_model():
     assert jacobi.model.dependences == e.dependences
 
 
+@pytest.mark.fr("FR-S2", "FR-S3")
 def test_w3_kernel_model():
     e = w3_legal.kernel()
     assert sw.model.params == e.params
@@ -87,6 +90,7 @@ def test_w3_kernel_model():
 # ------------------------------------------------------------------------------------------
 
 
+@pytest.mark.fr("FR-S3")
 def test_grammar_rejects_if_statement():
     def bad(A: sp.f32[64, 64], B: sp.f32[64, 64]):
         for i in range(64):
@@ -103,6 +107,7 @@ def test_grammar_rejects_if_statement():
 # ------------------------------------------------------------------------------------------
 
 
+@pytest.mark.fr("FR-S7")
 def test_clause_rejects_bad_tile_factor():
     s = sp.schedule(gemm, target="npu1")
     ax = s.axes()
@@ -116,6 +121,7 @@ def test_clause_rejects_bad_tile_factor():
 # ------------------------------------------------------------------------------------------
 
 
+@pytest.mark.fr("FR-L3", "FR-L9")
 def test_w1_pipeline_end_to_end():
     s = sp.schedule(gemm, target="npu1")
     ax = s.axes()
@@ -131,6 +137,7 @@ def test_w1_pipeline_end_to_end():
     assert mapping.stationary_ops == ("C",)
 
 
+@pytest.mark.fr("FR-L7", "FR-L9")
 def test_w2_pipeline_end_to_end():
     s = sp.schedule(jacobi, target="npu1")
     ax = s.axes()
@@ -147,6 +154,7 @@ def test_w2_pipeline_end_to_end():
     assert mapping.halo_footprint == (("U", (1, 1)),)
 
 
+@pytest.mark.fr("FR-S8")
 def test_w3_pipeline_end_to_end():
     s = sp.schedule(sw, target="npu1")
     ax = s.axes()
@@ -161,6 +169,7 @@ def test_w3_pipeline_end_to_end():
     assert mapping.pi == ((0, 1, 0),)
 
 
+@pytest.mark.fr("FR-L2")
 def test_w3_headline_rejection():
     """The demo's set-piece: dropping ax.j0 from skew makes the schedule illegal (L2)."""
     s = sp.schedule(sw, target="npu1")
@@ -182,6 +191,7 @@ def test_w3_headline_rejection():
 # ------------------------------------------------------------------------------------------
 
 
+@pytest.mark.fr("FR-L3", "FR-L4", "FR-L9")
 def test_w1flip_pipeline_end_to_end():
     """Weight-stationary flip: same kernel text as W1, B resident, cascade reduction along k."""
     s = sp.schedule(gemm, target="npu1")
@@ -201,6 +211,7 @@ def test_w1flip_pipeline_end_to_end():
     assert mapping.r_space != ()  # this IS the cascade case -- CHECK_CASCADE actually ran
 
 
+@pytest.mark.fr("FR-L3")
 def test_w1flip_stationarity_rejection():
     """FR-L3's negative fixture: place(px=i0, py=k0) + stationary("C") should fail --
     C's reuse direction is NOT contained in ker(pi) under this placement.

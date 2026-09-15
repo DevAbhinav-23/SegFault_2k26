@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers.golden import assert_golden
+
 try:
     import numpy as np
 except ImportError:  # pragma: no cover
@@ -234,26 +236,31 @@ def test_W2_oracle_is_timestep_outermost():
         assert np.allclose(U[t + 1, 1:H + 1, 1:W - 1], sweep, atol=fx.tol), f"plane {t + 1}"
 
 
-def test_demo_rejections():
+@pytest.mark.parametrize("name", (
+    pytest.param("bad_skew", marks=pytest.mark.fr("FR-L2", "FR-L12")),
+    pytest.param("bad_stationary", marks=pytest.mark.fr("FR-L3", "FR-L12")),
+    pytest.param("bad_capacity", marks=pytest.mark.fr("FR-L9", "FR-L12")),
+))
+def test_demo_rejections(name):
     """M8 §5.3: each demo rejection raises, with the four-part diagnostic, matching its golden.
 
-    The goldens (`tests/golden/reject.<code>.txt`) are captured from A's real messages — they
-    cannot be guessed, so until M3 lands this skips rather than asserting a fiction. The
-    rejection functions already exist and carry the expected message shapes in their
-    docstrings, so what lands is the capture, not the test.
+    The goldens (`tests/golden/reject.<CODE>.txt`) are the **rendered** message, captured with
+    `pytest --update-goldens` from M3's own `str(exc)` — never hand-written, so the slide and
+    the checker cannot drift apart. M3's legality diagnostics carry `location=None`, so none of
+    the three renders a path and the goldens are machine-independent.
+
+    Each parameter is one FR's own acceptance case, verbatim: `bad_skew` is FR-L2's dropped
+    `j0` term, `bad_stationary` is FR-L3's `place(px=ax.i0, py=ax.k0)` + `stationary("C")`,
+    and `bad_capacity` is FR-L9's `M=N=K=192, TM=TN=96, TK=32` with `double_buffer("A","B")`
+    (61 440 B undoubled, 86 016 charged). All three carry FR-L12: the golden *is* the four-part
+    message, so a lost `clause`, `reason` or `fix` fails here. FR-L9's acceptance also asks the
+    message to print the **per-buffer breakdown**, which `details` does not carry — that half
+    is A's gap, recorded in `hackathon/HANDOFF.md`, not claimed by this mark.
     """
     from kernels import rejections
+    from spatial.model import LegalityError
 
-    raisers = ("bad_skew", "bad_stationary", "bad_capacity")
-    try:
-        getattr(rejections, raisers[0])("npu1")
-    except NotImplementedError as exc:
-        pytest.skip(f"the legality checker (A, M3) is not built yet, so the three rejection "
-                    f"goldens cannot be captured: {exc}")
-    from spatial.model import SpatialError
-    for name in raisers:
-        with pytest.raises(SpatialError) as caught:
-            getattr(rejections, name)("npu1")
-        golden_path = Path(str(files("tests"))) / "golden" / f"reject.{caught.value.diagnostic.code}.txt"
-        assert golden_path.is_file(), f"no golden captured for {name}: {golden_path}"
-        assert str(caught.value).strip() == golden_path.read_text(encoding="utf-8").strip()
+    with pytest.raises(LegalityError) as caught:
+        getattr(rejections, name)("npu1")
+    code = caught.value.diagnostic.code
+    assert_golden(f"reject.{code}.txt", str(caught.value) + "\n", kind="text")

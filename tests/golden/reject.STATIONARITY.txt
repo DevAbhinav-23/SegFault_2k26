@@ -1,0 +1,4 @@
+STATIONARITY: ker M_C = ((0, 0, 1),) is not contained in ker Spi = ((0, 1, 0),)
+  in clause: stationary('C')
+  because:   ker_M=((0, 0, 1),), ker_pi=((0, 1, 0),), operand='C', placed=('i0', 'k0')
+  fix:       place the axes that would kill the reuse direction

@@ -128,7 +128,7 @@ from functools import lru_cache
 from math import prod
 from typing import Any, Literal, Union, get_args, get_origin
 
-CONTRACT_VERSION = 5
+CONTRACT_VERSION = 6
 """The version of design/06-interfaces.md this module implements."""
 
 
