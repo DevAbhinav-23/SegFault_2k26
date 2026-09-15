@@ -1138,7 +1138,8 @@ def broadcast_guard(plan: MappingPlan) -> None:
 
     Measured on this wheel (W1's clauses, `repeats (1, 1)`, `l1_bytes` 12 288, npu2): physical
     `(2, 2)` exit 0; `(2, 3)` and `(2, 4)` this error; `(3, 2)` and `(4, 2)` — the same six and
-    eight cores, transposed — exit 0. Editing only the emitted affine set of the `(2, 3)` module
+    eight cores, transposed, reachable only with `air.api`'s npu2 2-D cap lifted, which is open
+    item **B-P38** — exit 0. Editing only the emitted affine set of the `(2, 3)` module
     from `-s1 + 1 >= 0` to `-s1 + 2 >= 0` and re-running `air-to-aie` gives exit 0, which is what
     pins the cause to this bound and not to a shim resource.
 
